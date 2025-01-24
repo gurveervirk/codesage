@@ -163,8 +163,8 @@ class COMStore(Neo4jPropertyGraphStore):
       self.database_query(general_fts_query)
 
     def query_vector_index(
-        self, index_name: str, query: str | List[float],
-        return_fields: Optional[List[str]] = None, **kwargs: Any
+        self, index_name: str, query: str | List[float], top_k: int = 10,
+        **kwargs: Any
     ) -> List[Dict]:
         """
         Query a vector index.
@@ -172,17 +172,19 @@ class COMStore(Neo4jPropertyGraphStore):
         Args:
             index_name (str): The name of the vector index, restricted to `method_vector_index`, `class_vector_index` and `module_vector_index`.
             query (str or List[float]): The query or query vector embedding.
-            return_fields (Optional[List[str]]): A list of fields to return.
+            top_k (int): The number of results to return. Defaults to 10.
 
         Returns:
             List[Dict]: A list of dictionaries containing the query results.
         """
         query_vector = None
+
         if isinstance(query, str):
             query_vector = Settings.embed_model.get_query_embedding(query)
         else:
             query_vector = query
-        return_fields = return_fields or ["name", "source"]
+
+        return_fields = ["name", "source"]
         return_fields_str = ", ".join([f"n.{field} AS {field}" for field in return_fields])
 
         query_str = f"""
@@ -192,7 +194,7 @@ class COMStore(Neo4jPropertyGraphStore):
         """
         query_params = {
             "index_name": index_name,
-            "top_k": kwargs.get("top_k", 10),
+            "top_k": top_k,
             "query_vector": query_vector,
         }
 
@@ -204,7 +206,7 @@ class COMStore(Neo4jPropertyGraphStore):
             return []
 
     def query_fulltext_index(
-        self, index_name: str, query: str, return_fields: Optional[List[str]] = None,
+        self, index_name: str, query: str,
         **kwargs: Any
     ) -> List[Dict]:
         """
@@ -218,7 +220,7 @@ class COMStore(Neo4jPropertyGraphStore):
         Returns:
             List[Dict]: A list of dictionaries containing the query results.
         """
-        return_fields = return_fields or ["name", "source"]
+        return_fields = ["name", "source"]
         return_fields_str = ", ".join([f"n.{field} AS {field}" for field in return_fields])
 
         query_str = f"""
@@ -243,7 +245,6 @@ class COMStore(Neo4jPropertyGraphStore):
         labels: List[str],
         query: str | List[float],
         top_k: int = 10,
-        return_fields: Optional[List[str]] = None,
         **kwargs: Any,
     ) -> List[Dict]:
         """
@@ -253,7 +254,6 @@ class COMStore(Neo4jPropertyGraphStore):
             labels (List[str]): A list of labels to query (e.g., ["MODULE", "CLASS", "METHOD"]).
             query (str or List[float]): The query or query vector embedding.
             top_k (int): The number of results to return. Defaults to 10.
-            return_fields (Optional[List[str]]): A list of fields to return. Defaults to ["name", "source"]
 
         Returns:
             List[Dict]: A list of dictionaries containing the query results.
@@ -263,7 +263,7 @@ class COMStore(Neo4jPropertyGraphStore):
             query_vector = Settings.embed_model.get_query_embedding(query)
         else:
             query_vector = query
-        return_fields = return_fields or ["name", "source"]
+        return_fields = ["name", "source"]
         return_fields_str = ", ".join([f"n.{field} AS {field}" for field in return_fields])
 
         query_str = f"""
@@ -394,6 +394,9 @@ class COMStore(Neo4jPropertyGraphStore):
         self.upsert_nodes(entity_nodes)
         self.upsert_relations(relations)
 
+        # Embed the nodes
+        self.embed_nodes()
+
         # Add labels recursively
         self.add_labels(module_name)
 
@@ -507,3 +510,53 @@ class COMStore(Neo4jPropertyGraphStore):
             """
         )
         self.structured_query(class_query, {"module_name": module_name})
+
+    def remove_empty_values(self, input_dict):
+        """
+        Remove entries with empty values from the dictionary.
+
+        Parameters:
+        input_dict (dict): The dictionary from which empty values need to be removed.
+
+        Returns:
+        dict: A new dictionary with all empty values removed.
+        """
+        # Create a new dictionary excluding empty values
+        return {key: value for key, value in input_dict.items() if value}
+
+    def embed_nodes(self):
+        """
+        Embed newly created nodes.
+        """
+        retrieve_new_nodes = (
+            """
+            MATCH (e)
+            WHERE e.embedding IS NULL
+            RETURN
+            e.id AS name,
+            labels(e)[0] AS type,
+            properties(e) AS properties
+            """
+        )
+        new_nodes = self.structured_query(retrieve_new_nodes)
+        if not new_nodes:
+            return
+        
+        entity_nodes, source_codes = [], []
+        # Create EntityNode objects for each node
+        for node in new_nodes:
+            entity_node = EntityNode(
+                label=node["type"],
+                name=node["name"],
+                properties=self.remove_empty_values(node["properties"])
+            )
+            entity_nodes.append(entity_node)
+            source_codes.append(entity_node.properties.get("source", ""))
+
+        # Embed the nodes
+        embeddings = Settings.embed_model.get_text_embedding_batch(source_codes)
+
+        for i, node in enumerate(entity_nodes):
+            node.properties[self.embedding_node_property] = embeddings[i]
+
+        self.upsert_nodes(entity_nodes)
