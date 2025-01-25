@@ -132,7 +132,7 @@ def process_member(
         relation_type = "HAS_SUBMODULE" if inspect.ismodule(obj) else "HAS_CLASS"
         relations.append(Relationship(parent_entity, entities[0], relation_type, {}))
 
-    elif inspect.isfunction(obj):
+    elif inspect.isfunction(obj) and parent_entity.label in {"ROOT_MODULE", "MODULE"}:
         obj_path = get_fully_qualified_name(obj)
 
         if check_dunders(obj_path):
@@ -155,22 +155,21 @@ def process_member(
             obj_path, 
             "FUNCTION", 
             {
-                "source": source_code
+                "source": source_code,
+                "__name__": obj.__name__
             }
         )
         entities.append(function_entity)
         if parent_entity:
             relations.append(Relationship(parent_entity, function_entity, "HAS_FUNCTION", {}))
 
-    elif inspect.ismethod(obj):
+    elif parent_entity.label == "CLASS" and (inspect.ismethod(obj) or inspect.isfunction(obj)):
         obj_path = get_fully_qualified_name(obj)
 
         if check_dunders(obj_path):
             return [], []
 
         if not obj_path.startswith(root_module_path):
-            if parent_entity:
-                other_relations["IMPORTS"].append((parent_entity.name, obj_path))
             return [], []
 
         if obj_path in processed_paths:
@@ -183,7 +182,8 @@ def process_member(
             obj_path, 
             "METHOD", 
             {
-                "source": source_code
+                "source": source_code,
+                "__name__": obj.__name__
             }
         )
         entities.append(method_entity)
@@ -290,14 +290,43 @@ def process_module(module_name_or_object: Union[str, Any]):
     if isinstance(module_name_or_object, str):
         module_or_object = importlib.import_module(module_name_or_object)
 
-    root_entity = Entity(module_name_or_object, "ROOT_MODULE", {})
+    source = safe_get_source(module_or_object)
+    properties = {"source": source}
+
+    root_entity = Entity(module_name_or_object, "ROOT_MODULE", properties)
     entities.append(root_entity)
 
-    sub_entities, sub_relations = traverse_recursive(
-        module_or_object, module_name_or_object, processed_paths, other_relations
-    )
-    entities.extend(sub_entities)
-    relations.extend(sub_relations)
+    # Process sub-modules
+    for name, member in inspect.getmembers(module_or_object, inspect.ismodule):
+        sub_entities, sub_relations = process_member(
+            name, member, module_name_or_object, root_entity, processed_paths, other_relations
+        )
+        entities.extend(sub_entities)
+        relations.extend(sub_relations)
+
+    # Process sub-classes
+    for name, member in inspect.getmembers(module_or_object, inspect.isclass):
+        sub_entities, sub_relations = process_member(
+            name, member, module_name_or_object, root_entity, processed_paths, other_relations
+        )
+        entities.extend(sub_entities)
+        relations.extend(sub_relations)
+    
+    # Process functions
+    for name, member in inspect.getmembers(module_or_object, inspect.isfunction):
+        sub_entities, sub_relations = process_member(
+            name, member, module_name_or_object, root_entity, processed_paths, other_relations
+        )
+        entities.extend(sub_entities)
+        relations.extend(sub_relations)
+
+    # Process methods
+    for name, member in inspect.getmembers(module_or_object, inspect.ismethod):
+        sub_entities, sub_relations = process_member(
+            name, member, module_name_or_object, root_entity, processed_paths, other_relations
+        )
+        entities.extend(sub_entities)
+        relations.extend(sub_relations)
 
     # Deduplicate entities and relations
     entities = list(set(entities))

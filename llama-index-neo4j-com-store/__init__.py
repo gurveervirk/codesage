@@ -4,11 +4,11 @@ This module is an integration of COM logic with the Neo4jPropertyGraphStore clas
 from llama_index.graph_stores.neo4j import Neo4jPropertyGraphStore
 from llama_index.core.bridge.pydantic import PrivateAttr
 from llama_index.core.graph_stores.types import (
-    EntityNode, Relation 
+    EntityNode, Relation
 )
 from llama_index.core import Settings
 from typing import Any, Dict, List, Optional, Tuple
-from reflex import Entity, Relationship
+# from reflex import Entity, Relationship
 import logging
 import neo4j
 
@@ -22,12 +22,37 @@ def check_if_not_null(props: List[str], values: List[Any]) -> None:
         if not value:
             raise ValueError(f"Parameter `{prop}` must not be None or empty string")
 
+class Entity:
+    """
+    Module-agnostic entity class.
+    """
+    def __init__(self, name: str, label: str, properties: Dict):
+        self.name = name
+        self.label = label
+        self.properties = properties
+
+    def __repr__(self):
+        return f"{self.label} ({self.name})"
+
+class Relationship:
+    """
+    Module-agnostic relation class.
+    """
+    def __init__(self, from_entity: Entity, to_entity: Entity, label: str, properties: Dict):
+        self.from_entity = from_entity
+        self.to_entity = to_entity
+        self.label = label
+        self.properties = properties
+
+    def __repr__(self):
+        return f"{self.from_entity} --{self.label}--> {self.to_entity}"
+
 class COMStore(Neo4jPropertyGraphStore):
     """
-    COM stands for Code Object Model. 
+    COM stands for Code Object Model.
     This class is a subclass of Neo4jPropertyGraphStore and is used to store and retrieve code entities and their relationships in a Neo4j database.
     It provides ways to create, update, and query entities and relationships in the database. The database stores the Python Modular Tree structure in the form of nodes and relationships.
-    
+
     Schema:
     - Nodes: MODULE, CLASS, METHOD
     - Relationships: HAS_CLASS, HAS_METHOD, INHERITS, IMPORTS
@@ -93,77 +118,113 @@ class COMStore(Neo4jPropertyGraphStore):
 
 
     def create_required_indices(self) -> None:
-      """
-      This method constructs Cypher queries and executes them to create:
-      1. Three new full-text indices in Neo4j:
-        - one for MODULE entities on 'name' and 'source' properties.
-        - one for CLASS entities on 'name' and 'source' properties.
-        - one for METHOD entities on 'name' and 'source' properties.
-      2. Three vector indices:
-        - one for MODULE entities on the 'embedding' property.
-        - one for CLASS entities on the 'embedding' property.
-        - one for METHOD entities on the 'embedding' property.
+        """
+        This method constructs Cypher queries and executes them to create:
+        1. 5 full-text indices in Neo4j:
+            - one for ROOT_MODULE entities on 'name' and 'source' properties.
+            - one for MODULE entities on 'name' and 'source' properties.
+            - one for FUNCTION entities on 'name' and 'source' properties.
+            - one for CLASS entities on 'name' and 'source' properties.
+            - one for METHOD entities on 'name' and 'source' properties.
+        2. 5 vector indices:
+            - one for ROOT_MODULE entities on the 'embedding' property.
+            - one for FUNCTION entities on the 'embedding' property.
+            - one for MODULE entities on the 'embedding' property.
+            - one for CLASS entities on the 'embedding' property.
+            - one for METHOD entities on the 'embedding' property.
 
-      It uses the IF NOT EXISTS clause to avoid errors if the indices already exist.
-      """
+        It uses the IF NOT EXISTS clause to avoid errors if the indices already exist.
+        """
 
-      # Create full-text indices
-      module_index_query = """
-      CREATE FULLTEXT INDEX module_index IF NOT EXISTS FOR (n:`MODULE`) ON EACH [n.`name`, n.`source`]
-      """
-      self.database_query(module_index_query)
+        # Create full-text indices
+        root_module_index_query = """
+        CREATE FULLTEXT INDEX root_module_index IF NOT EXISTS FOR (n:`ROOT_MODULE`) ON EACH [n.`name`, n.`source`]
+        """
+        self.database_query(root_module_index_query)
 
-      class_index_query = """
-      CREATE FULLTEXT INDEX class_index IF NOT EXISTS FOR (n:`CLASS`) ON EACH [n.`name`, n.`source`]
-      """
-      self.database_query(class_index_query)
+        function_index_query = """
+        CREATE FULLTEXT INDEX function_index IF NOT EXISTS FOR (n:`FUNCTION`) ON EACH [n.`name`, n.`source`]
+        """
+        self.database_query(function_index_query)
 
-      method_index_query = """
-      CREATE FULLTEXT INDEX method_index IF NOT EXISTS FOR (n:`METHOD`) ON EACH [n.`name`, n.`source`]
-      """
-      self.database_query(method_index_query)
+        module_index_query = """
+        CREATE FULLTEXT INDEX module_index IF NOT EXISTS FOR (n:`MODULE`) ON EACH [n.`name`, n.`source`]
+        """
+        self.database_query(module_index_query)
 
-      # Create vector indices
-      module_vector_index_query = """
-      CREATE VECTOR INDEX module_vector_index IF NOT EXISTS
-      FOR (m:`MODULE`)
-      ON (m.`embedding`)
-      OPTIONS {indexConfig: {
-        `vector.dimensions`: 1024,
-        `vector.similarity_function`: 'cosine'
-      }}
-      """
-      self.database_query(module_vector_index_query)
+        class_index_query = """
+        CREATE FULLTEXT INDEX class_index IF NOT EXISTS FOR (n:`CLASS`) ON EACH [n.`name`, n.`source`]
+        """
+        self.database_query(class_index_query)
 
-      class_vector_index_query = """
-      CREATE VECTOR INDEX class_vector_index IF NOT EXISTS
-      FOR (c:`CLASS`)
-      ON (c.`embedding`)
-      OPTIONS {indexConfig: {
-        `vector.dimensions`: 1024,
-        `vector.similarity_function`: 'cosine'
-      }}
-      """
-      self.database_query(class_vector_index_query)
+        method_index_query = """
+        CREATE FULLTEXT INDEX method_index IF NOT EXISTS FOR (n:`METHOD`) ON EACH [n.`name`, n.`source`]
+        """
+        self.database_query(method_index_query)
 
-      method_vector_index_query = """
-      CREATE VECTOR INDEX method_vector_index IF NOT EXISTS
-      FOR (m:`METHOD`)
-      ON (m.`embedding`)
-      OPTIONS {indexConfig: {
-        `vector.dimensions`: 1024,
-        `vector.similarity_function`: 'cosine'
-      }}
-      """
-      self.database_query(method_vector_index_query)
+        # Create vector indices
+        root_module_vector_index_query = """
+        CREATE VECTOR INDEX root_module_vector_index IF NOT EXISTS
+        FOR (m:`ROOT_MODULE`)
+        ON (m.`embedding`)
+        OPTIONS {indexConfig: {
+            `vector.dimensions`: 1024,
+            `vector.similarity_function`: 'cosine'
+        }}
+        """
+        self.database_query(root_module_vector_index_query)
 
-      general_fts_query = """
-      CREATE FULLTEXT INDEX general_fts_index IF NOT EXISTS FOR (n:__Entity__) ON EACH [n.name, n.source]
-      """
-      self.database_query(general_fts_query)
+        function_vector_index_query = """
+        CREATE VECTOR INDEX function_vector_index IF NOT EXISTS
+        FOR (f:`FUNCTION`)
+        ON (f.`embedding`)
+        OPTIONS {indexConfig: {
+            `vector.dimensions`: 1024,
+            `vector.similarity_function`: 'cosine'
+        }}
+        """
+        self.database_query(function_vector_index_query)
+
+        module_vector_index_query = """
+        CREATE VECTOR INDEX module_vector_index IF NOT EXISTS
+        FOR (m:`MODULE`)
+        ON (m.`embedding`)
+        OPTIONS {indexConfig: {
+            `vector.dimensions`: 1024,
+            `vector.similarity_function`: 'cosine'
+        }}
+        """
+        self.database_query(module_vector_index_query)
+
+        class_vector_index_query = """
+        CREATE VECTOR INDEX class_vector_index IF NOT EXISTS
+        FOR (c:`CLASS`)
+        ON (c.`embedding`)
+        OPTIONS {indexConfig: {
+            `vector.dimensions`: 1024,
+            `vector.similarity_function`: 'cosine'
+        }}
+        """
+        self.database_query(class_vector_index_query)
+
+        method_vector_index_query = """
+        CREATE VECTOR INDEX method_vector_index IF NOT EXISTS
+        FOR (m:`METHOD`)
+        ON (m.`embedding`)
+        OPTIONS {indexConfig: {
+            `vector.dimensions`: 1024,
+            `vector.similarity_function`: 'cosine'
+        }}
+        """
+        self.database_query(method_vector_index_query)
+
+        general_fts_query = """
+        CREATE FULLTEXT INDEX general_fts_index IF NOT EXISTS FOR (n:__Entity__) ON EACH [n.name, n.source]
+        """
+        self.database_query(general_fts_query)
 
     def query_vector_index(
-        self, index_name: str, query: str | List[float], top_k: int = 10,
+        self, index_name: str, query: str | List[float],
         **kwargs: Any
     ) -> List[Dict]:
         """
@@ -172,7 +233,6 @@ class COMStore(Neo4jPropertyGraphStore):
         Args:
             index_name (str): The name of the vector index, restricted to `method_vector_index`, `class_vector_index` and `module_vector_index`.
             query (str or List[float]): The query or query vector embedding.
-            top_k (int): The number of results to return. Defaults to 10.
 
         Returns:
             List[Dict]: A list of dictionaries containing the query results.
@@ -194,7 +254,7 @@ class COMStore(Neo4jPropertyGraphStore):
         """
         query_params = {
             "index_name": index_name,
-            "top_k": top_k,
+            "top_k": kwargs.get("top_k", 10),
             "query_vector": query_vector,
         }
 
@@ -206,7 +266,7 @@ class COMStore(Neo4jPropertyGraphStore):
             return []
 
     def query_fulltext_index(
-        self, index_name: str, query: str,
+        self, index_name: str, query: str, labels: List[str] = [],
         **kwargs: Any
     ) -> List[Dict]:
         """
@@ -215,8 +275,7 @@ class COMStore(Neo4jPropertyGraphStore):
         Args:
             index_name (str): The name of the full-text index, restricted to `module_index`, `class_index` and `method_index`.
             query (str): The query string.
-            return_fields (Optional[List[str]]): A list of fields to return.
-
+            labels (List[str]): A list of labels to filter query results (e.g., ["module_name", "class_name"]).
         Returns:
             List[Dict]: A list of dictionaries containing the query results.
         """
@@ -226,11 +285,18 @@ class COMStore(Neo4jPropertyGraphStore):
         query_str = f"""
         CALL db.index.fulltext.queryNodes($index_name, $query)
         YIELD node AS n, score
+        """
+        if labels:
+            query_str += f"""
+            WHERE any(label IN labels(n) WHERE label IN $labels)
+            """
+        query_str += f"""
         RETURN {return_fields_str}, score
         """
         query_params = {
             "index_name": index_name,
             "query": query,
+            "labels": labels
         }
 
         try:
@@ -331,7 +397,7 @@ class COMStore(Neo4jPropertyGraphStore):
         with self._driver.session(database=self.database) as session:
             data = session.run(neo4j.Query(text=query), params)
             return [r.data() for r in data]
-    
+
     def create_entity(self, label: str, name: str, properties: dict = None) -> EntityNode:
         """
         Create an entity node with the given label, name, and properties.
@@ -486,12 +552,15 @@ class COMStore(Neo4jPropertyGraphStore):
         Args:
             module_name (str): The name of the module to label.
         """
+        # First query: Exclude :IMPORTS relation
         module_query = (
             """
-            MATCH (base:MODULE {name: $module_name})-[*0..]->(descendant:MODULE)
+            MATCH (base:ROOT_MODULE {name: 'requests'})-[r*0..]->(descendant:MODULE)
+            WHERE NONE(rel IN r WHERE type(rel) = 'IMPORTS')
             WITH DISTINCT descendant.name AS moduleNames
             UNWIND moduleNames AS moduleName
-            MATCH (parent:MODULE {name: moduleName})-[*0..]->(descendant)
+            MATCH (parent:MODULE {name: moduleName})-[r]->(descendant)
+            WHERE type(r) <> "IMPORTS"
             CALL apoc.create.addLabels(parent, [moduleName]) YIELD node as pnode
             CALL apoc.create.addLabels(descendant, [moduleName]) YIELD node as dnode
             RETURN moduleName, COUNT(DISTINCT descendant) AS TotalNodesLabeled
@@ -499,17 +568,40 @@ class COMStore(Neo4jPropertyGraphStore):
         )
         self.structured_query(module_query, {"module_name": module_name})
 
+        # Second query: Exclude :INHERITS relation
         class_query = (
             """
-            MATCH (base:MODULE {name: $module_name})-[:HAS_CLASS]->(class:CLASS)
+            MATCH (base:ROOT_MODULE {name: 'requests'})-[r*0..]->(class:CLASS)
+            WHERE NONE(rel IN r WHERE type(rel) = 'INHERITS')
             WITH DISTINCT class
-            MATCH (class)-[*0..]->(descendant)
+            MATCH (class)-[r]->(descendant)
+            WHERE type(r) <> "INHERITS"
             CALL apoc.create.addLabels(class, [class.name]) YIELD node as cnode
             CALL apoc.create.addLabels(descendant, [class.name]) YIELD node as dnode
             RETURN class.name AS ClassName, COUNT(DISTINCT descendant) AS TotalNodesLabeled
             """
         )
         self.structured_query(class_query, {"module_name": module_name})
+
+        # Third query: Handle :INHERITS relation
+        inherits_query = (
+            """
+            MATCH (base:ROOT_MODULE {name: $module_name})-[r*0..]->(child:CLASS)
+            WHERE NONE(rel IN r WHERE type(rel) = 'INHERITS')
+            WITH DISTINCT child
+            MATCH (child)-[:INHERITS*0..]->(parent:CLASS)
+            WITH child, parent
+            MATCH (parent)-[:HAS_METHOD]->(member)
+            WHERE NOT EXISTS {
+                MATCH (child)-[:HAS_METHOD]->(childMember)
+                WHERE split(childMember.name, ".")[-1] = split(member.name, ".")[-1]
+            }
+            WITH member, child, labels(child) AS childLabels
+            CALL apoc.create.addLabels(member, childLabels) YIELD node as labeledMember
+            RETURN child.name AS ChildClass, COUNT(DISTINCT member) AS TotalParentMembersLabeled
+            """
+        )
+        self.structured_query(inherits_query, {"module_name": module_name})
 
     def remove_empty_values(self, input_dict):
         """
@@ -541,7 +633,7 @@ class COMStore(Neo4jPropertyGraphStore):
         new_nodes = self.structured_query(retrieve_new_nodes)
         if not new_nodes:
             return
-        
+
         entity_nodes, source_codes = [], []
         # Create EntityNode objects for each node
         for node in new_nodes:
