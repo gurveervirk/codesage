@@ -481,6 +481,7 @@ class COMStore(Neo4jPropertyGraphStore):
         """
         inherits_relations = other_relations.get("INHERITS", [])
         imports_relations = other_relations.get("IMPORTS", [])
+        exposes_relations = other_relations.get("EXPOSES", [])
         add_inherits_query = (
             """
             UNWIND $inherits_relations AS rel
@@ -495,13 +496,21 @@ class COMStore(Neo4jPropertyGraphStore):
             SET e.IMPORTS = apoc.coll.toSet(coalesce(e.IMPORTS, []) + rel[1])
             """
         )
+        add_exposes_query = (
+            """
+            UNWIND $exposes_relations AS rel
+            MATCH (m {name: rel[0]})
+            SET m.EXPOSES = apoc.coll.toSet(coalesce(m.EXPOSES, []) + rel[1])
+            """
+        )
         self.structured_query(add_inherits_query, {"inherits_relations": inherits_relations})
         self.structured_query(add_imports_query, {"imports_relations": imports_relations})
+        self.structured_query(add_exposes_query, {"exposes_relations": exposes_relations})
 
     def process_other_relations(self):
         """
-        Execute Cypher queries to create relations on existing nodes with INHERITS and IMPORTS properties.
-        Clear names from the INHERITS and IMPORTS property arrays of the nodes if the relations could be created successfully.
+        Execute Cypher queries to create relations on existing nodes with INHERITS, IMPORTS and EXPOSES properties.
+        Clear names from the INHERITS, IMPORTS and EXPOSES property arrays of the nodes if the relations could be created successfully.
         """
         process_inherits_query = (
             """
@@ -525,6 +534,17 @@ class COMStore(Neo4jPropertyGraphStore):
             SET e1.IMPORTS = [name IN e1.IMPORTS WHERE NOT name IN importeeNames]
             """
         )
+        process_exposes_query = (
+            """
+            MATCH (m)
+            WHERE m.EXPOSES IS NOT NULL
+            UNWIND m.EXPOSES AS exposed
+            MATCH (e {name: exposed})
+            MERGE (m)-[:EXPOSES]->(e)
+            WITH m, COLLECT(exposed) AS exposedNames
+            SET m.EXPOSES = [name IN m.EXPOSES WHERE NOT name IN exposedNames]
+            """
+        )
         cleanup_empty_INHERITS_query = (
             """
             MATCH (n)
@@ -539,11 +559,20 @@ class COMStore(Neo4jPropertyGraphStore):
             REMOVE n.IMPORTS
             """
         )
+        cleanup_empty_EXPOSES_query = (
+            """
+            MATCH (n)
+            WHERE n.EXPOSES IS NOT NULL AND size(n.EXPOSES) = 0
+            REMOVE n.EXPOSES
+            """
+        )
 
         self.structured_query(process_inherits_query)
         self.structured_query(process_imports_query)
+        self.structured_query(process_exposes_query)
         self.structured_query(cleanup_empty_INHERITS_query)
         self.structured_query(cleanup_empty_IMPORTS_query)
+        self.structured_query(cleanup_empty_EXPOSES_query)
 
     def add_labels(self, module_name):
         """
