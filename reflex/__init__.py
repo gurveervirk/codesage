@@ -9,9 +9,11 @@ This module provides utilities to extract entities and relationships from Python
 - Imports
 """
 
-from typing import Any, Dict, List, Set, Tuple, Union
+from typing import Any, Dict, List, Set, Tuple
 import inspect
 import importlib
+import re
+import subprocess
 
 class Entity:
     """
@@ -37,6 +39,68 @@ class Relationship:
     
     def __repr__(self):
         return f"{self.from_entity} --{self.label}--> {self.to_entity}"
+
+def get_unused_imports(module_name: str, imported_names: Set[str]) -> Set[str]:
+    """
+    Get the list of unused imports in a module using flake8, returning the full paths.
+
+    Args:
+        module_name (str): The name of the module.
+        imported_names (Set[str]): The set of fully qualified imported names.
+
+    Returns:
+        Set[str]: The set of unused imports (full paths).
+    """
+    try:
+        # Get the full file path of the module
+        module = importlib.import_module(module_name)
+        module_file_path = module.__file__
+
+        # Run flake8 and capture output
+        process = subprocess.run(
+            ["flake8", "--select", "F401", module_file_path],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        output = process.stdout
+        unused_names = list()
+
+        # Parse the output for unused import errors (F401), extracting the simple names
+        for line in output.splitlines():
+            match = re.search(r":\d+:(\d+): F401 '(.*)' imported but unused", line)
+            if match:
+                unused_names.append(match.group(2))
+
+
+        # Handle aliases and from-imports statements
+        for i in range(len(unused_names)):
+            name = unused_names[i].strip()
+            if " as " in name:
+                unused_names[i] = name.split(" as ")[0]
+            if name.startswith("from "):
+                unused_names[i] = name.split("from ")[1]
+            if " import " in name:
+                # Import this unused name to get the fully qualified name
+                split_name = name.split(" import ")
+                module_name = split_name[0]
+                imported_name = split_name[1]
+                imported_module = importlib.import_module(module_name)
+                imported_entity = getattr(imported_module, imported_name)
+                unused_names[i] = get_fully_qualified_name(imported_entity)
+
+        unused_imports = set()
+        for full_name in imported_names:
+            # if any(name == full_name or full_name.startswith(f"{name}.") for name in unused_names):
+            #     unused_imports.add(full_name)
+            if any(full_name.endswith(name) for name in unused_names):
+                 unused_imports.add(full_name)
+
+        return unused_imports
+    except Exception as e:
+        print("error:", e)
+        return set()
 
 def get_fully_qualified_name(cls):
     """
@@ -114,10 +178,12 @@ def process_member(
 
         if not obj_path.startswith(root_module_path):
             if parent_entity:
-                other_relations["IMPORTS"].append((parent_entity.name, obj_path))
+                other_relations["IMPORTS"].add((parent_entity.name, obj_path))
             return [], []
 
         if obj_path in processed_paths:
+            if parent_entity:
+                other_relations["IMPORTS"].add((parent_entity.name, obj_path))
             return [], []
 
         if check_dunders(obj_path):
@@ -140,12 +206,12 @@ def process_member(
 
         if not obj_path.startswith(root_module_path):
             if parent_entity:
-                other_relations["IMPORTS"].append((parent_entity.name, obj_path))
+                other_relations["IMPORTS"].add((parent_entity.name, obj_path))
             return [], []
 
         if obj_path in processed_paths:
             if parent_entity:
-                other_relations["IMPORTS"].append((parent_entity.name, obj_path))
+                other_relations["IMPORTS"].add((parent_entity.name, obj_path))
             return [], []
         else:
             processed_paths.add(obj_path)
@@ -228,7 +294,10 @@ def traverse_recursive(
         processed_paths.add(obj_path)
 
     source = safe_get_source(obj)
-    properties = {"source": source}
+    properties = {
+        "source": source,
+        "__name__": obj.__name__,
+    }
 
     entity = Entity(obj_path, entity_type, properties)
     entities.append(entity)
@@ -237,7 +306,7 @@ def traverse_recursive(
         for base in obj.__bases__:
             if base.__name__ not in ["object", "type"]:
                 base_path = f"{base.__module__}.{base.__name__}"
-                other_relations["INHERITS"].append((obj_path, base_path))
+                other_relations["INHERITS"].add((obj_path, base_path))
 
     # Process sub-modules
     for name, member in inspect.getmembers(obj, inspect.ismodule):
@@ -273,60 +342,112 @@ def traverse_recursive(
 
     return entities, relations
 
-def process_module(module_name_or_object: Union[str, Any]):
+def process_module(module_name: str):
     """
     Process a module or object recursively.
 
     Args:
-        module_name_or_object (Union[str, Any]): Module name or object.
+        module_name (str): Module name or object.
 
     Returns:
         Tuple[List[Entity], List[Relation], Dict]: List of entities, list of relations, and other relations.
     """
     entities, relations = [], []
     processed_paths = set()
-    other_relations = {"INHERITS": [], "IMPORTS": []}
+    other_relations = {"INHERITS": set(), "IMPORTS": set(), "EXPOSES": set()}
 
-    if isinstance(module_name_or_object, str):
-        module_or_object = importlib.import_module(module_name_or_object)
+    module_object = importlib.import_module(module_name)
 
-    source = safe_get_source(module_or_object)
-    properties = {"source": source}
+    source = safe_get_source(module_object)
+    properties = {
+        "source": source,
+        "__name__": module_object.__name__,
+    }
 
-    root_entity = Entity(module_name_or_object, "ROOT_MODULE", properties)
+    root_entity = Entity(module_name, "ROOT_MODULE", properties)
     entities.append(root_entity)
 
     # Process sub-modules
-    for name, member in inspect.getmembers(module_or_object, inspect.ismodule):
+    for name, member in inspect.getmembers(module_object, inspect.ismodule):
         sub_entities, sub_relations = process_member(
-            name, member, module_name_or_object, root_entity, processed_paths, other_relations
+            name, member, module_name, root_entity, processed_paths, other_relations
         )
         entities.extend(sub_entities)
         relations.extend(sub_relations)
 
     # Process sub-classes
-    for name, member in inspect.getmembers(module_or_object, inspect.isclass):
+    for name, member in inspect.getmembers(module_object, inspect.isclass):
         sub_entities, sub_relations = process_member(
-            name, member, module_name_or_object, root_entity, processed_paths, other_relations
+            name, member, module_name, root_entity, processed_paths, other_relations
         )
         entities.extend(sub_entities)
         relations.extend(sub_relations)
     
     # Process functions
-    for name, member in inspect.getmembers(module_or_object, inspect.isfunction):
+    for name, member in inspect.getmembers(module_object, inspect.isfunction):
         sub_entities, sub_relations = process_member(
-            name, member, module_name_or_object, root_entity, processed_paths, other_relations
+            name, member, module_name, root_entity, processed_paths, other_relations
         )
         entities.extend(sub_entities)
         relations.extend(sub_relations)
 
     # Process methods
-    for name, member in inspect.getmembers(module_or_object, inspect.ismethod):
+    for name, member in inspect.getmembers(module_object, inspect.ismethod):
         sub_entities, sub_relations = process_member(
-            name, member, module_name_or_object, root_entity, processed_paths, other_relations
+            name, member, module_name, root_entity, processed_paths, other_relations
         )
         entities.extend(sub_entities)
         relations.extend(sub_relations)
+
+    # Convert IMPORTS to EXPOSES for unused imports
+    imported_relations = other_relations["IMPORTS"]
+    updated_imported_relations = set()
+    module_to_imports = {}
+
+    for from_entity, to_entity in imported_relations:
+        full_module_path = from_entity
+
+        if full_module_path not in module_to_imports:
+            module_to_imports[full_module_path] = set()
+
+        module_to_imports[full_module_path].add(to_entity)
+
+    for module, imports in module_to_imports.items():
+        unused_imports = get_unused_imports(module, imports)
+        used_imports = set(imports) - set(unused_imports)
+
+        for unused_import in unused_imports:
+            other_relations["EXPOSES"].add((module, unused_import))
+
+        for used_import in used_imports:
+            updated_imported_relations.add((module, used_import))
+
+    other_relations["IMPORTS"] = updated_imported_relations
+
+    cleaned_exposed_relations = set()
+    cleaned_imports_relations = set()
+
+    # Clean up IMPORTS relations
+    for from_entity, to_entity in other_relations["IMPORTS"]:
+        to_entity_ancestor_path = ".".join(to_entity.split(".")[:-1])
+        if to_entity_ancestor_path == from_entity:
+            continue
+        elif from_entity == module_name and to_entity.startswith(module_name):
+            other_relations["EXPOSES"].add((from_entity, to_entity))
+        else:
+            cleaned_imports_relations.add((from_entity, to_entity))
+
+    # Clean up EXPOSED relations
+    for from_entity, to_entity in other_relations["EXPOSES"]:
+        to_entity_ancestor_path = ".".join(to_entity.split(".")[:-1])
+        if to_entity_ancestor_path == from_entity:
+            continue
+        if not to_entity.startswith(from_entity):
+            continue
+        cleaned_exposed_relations.add((from_entity, to_entity))
+    
+    other_relations["EXPOSES"] = cleaned_exposed_relations
+    other_relations["IMPORTS"] = cleaned_imports_relations
 
     # Deduplicate entities and relations
     entities = list(set(entities))
