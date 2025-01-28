@@ -536,7 +536,7 @@ class COMStore(Neo4jPropertyGraphStore):
         )
         process_exposes_query = (
             """
-            MATCH (m)
+            MATCH (m:MODULE|ROOT_MODULE)
             WHERE m.EXPOSES IS NOT NULL
             UNWIND m.EXPOSES AS exposed
             MATCH (e {name: exposed})
@@ -584,11 +584,14 @@ class COMStore(Neo4jPropertyGraphStore):
         # First query: Exclude :IMPORTS relation
         module_query = (
             """
-            MATCH (base:ROOT_MODULE {name: 'requests'})-[r*0..]->(descendant:MODULE)
-            WHERE NONE(rel IN r WHERE type(rel) = 'IMPORTS')
-            WITH DISTINCT descendant.name AS moduleNames
+            MATCH (base:ROOT_MODULE {name: $module_name})
+            WITH base
+            OPTIONAL MATCH (base)-[r*0..]->(descendant:MODULE)
+                        WHERE NONE(rel IN r WHERE type(rel) = 'IMPORTS')
+            WITH base, collect(DISTINCT descendant.name) AS descendantModuleNames
+            WITH base, descendantModuleNames + base.name as moduleNames
             UNWIND moduleNames AS moduleName
-            MATCH (parent:MODULE {name: moduleName})-[r]->(descendant)
+            MATCH (parent:MODULE|ROOT_MODULE {name: moduleName})-[r]->(descendant)
             WHERE type(r) <> "IMPORTS"
             CALL apoc.create.addLabels(parent, [moduleName]) YIELD node as pnode
             CALL apoc.create.addLabels(descendant, [moduleName]) YIELD node as dnode
@@ -600,7 +603,7 @@ class COMStore(Neo4jPropertyGraphStore):
         # Second query: Exclude :INHERITS relation
         class_query = (
             """
-            MATCH (base:ROOT_MODULE {name: 'requests'})-[r*0..]->(class:CLASS)
+            MATCH (base:ROOT_MODULE {name: $module_name})-[r*0..]->(class:CLASS)
             WHERE NONE(rel IN r WHERE type(rel) = 'INHERITS')
             WITH DISTINCT class
             MATCH (class)-[r]->(descendant)
@@ -625,8 +628,8 @@ class COMStore(Neo4jPropertyGraphStore):
                 MATCH (child)-[:HAS_METHOD]->(childMember)
                 WHERE split(childMember.name, ".")[-1] = split(member.name, ".")[-1]
             }
-            WITH member, child, labels(child) AS childLabels
-            CALL apoc.create.addLabels(member, childLabels) YIELD node as labeledMember
+            WITH member, child
+            CALL apoc.create.addLabels(member, [child.name]) YIELD node as labeledMember
             RETURN child.name AS ChildClass, COUNT(DISTINCT member) AS TotalParentMembersLabeled
             """
         )

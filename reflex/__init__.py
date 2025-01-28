@@ -23,7 +23,7 @@ class Entity:
         self.name = name
         self.label = label
         self.properties = properties
-    
+
     def __repr__(self):
         return f"{self.label} ({self.name})"
 
@@ -36,7 +36,7 @@ class Relationship:
         self.to_entity = to_entity
         self.label = label
         self.properties = properties
-    
+
     def __repr__(self):
         return f"{self.from_entity} --{self.label}--> {self.to_entity}"
 
@@ -177,12 +177,17 @@ def process_member(
             obj_path = get_fully_qualified_name(obj)
 
         if not obj_path.startswith(root_module_path):
-            if parent_entity:
+            if parent_entity and parent_entity.label in {"ROOT_MODULE", "MODULE"}:
                 other_relations["IMPORTS"].add((parent_entity.name, obj_path))
             return [], []
 
         if obj_path in processed_paths:
-            if parent_entity:
+            if parent_entity and parent_entity.label in {"ROOT_MODULE", "MODULE"}:
+                other_relations["IMPORTS"].add((parent_entity.name, obj_path))
+            return [], []
+        
+        if not obj_path.startswith(parent_entity.name):
+            if parent_entity and parent_entity.label in {"ROOT_MODULE", "MODULE"}:
                 other_relations["IMPORTS"].add((parent_entity.name, obj_path))
             return [], []
 
@@ -205,21 +210,27 @@ def process_member(
             return [], []
 
         if not obj_path.startswith(root_module_path):
-            if parent_entity:
+            if parent_entity and parent_entity.label in {"ROOT_MODULE", "MODULE"}:
                 other_relations["IMPORTS"].add((parent_entity.name, obj_path))
             return [], []
 
         if obj_path in processed_paths:
-            if parent_entity:
+            if parent_entity and parent_entity.label in {"ROOT_MODULE", "MODULE"}:
                 other_relations["IMPORTS"].add((parent_entity.name, obj_path))
             return [], []
+        
+        elif not obj_path.startswith(parent_entity.name):
+            if parent_entity and parent_entity.label in {"ROOT_MODULE", "MODULE"}:
+                other_relations["IMPORTS"].add((parent_entity.name, obj_path))
+            return [], []
+        
         else:
             processed_paths.add(obj_path)
 
         source_code = safe_get_source(obj)
         function_entity = Entity(
-            obj_path, 
-            "FUNCTION", 
+            obj_path,
+            "FUNCTION",
             {
                 "source": source_code,
                 "__name__": obj.__name__
@@ -245,8 +256,8 @@ def process_member(
 
         source_code = safe_get_source(obj)
         method_entity = Entity(
-            obj_path, 
-            "METHOD", 
+            obj_path,
+            "METHOD",
             {
                 "source": source_code,
                 "__name__": obj.__name__
@@ -323,7 +334,7 @@ def traverse_recursive(
         )
         entities.extend(sub_entities)
         relations.extend(sub_relations)
-    
+
     # Process functions
     for name, member in inspect.getmembers(obj, inspect.isfunction):
         sub_entities, sub_relations = process_member(
@@ -382,7 +393,7 @@ def process_module(module_name: str):
         )
         entities.extend(sub_entities)
         relations.extend(sub_relations)
-    
+
     # Process functions
     for name, member in inspect.getmembers(module_object, inspect.isfunction):
         sub_entities, sub_relations = process_member(
@@ -445,14 +456,15 @@ def process_module(module_name: str):
         if not to_entity.startswith(from_entity):
             continue
         cleaned_exposed_relations.add((from_entity, to_entity))
-    
-    other_relations["EXPOSES"] = cleaned_exposed_relations
-    other_relations["IMPORTS"] = cleaned_imports_relations
+
+    other_relations["EXPOSES"] = list(cleaned_exposed_relations)
+    other_relations["IMPORTS"] = list(cleaned_imports_relations)
+    other_relations["INHERITS"] = list(other_relations["INHERITS"])
 
     # Deduplicate entities and relations
     entities = list(set(entities))
     relations = list(set(relations))
 
-    print(f"Processed {len(entities)} entities and {len(relations)} relations.")
+    print(f"Processed {len(entities)} entities and {len(relations)} relations in {module_name}.")
 
     return entities, relations, other_relations
