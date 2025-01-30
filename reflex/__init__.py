@@ -233,7 +233,8 @@ def process_member(
             "FUNCTION",
             {
                 "source": source_code,
-                "__name__": obj.__name__
+                "__name__": obj.__name__,
+                "signature": str(inspect.signature(obj))
             }
         )
         entities.append(function_entity)
@@ -260,7 +261,8 @@ def process_member(
             "METHOD",
             {
                 "source": source_code,
-                "__name__": obj.__name__
+                "__name__": obj.__name__,
+                "signature": str(inspect.signature(obj))
             }
         )
         entities.append(method_entity)

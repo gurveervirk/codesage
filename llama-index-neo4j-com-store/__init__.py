@@ -46,6 +46,43 @@ class Relationship:
 
     def __repr__(self):
         return f"{self.from_entity} --{self.label}--> {self.to_entity}"
+    
+# Template for generating code for the entity with all of it's relevant entities
+DEFAULT_CODE_GENERATION_PROMPT_TEMPLATE = """
+    You are a code generation expert. You are to generate end-to-end code, with all the dependencies and requirements, for the following MAIN_ENTITY, using the following information:
+    
+    MAIN_ENTITY: 
+    {main_entity_name}
+
+    RELEVANT_ENTITIES:
+    {relevant_entities_information}
+
+    Please keep in mind the following instructions, if any:
+    {other_instructions}
+
+    Your code should be complete and ready to run.
+
+    Code:
+"""
+
+# Template for getting the full paths of dependencies given an entity and it's MODULE code
+DEFAULT_DEPENDENCY_PATHS_PROMPT_TEMPLATE = """
+    You are a code analysis expert. You are to find all the full paths of dependencies for using the following MAIN_ENTITY, given the following information:
+
+    MAIN_ENTITY:
+    {main_entity_name}
+
+    PARENT_MODULE:
+    {parent_module_information}
+
+    The dependencies pertain to those entities that are required to invoke and use the MAIN_ENTITY.
+    They may be found in the signature of the MAIN_ENTITY, with their full paths in the MODULE code.
+    If the main entity is a METHOD, include the dependencies required to use the CLASS that contains the METHOD.
+    Ignore `typing` and `builtins` modules.
+    Return the full paths of dependencies for the MAIN_ENTITY as strings, one per line. If there are no dependencies, return NONE.
+
+    Paths:
+"""
 
 class COMStore(Neo4jPropertyGraphStore):
     """
@@ -398,37 +435,6 @@ class COMStore(Neo4jPropertyGraphStore):
             data = session.run(neo4j.Query(text=query), params)
             return [r.data() for r in data]
 
-    def create_entity(self, label: str, name: str, properties: dict = None) -> EntityNode:
-        """
-        Create an entity node with the given label, name, and properties.
-
-        Args:
-            label (str): The label of the entity.
-            name (str): The name of the entity.
-            properties (dict, optional): Additional properties of the entity.
-
-        Returns:
-            EntityNode: The created entity node.
-        """
-        properties = {k: str(v) for k, v in (properties or {}).items()}
-        return EntityNode(label=label, name=name, properties=properties)
-
-    def create_relation(self, label: str, source: EntityNode, target: EntityNode, properties: dict = None) -> Relation:
-        """
-        Create a relation between two entities with the given label and properties.
-
-        Args:
-            label (str): The label of the relation.
-            source (EntityNode): The source entity node.
-            target (EntityNode): The target entity node.
-            properties (dict, optional): Additional properties of the relation.
-
-        Returns:
-            Relation: The created relation.
-        """
-        properties = {k: str(v) for k, v in (properties or {}).items()}
-        return Relation(label=label, source_id=source.id, target_id=target.id, properties=properties)
-
     def upsert_to_neo4j(self, module_name: str, entities: List[Entity], relations: List[Relationship], other_relations: Dict[str, List[Tuple]]) -> None:
         """
         Upsert entities and relationships into Neo4j.
@@ -444,7 +450,11 @@ class COMStore(Neo4jPropertyGraphStore):
         entities_to_entity_nodes = {}
 
         for entity in entities:
-            entity_node = self.create_entity(entity.label, entity.name, entity.properties)
+            entity_node = EntityNode(
+                label=entity.label,
+                name=entity.name,
+                properties=entity.properties
+            )
             entity_nodes.append(entity_node)
             entities_to_entity_nodes[entity.name] = entity_node
 
@@ -461,18 +471,21 @@ class COMStore(Neo4jPropertyGraphStore):
         self.upsert_relations(relations)
 
         # Embed the nodes
-        self.embed_nodes()
+        self._embed_nodes()
 
         # Add labels recursively
-        self.add_labels(module_name)
+        self._add_labels(module_name)
 
         # Add INHERITS and IMPORTS relations as properties to the respective nodes
-        self.add_other_relations_as_properties(other_relations)
+        self._add_other_relations_as_properties(other_relations)
 
         # Process INHERITS and IMPORTS relations
-        self.process_other_relations()
+        self._process_other_relations()
 
-    def add_other_relations_as_properties(self, other_relations: Dict[str, List[Tuple]]):
+        # Set the shortest call paths for all nodes in the module
+        self._set_shortest_call_paths(module_name)
+
+    def _add_other_relations_as_properties(self, other_relations: Dict[str, List[Tuple]]):
         """
         Add INHERITS and IMPORTS relations as properties to the respective nodes.
 
@@ -507,7 +520,7 @@ class COMStore(Neo4jPropertyGraphStore):
         self.structured_query(add_imports_query, {"imports_relations": imports_relations})
         self.structured_query(add_exposes_query, {"exposes_relations": exposes_relations})
 
-    def process_other_relations(self):
+    def _process_other_relations(self):
         """
         Execute Cypher queries to create relations on existing nodes with INHERITS, IMPORTS and EXPOSES properties.
         Clear names from the INHERITS, IMPORTS and EXPOSES property arrays of the nodes if the relations could be created successfully.
@@ -566,6 +579,14 @@ class COMStore(Neo4jPropertyGraphStore):
             REMOVE n.EXPOSES
             """
         )
+        add_names_to_EXPOSES_rels_query = (
+            """
+            MATCH (n)-[r:EXPOSES]-(m)
+            WHERE r.name IS NULL
+            SET r.name = n.name + "." + m.__name__
+            RETURN count(r)
+            """
+        )
 
         self.structured_query(process_inherits_query)
         self.structured_query(process_imports_query)
@@ -573,8 +594,42 @@ class COMStore(Neo4jPropertyGraphStore):
         self.structured_query(cleanup_empty_INHERITS_query)
         self.structured_query(cleanup_empty_IMPORTS_query)
         self.structured_query(cleanup_empty_EXPOSES_query)
+        self.structured_query(add_names_to_EXPOSES_rels_query)
 
-    def add_labels(self, module_name):
+    def _set_shortest_call_paths(self, module_name: str):
+        """
+        Set the shortest call paths for all nodes in the module.
+
+        Args:
+            module_name (str): The name of the module.
+        """
+        # Set the shortest call paths for all nodes in the module tree (recursively)
+        set_shortest_call_paths_query = (
+            """
+            MATCH (root:ROOT_MODULE {name: $module_name})
+            MATCH (end:MODULE|FUNCTION|CLASS|METHOD)<-[:HAS_CLASS|HAS_METHOD|HAS_FUNCTION|EXPOSES*]-(root)
+            WITH root, collect(end) AS endNodes
+            CALL apoc.path.spanningTree(root, {
+            relationshipFilter: 'HAS_SUBMODULE|HAS_CLASS|HAS_METHOD|HAS_FUNCTION|EXPOSES>',
+            terminatorNodes: endNodes
+            })
+            YIELD path
+            WITH nodes(path) AS nodesInPath
+            WITH nodesInPath[-1] AS targetNode, nodesInPath[-2] as parentNode
+            SET targetNode.shortest_call_path =
+            CASE
+                WHEN size(parentNode.name + "." + targetNode.__name__) < size(targetNode.name)
+                THEN parentNode.name + "." + targetNode.__name__
+                ELSE targetNode.name
+            END
+            RETURN count(targetNode) AS numPathsSet
+            """
+        )
+        numPathsSet = self.structured_query(set_shortest_call_paths_query, {"module_name": module_name})
+        while numPathsSet > 0:
+            numPathsSet = self.structured_query(set_shortest_call_paths_query, {"module_name": module_name})
+
+    def _add_labels(self, module_name):
         """
         Add labels to modules and classes recursively.
 
@@ -625,8 +680,8 @@ class COMStore(Neo4jPropertyGraphStore):
             WITH child, parent
             MATCH (parent)-[:HAS_METHOD]->(member)
             WHERE NOT EXISTS {
-                MATCH (child)-[:HAS_METHOD]->(childMember)
-                WHERE split(childMember.name, ".")[-1] = split(member.name, ".")[-1]
+                MATCH (child)-[:HAS_METHOD]->(childMethod)
+                WHERE childMethod.__name__ = member.__name__
             }
             WITH member, child
             CALL apoc.create.addLabels(member, [child.name]) YIELD node as labeledMember
@@ -635,7 +690,7 @@ class COMStore(Neo4jPropertyGraphStore):
         )
         self.structured_query(inherits_query, {"module_name": module_name})
 
-    def remove_empty_values(self, input_dict):
+    def _remove_empty_values(self, input_dict):
         """
         Remove entries with empty values from the dictionary.
 
@@ -648,7 +703,7 @@ class COMStore(Neo4jPropertyGraphStore):
         # Create a new dictionary excluding empty values
         return {key: value for key, value in input_dict.items() if value}
 
-    def embed_nodes(self):
+    def _embed_nodes(self):
         """
         Embed newly created nodes.
         """
@@ -672,7 +727,7 @@ class COMStore(Neo4jPropertyGraphStore):
             entity_node = EntityNode(
                 label=node["type"],
                 name=node["name"],
-                properties=self.remove_empty_values(node["properties"])
+                properties=self._remove_empty_values(node["properties"])
             )
             entity_nodes.append(entity_node)
             source_codes.append(entity_node.properties.get("source", ""))
@@ -684,3 +739,163 @@ class COMStore(Neo4jPropertyGraphStore):
             node.properties[self.embedding_node_property] = embeddings[i]
 
         self.upsert_nodes(entity_nodes)
+
+    def _get_parent_module(self, entity_name: str) -> List[str]:
+        """
+        Get the path from the given entity to the parent module.
+
+        Args:
+            entity_name (str): The name of the entity.
+
+        Returns:
+            List[str]: The path from the entity to the parent module.
+        """
+        path_parent_module_query = (
+            """
+            MATCH (end {name: $entity_name})<-[:HAS_CLASS|HAS_METHOD|HAS_FUNCTION*1..]-(parent:MODULE|ROOT_MODULE)
+            RETURN parent.__name__ AS __name__, parent.name AS name, parent.source AS source, end.shortest_call_path AS shortest_call_path
+            """
+        )
+        result = self.structured_query(path_parent_module_query, {"entity_name": entity_name})
+        return result if result else []
+    
+    def _get_retrieved_entity_representation(self, retrieved_node: Dict) -> str:
+        """
+        Get the representation of the retrieved entity.
+
+        Args:
+            retrieved_node (Dict): The retrieved node.
+
+        Returns:
+            str: The representation of the retrieved entity.
+        """
+        entity_representation = f"""
+        Name: {retrieved_node["__name__"]}
+        Full Path: {retrieved_node["name"]}
+        Source: ```
+        {retrieved_node["source"]}
+        ```
+        """
+        return entity_representation
+    
+    def _get_dependencies(self, entity_name: str, parent_module_repr: str) -> List[str]:
+        """
+        Get the dependencies of the given entity.
+
+        Args:
+            entity_name (str): The name of the entity.
+            parent_module_repr (str): The representation of the parent module.
+
+        Returns:
+            List[str]: The dependencies of the entity.
+        """
+        dependencies = []
+        prompt = DEFAULT_DEPENDENCY_PATHS_PROMPT_TEMPLATE.format(
+            main_entity_name=entity_name,
+            parent_module_information=parent_module_repr
+        )
+
+        deps = Settings.llm.complete(prompt)
+
+        if deps == "NONE":
+            return dependencies
+
+        dependencies = deps.split("\n")
+        return dependencies
+    
+    def _generate_code_using_llm(self, main_entity_name: str, relevant_entities_repr: List[Tuple[str, str]], other_instructions: str) -> str:
+        """
+        Generate code using the LLM model.
+
+        Args:
+            main_entity_name (str): The name of the main entity.
+            relevant_entities_repr (List[Tuple[str, str]]): The representations of the relevant entities.
+            other_instructions (str): Other instructions to be included in the prompt.
+
+        Returns:
+            str: The generated code.
+        """
+        relevant_entities_information = ""
+        for entity_repr in relevant_entities_repr:
+            relevant_entities_information += f"""
+            Shortest Call Path for {entity_repr[0]}: {entity_repr[2]}
+            Module Code for {entity_repr[0]}:
+            {entity_repr[1]}
+
+            """
+        
+        prompt = DEFAULT_CODE_GENERATION_PROMPT_TEMPLATE.format(
+            main_entity_name=main_entity_name,
+            relevant_entities_information=relevant_entities_information,
+            other_instructions=other_instructions
+        )
+
+        code = Settings.llm.complete(prompt)
+        return code
+
+    def generate_code(self, name: str, label: Optional[str] = "", other_instructions: Optional[str] = "") -> str:
+        """
+        Generate code for a given entity name.
+
+        Args:
+            name (str): The name of the entity.
+            label (Optional[str]): The label of the entity.
+            other_instructions (Optional[str]): Other instructions to be included in the prompt.
+
+        Returns:
+            str: The generated code for the entity.
+        """
+        # Try retrieving node by name, exclude `embedding` property
+        retrieve_node_query = (
+            """
+            MATCH (n:METHOD|FUNCTION|CLASS {name: $name})
+            WHERE $label = "" OR $label IN labels(n)
+            RETURN n.name AS name
+            """
+        )
+
+        # Execute the query to retrieve the node by name
+        retrieved_node = self.structured_query(retrieve_node_query, {"name": name, "label": label})
+
+        if not retrieved_node:
+            # If no relevant nodes are found, try querying relationships with this name
+            retrieve_relationship_query = (
+                """
+                MATCH (n)-[r:EXPOSES]->(m)
+                WHERE r.name = $name
+                RETURN m.name AS name
+                """
+            )
+
+            # Execute the query to retrieve relevant relationships
+            retrieved_node = self.structured_query(retrieve_relationship_query, {"name": name})
+
+        if not retrieved_node:
+            # If no relevant nodes or relationships are found, return an error message
+            return "No entity found with the given name."
+        
+        parent_module = self._get_parent_module(name)
+        parent_module_repr = self._get_retrieved_entity_representation(parent_module[0]) if parent_module else ""
+
+        relevant_entities_repr = [(name, parent_module_repr, parent_module[0]["shortest_call_path"] if parent_module else "")]
+
+        deps = self._get_dependencies(name, parent_module_repr)
+        unique_dependencies = set(deps)
+        while deps:
+            next_deps = []
+            
+            for dep in deps:
+                dep_parent_module = self._get_parent_module(dep)
+                dep_parent_module_repr = self._get_retrieved_entity_representation(dep_parent_module[0]) if dep_parent_module else ""
+
+                relevant_entities_repr.append((dep, dep_parent_module_repr, dep_parent_module[0]["shortest_call_path"] if dep_parent_module else ""))
+
+                new_deps = self._get_dependencies(dep, dep_parent_module_repr)
+                for new_dep in new_deps:
+                    if new_dep not in unique_dependencies:
+                        next_deps.append(new_dep)
+                        unique_dependencies.add(new_dep)
+
+            deps = next_deps
+
+        return self._generate_code_using_llm(name, relevant_entities_repr, other_instructions)
