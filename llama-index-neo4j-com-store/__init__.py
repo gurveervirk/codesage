@@ -8,7 +8,7 @@ from llama_index.core.graph_stores.types import (
 )
 from llama_index.core import Settings
 from typing import Any, Dict, List, Optional, Tuple
-
+import re
 # from reflex import Entity, Relationship
 import logging
 import json
@@ -956,6 +956,34 @@ class COMStore(Neo4jPropertyGraphStore):
         ```
         """
         return entity_representation
+    
+    def _parse_deps_response(self, response: str) -> List[str]:
+        """
+        Parse the dependencies response using regex.
+        Response Format:
+        ANALYSIS:
+        [all analysis, thinking and reasoning goes here
+        ...
+        ....
+        ....]
+
+        Paths:
+        (dependencies listed here, one per line)
+
+        Args:
+            response (str): The response string.
+
+        Returns:
+            List[str]: The parsed dependencies.
+        """
+        dependencies = re.findall(r"Paths:\n([\s\S]*)", response)
+        logging.info(f"Dependencies: {dependencies}")
+        if dependencies:
+            dependencies = dependencies[0].strip().split("\n")
+
+        if "NONE" in dependencies:
+            return []
+        return dependencies
 
     async def _get_dependencies(self, entity_name: str, parent_module_repr: str) -> List[str]:
         """
@@ -977,13 +1005,8 @@ class COMStore(Neo4jPropertyGraphStore):
         deps = await Settings.llm.acomplete(prompt)
         deps = deps.text.strip()
 
-        if "NONE" in deps:
-            logging.info(f"No dependencies found for entity: {entity_name}")
-            return dependencies
-
-        dependencies = deps.split("\n")
-        logging.info(f"Dependencies for entity {entity_name}: {dependencies}")
-        return dependencies
+        deps = self._parse_deps_response(deps)
+        return deps
 
     async def _generate_code_using_llm(self, main_entity_name: str, relevant_entities_repr: List[Tuple[str, str]], other_instructions: str) -> str:
         """
@@ -1097,6 +1120,7 @@ class COMStore(Neo4jPropertyGraphStore):
 
                 new_deps = await self._get_dependencies(dep, dep_parent_module_repr)
                 for new_dep in new_deps:
+                    new_dep = self._get_full_path_name(new_dep, "")
                     if new_dep not in unique_dependencies:
                         next_deps.append(new_dep)
                         unique_dependencies.add(new_dep)
