@@ -649,7 +649,7 @@ class COMStore(Neo4jPropertyGraphStore):
         self._embed_nodes()
 
         # Add labels recursively
-        self._add_labels(module_name)
+        self._handle_inherited_methods(module_name)
 
         # Add INHERITS and IMPORTS relations as properties to the respective nodes
         self._add_other_relations_as_properties(other_relations)
@@ -804,49 +804,15 @@ class COMStore(Neo4jPropertyGraphStore):
         while numPathsSet > 0:
             numPathsSet = self.structured_query(set_shortest_call_paths_query, {"module_name": module_name})
 
-    def _add_labels(self, module_name):
+    def _handle_inherited_methods(self, module_name):
         """
-        Add labels to modules and classes recursively.
+        Create HAS_METHOD relations for inherited methods for all classes in the specified module.
 
         Args:
-            module_name (str): The name of the module to label.
+            module_name (str): The name of the module.
+
         """
-        # First query: Exclude :IMPORTS relation
-        module_query = (
-            """
-            MATCH (base:ROOT_MODULE {name: $module_name})
-            WITH base
-            OPTIONAL MATCH (base)-[r*0..]->(descendant:MODULE)
-                        WHERE NONE(rel IN r WHERE type(rel) = 'IMPORTS')
-            WITH base, collect(DISTINCT descendant.name) AS descendantModuleNames
-            WITH base, descendantModuleNames + base.name as moduleNames
-            UNWIND moduleNames AS moduleName
-            MATCH (parent:MODULE|ROOT_MODULE {name: moduleName})-[r]->(descendant)
-            WHERE type(r) <> "IMPORTS"
-            CALL apoc.create.addLabels(parent, [moduleName]) YIELD node as pnode
-            CALL apoc.create.addLabels(descendant, [moduleName]) YIELD node as dnode
-            RETURN moduleName, COUNT(DISTINCT descendant) AS TotalNodesLabeled
-            """
-        )
-        self.structured_query(module_query, {"module_name": module_name})
-
-        # Second query: Exclude :INHERITS relation
-        class_query = (
-            """
-            MATCH (base:ROOT_MODULE {name: $module_name})-[r*0..]->(class:CLASS)
-            WHERE NONE(rel IN r WHERE type(rel) = 'INHERITS')
-            WITH DISTINCT class
-            MATCH (class)-[r]->(descendant)
-            WHERE type(r) <> "INHERITS"
-            CALL apoc.create.addLabels(class, [class.name]) YIELD node as cnode
-            CALL apoc.create.addLabels(descendant, [class.name]) YIELD node as dnode
-            RETURN class.name AS ClassName, COUNT(DISTINCT descendant) AS TotalNodesLabeled
-            """
-        )
-        self.structured_query(class_query, {"module_name": module_name})
-
-        # Third query: Handle :INHERITS relation
-        inherits_query = (
+        handle_inheritance_query = (
             """
             MATCH (base:ROOT_MODULE {name: $module_name})-[r*0..]->(child:CLASS)
             WHERE NONE(rel IN r WHERE type(rel) = 'INHERITS')
@@ -859,11 +825,11 @@ class COMStore(Neo4jPropertyGraphStore):
                 WHERE childMethod.__name__ = member.__name__
             }
             WITH member, child
-            CALL apoc.create.addLabels(member, [child.name]) YIELD node as labeledMember
+            MERGE (child)-[:HAS_METHOD]->(member)
             RETURN child.name AS ChildClass, COUNT(DISTINCT member) AS TotalParentMembersLabeled
             """
         )
-        self.structured_query(inherits_query, {"module_name": module_name})
+        self.structured_query(handle_inheritance_query, {"module_name": module_name})
 
     def _remove_empty_values(self, input_dict):
         """
