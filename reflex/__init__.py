@@ -318,7 +318,10 @@ def traverse_recursive(
     if inspect.isclass(obj):
         for base in obj.__bases__:
             if base.__name__ not in ["object", "type"]:
-                base_path = f"{base.__module__}.{base.__name__}"
+                base_path = f"{base.__module__}.{base.__qualname__}"
+                # Check if the following fix works
+                if base_path == obj_path:
+                    continue
                 other_relations["INHERITS"].add((obj_path, base_path))
 
     # Process sub-modules
