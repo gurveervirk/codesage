@@ -321,14 +321,6 @@ class COMStore(Neo4jPropertyGraphStore):
         )
         self.create_required_indices()
 
-    def refresh_schema(self):
-        """
-        Set the schema using schema.json file.
-        """
-        self.structured_schema = json.loads(
-            open("./schema.json", "r").read()
-        )
-
     def create_required_indices(self) -> None:
         """
         This method constructs Cypher queries and executes them to create:
@@ -350,27 +342,27 @@ class COMStore(Neo4jPropertyGraphStore):
 
         # Create full-text indices
         root_module_index_query = """
-        CREATE FULLTEXT INDEX root_module_index IF NOT EXISTS FOR (n:`ROOT_MODULE`) ON EACH [n.`name`, n.`source`]
+        CREATE FULLTEXT INDEX root_module_index IF NOT EXISTS FOR (n:`ROOT_MODULE`) ON EACH [n.`name`]
         """
         self.database_query(root_module_index_query)
 
         function_index_query = """
-        CREATE FULLTEXT INDEX function_index IF NOT EXISTS FOR (n:`FUNCTION`) ON EACH [n.`name`, n.`source`]
+        CREATE FULLTEXT INDEX function_index IF NOT EXISTS FOR (n:`FUNCTION`) ON EACH [n.`name`]
         """
         self.database_query(function_index_query)
 
         module_index_query = """
-        CREATE FULLTEXT INDEX module_index IF NOT EXISTS FOR (n:`MODULE`) ON EACH [n.`name`, n.`source`]
+        CREATE FULLTEXT INDEX module_index IF NOT EXISTS FOR (n:`MODULE`) ON EACH [n.`name`]
         """
         self.database_query(module_index_query)
 
         class_index_query = """
-        CREATE FULLTEXT INDEX class_index IF NOT EXISTS FOR (n:`CLASS`) ON EACH [n.`name`, n.`source`]
+        CREATE FULLTEXT INDEX class_index IF NOT EXISTS FOR (n:`CLASS`) ON EACH [n.`name`]
         """
         self.database_query(class_index_query)
 
         method_index_query = """
-        CREATE FULLTEXT INDEX method_index IF NOT EXISTS FOR (n:`METHOD`) ON EACH [n.`name`, n.`source`]
+        CREATE FULLTEXT INDEX method_index IF NOT EXISTS FOR (n:`METHOD`) ON EACH [n.`name`]
         """
         self.database_query(method_index_query)
 
@@ -435,8 +427,86 @@ class COMStore(Neo4jPropertyGraphStore):
         """
         self.database_query(general_fts_query)
 
+    def retrieve_relevant_root_modules(self, query: str, top_k: int = 10) -> List[Dict]:
+        """
+        Retrieve relevant root modules based on the query, using similarity search.
+
+        Args:
+            query (str): The query string.
+            top_k (int): The number of results to return. Defaults to None.
+
+        Returns:
+            List[Dict]: A list of dictionaries containing the query results.
+        """
+        results = self.query_vector_index("root_module_vector_index", query, top_k=top_k)
+
+        # Filter out name and summary from the results
+        results = [
+            {
+                "name": result["name"],
+                "summary": result["summary"],
+                "label": "ROOT_MODULE",
+            }
+            for result in results
+        ]
+
+        return results
+    
+    def retrieve_relevant_children_in_subtree(self, query: str, parent_name: str) -> List[Dict]:
+        """
+        Retrieve relevant IMMEDIATE children in the subtree of the given parent based on the query, using similarity search.
+
+        Args:
+            query (str): The query string.
+            parent_name (str): The name of the parent entity.
+
+        Returns:
+            List[Dict]: A list of dictionaries containing the query results.
+        """
+        # Embed the query
+        query_vector = Settings.embed_model.get_query_embedding(query)
+
+        # Use a cypher query to return all IMMEDIATE children of the parent entity, sorted by similarity to the query
+        sort_and_return_children_query = """
+            MATCH (parent {name: $parent_name})-[:HAS_MODULE|HAS_CLASS|HAS_METHOD|HAS_FUNCTION|EXPOSES]->(child)
+            WHERE child.embedding IS NOT NULL
+            WITH parent, child,
+            vector.similarity.cosine(parent.embedding, $query_vector) AS similarity
+            ORDER BY similarity DESC
+            RETURN child.name AS name, similarity AS score, labels(child) AS labels, child.summary AS summary
+        """
+
+        query_params = {
+            "parent_name": parent_name,
+            "query_vector": query_vector,
+        }
+
+        try:
+            records = self.database_query(sort_and_return_children_query, query_params)
+
+            # Filter out base labels and retain only the relevant labels
+            for record in records:
+                record["labels"] = [label for label in record["labels"] if label not in [BASE_ENTITY_LABEL, BASE_NODE_LABEL]]
+            return records
+        
+        except Exception as e:
+            logging.error(f"Error retrieving relevant children in subtree: {e}")
+            return []
+        
+    def retrieve_full_name(self, entity_name: str) -> str:
+        """
+        Retrieve the full name of the entity usin general full-text search.
+
+        Args:
+            entity_name (str): The name of the entity.
+
+        Returns:
+            str: The full name of the entity.
+        """
+        return self.query_fulltext_index("general_fts_index", entity_name)[0]["name"]
+
     def query_vector_index(
-        self, index_name: str, query: str | List[float],
+        self, index_name: str, query: str | List[float], top_k: int = 10,
         **kwargs: Any
     ) -> List[Dict]:
         """
@@ -445,6 +515,7 @@ class COMStore(Neo4jPropertyGraphStore):
         Args:
             index_name (str): The name of the vector index, restricted to `method_vector_index`, `class_vector_index` and `module_vector_index`.
             query (str or List[float]): The query or query vector embedding.
+            top_k (int): The number of results to return. Defaults to 10.
 
         Returns:
             List[Dict]: A list of dictionaries containing the query results.
@@ -456,7 +527,7 @@ class COMStore(Neo4jPropertyGraphStore):
         else:
             query_vector = query
 
-        return_fields = ["name", "source"]
+        return_fields = ["name", "summary", "source"]
         return_fields_str = ", ".join([f"n.{field} AS {field}" for field in return_fields])
 
         query_str = f"""
@@ -466,7 +537,7 @@ class COMStore(Neo4jPropertyGraphStore):
         """
         query_params = {
             "index_name": index_name,
-            "top_k": kwargs.get("top_k", 10),
+            "top_k": top_k,
             "query_vector": query_vector,
         }
 
@@ -478,7 +549,7 @@ class COMStore(Neo4jPropertyGraphStore):
             return []
 
     def query_fulltext_index(
-        self, index_name: str, query: str, labels: List[str] = [],
+        self, index_name: str, query: str,
         **kwargs: Any
     ) -> List[Dict]:
         """
@@ -487,7 +558,6 @@ class COMStore(Neo4jPropertyGraphStore):
         Args:
             index_name (str): The name of the full-text index, restricted to `module_index`, `class_index` and `method_index`.
             query (str): The query string.
-            labels (List[str]): A list of labels to filter query results (e.g., ["module_name", "class_name"]).
         Returns:
             List[Dict]: A list of dictionaries containing the query results.
         """
@@ -497,18 +567,11 @@ class COMStore(Neo4jPropertyGraphStore):
         query_str = f"""
         CALL db.index.fulltext.queryNodes($index_name, $query)
         YIELD node AS n, score
-        """
-        if labels:
-            query_str += f"""
-            WHERE any(label IN labels(n) WHERE label IN $labels)
-            """
-        query_str += f"""
         RETURN {return_fields_str}, score
         """
         query_params = {
             "index_name": index_name,
             "query": query,
-            "labels": labels
         }
 
         try:
@@ -861,8 +924,10 @@ class COMStore(Neo4jPropertyGraphStore):
         new_nodes = self.structured_query(retrieve_new_nodes)
         if not new_nodes:
             return
+        
+        logging.info(f"Found {len(new_nodes)} new nodes to embed.")
 
-        entity_nodes, source_codes = [], []
+        entity_nodes, summaries = [], []
         # Create EntityNode objects for each node
         for node in new_nodes:
             entity_node = EntityNode(
@@ -871,10 +936,13 @@ class COMStore(Neo4jPropertyGraphStore):
                 properties=self._remove_empty_values(node["properties"])
             )
             entity_nodes.append(entity_node)
-            source_codes.append(entity_node.properties.get("source", ""))
+            summaries.append(entity_node.properties.get("summary", ""))
 
         # Embed the nodes
-        embeddings = Settings.embed_model.get_text_embedding_batch(source_codes)
+        embeddings = Settings.embed_model.get_text_embedding_batch(
+            summaries,
+            show_progress=True
+        )
 
         for i, node in enumerate(entity_nodes):
             node.properties[self.embedding_node_property] = embeddings[i]
