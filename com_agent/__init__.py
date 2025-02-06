@@ -21,12 +21,22 @@ class COMAgentWorker(LATSAgentWorker):
     """COM Agent Worker class."""
 
     def __init__(self, *args, reflection_prompt=None, candidate_expansion_prompt=None, **kwargs):
+        self.candidate_expansion_prompt = candidate_expansion_prompt
         super().__init__(
             *args,
             reflection_prompt=reflection_prompt or DEFAULT_COM_REFLECTION_PROMPT,
             candidate_expansion_prompt=candidate_expansion_prompt or DEFAULT_COM_CANDIDATE_EXPANSION_PROMPT,
             **kwargs,
         )
+
+    def _initialize_state(self, task: Task, **kwargs: Any) -> Dict[str, Any]:
+        """Initialize state."""
+        # initialize root node
+        root_node = COMSearchNode(
+            current_reasoning=[ObservationReasoningStep(observation=task.input)],
+            evaluation=COMEvaluation(score=1),  # evaluation for root node is blank
+        )
+        return {"count": 0, "solution_queue": [], "root_node": root_node}
 
     async def _arun_candidate(
         self,
