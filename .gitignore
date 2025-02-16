@@ -1,4 +1,5 @@
-lpktest
-test2
+**/.env
+/lpktest
+/test2
 test.ipynb
 __pycache__/
