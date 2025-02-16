@@ -8,10 +8,9 @@ from llama_index.core.graph_stores.types import (
 )
 from llama_index.core import Settings
 from typing import Any, Dict, List, Optional, Tuple
+from reflex import Entity, Relationship
 import re
-# from reflex import Entity, Relationship
 import logging
-import json
 import neo4j
 
 logging.basicConfig(level=logging.INFO)
@@ -23,31 +22,6 @@ def check_if_not_null(props: List[str], values: List[Any]) -> None:
     for prop, value in zip(props, values):
         if not value:
             raise ValueError(f"Parameter `{prop}` must not be None or empty string")
-
-class Entity:
-    """
-    Module-agnostic entity class.
-    """
-    def __init__(self, name: str, label: str, properties: Dict):
-        self.name = name
-        self.label = label
-        self.properties = properties
-
-    def __repr__(self):
-        return f"{self.label} ({self.name})"
-
-class Relationship:
-    """
-    Module-agnostic relation class.
-    """
-    def __init__(self, from_entity: Entity, to_entity: Entity, label: str, properties: Dict):
-        self.from_entity = from_entity
-        self.to_entity = to_entity
-        self.label = label
-        self.properties = properties
-
-    def __repr__(self):
-        return f"{self.from_entity} --{self.label}--> {self.to_entity}"
 
 # Template for generating code for the entity with all of it's relevant entities
 DEFAULT_CODE_GENERATION_PROMPT_TEMPLATE = """
@@ -90,7 +64,7 @@ DEFAULT_DEPENDENCY_PATHS_PROMPT_TEMPLATE = """
 
     **2. Handling Functions/Methods:**
 
-    -   If the MAIN_ENTITY is a **Function/Method:**
+    -   If the MAIN_ENTITY is a **Function/Method:** (**THESE INCLUDE EVERYTHING STARTING WITH A `def ` in python, from methods, functions to properties, etc.**)
         -   **Identify:**
             -   Parameter types from the function/method signature.
             -   Return types from the function/method signature or docstring (if present in the format `:rtype:`).
@@ -103,7 +77,7 @@ DEFAULT_DEPENDENCY_PATHS_PROMPT_TEMPLATE = """
 
     -   If the MAIN_ENTITY is a **Class:**
         -   **Analyze:** All methods within the class, excluding the `__init__` method.
-        -   **For each method:**
+        -   **For each method (**THESE INCLUDE EVERYTHING STARTING WITH A `def ` in python, from methods, functions to properties, etc.**):**
             -   **Identify:**
                 -   Parameter types from the method signature.
                 -   Return types from the method signature or docstring (if present in the format `:rtype:`).
@@ -185,7 +159,7 @@ DEFAULT_DEPENDENCY_PATHS_PROMPT_TEMPLATE = """
         :rtype: delta
         ```
         return something()
-    
+
     Paths:
     charlie.delta
 
@@ -207,7 +181,7 @@ DEFAULT_DEPENDENCY_PATHS_PROMPT_TEMPLATE = """
         :rtype: something
         ```
         return delta()
-        
+
     Paths:
     something
 
@@ -241,12 +215,11 @@ DEFAULT_DEPENDENCY_PATHS_PROMPT_TEMPLATE = """
     charlie.zeta
     charlie.eta
 
+    Please think, reason and analyze the above properly.
     Your response should be formatted as follows:
-    ANALYSIS:
-    [all analysis, thinking and reasoning goes here
-    ...
-    ....
-    ....]
+    <thinking>
+    (all thinking, reasoning, analysis to be written here IN DETAIL)
+    </thinking>
 
     Paths:
     (dependencies listed here, one per line)
@@ -427,7 +400,7 @@ class COMStore(Neo4jPropertyGraphStore):
         """
         self.database_query(general_fts_query)
 
-    def retrieve_relevant_root_modules(self, query: str, top_k: int = 10) -> List[Dict]:
+    def retrieve_relevant_root_modules(self, query: str, top_k: int = 10) -> str:
         """
         Retrieve relevant root modules based on the query, using similarity search.
 
@@ -436,23 +409,27 @@ class COMStore(Neo4jPropertyGraphStore):
             top_k (int): The number of results to return. Defaults to None.
 
         Returns:
-            List[Dict]: A list of dictionaries containing the query results.
+            str: Relevant root modules based on the query formatted as a string.
+
+        Example Output:
+        ```
+        Relevant Root Modules:
+
+        1. module1: summary1
+        2. module2: summary2
+        ...
+        ```
         """
         results = self.query_vector_index("root_module_vector_index", query, top_k=top_k)
 
-        # Filter out name and summary from the results
-        results = [
-            {
-                "name": result["name"],
-                "summary": result["summary"],
-                "label": "ROOT_MODULE",
-            }
-            for result in results
-        ]
+        # Format the results as a string
+        formatted_results = "Relevant Root Modules:\n\n" + "\n\n".join(
+            [f"{i+1}. **{result['name']}**:\n{result['summary']}" for i, result in enumerate(results)]
+        )
 
-        return results
+        return formatted_results
     
-    def retrieve_relevant_children_in_subtree(self, query: str, parent_name: str) -> List[Dict]:
+    def retrieve_relevant_children_in_subtree(self, query: str, parent_name: str) -> str:
         """
         Retrieve relevant IMMEDIATE children in the subtree of the given parent based on the query, using similarity search.
 
@@ -461,14 +438,23 @@ class COMStore(Neo4jPropertyGraphStore):
             parent_name (str): The name of the parent entity.
 
         Returns:
-            List[Dict]: A list of dictionaries containing the query results.
+            str: Relevant children in the subtree of the parent based on the query formatted as a string.
+
+        Example Output:
+        ```
+        Relevant Children in Subtree:
+
+        1. child1: summary1
+        2. child2: summary2
+        ...
+        ```
         """
         # Embed the query
         query_vector = Settings.embed_model.get_query_embedding(query)
 
         # Use a cypher query to return all IMMEDIATE children of the parent entity, sorted by similarity to the query
         sort_and_return_children_query = """
-            MATCH (parent {name: $parent_name})-[:HAS_MODULE|HAS_CLASS|HAS_METHOD|HAS_FUNCTION|EXPOSES]->(child)
+            MATCH (parent {name: $parent_name})-[:HAS_SUBMODULE|HAS_CLASS|HAS_METHOD|HAS_FUNCTION|EXPOSES]->(child)
             WHERE child.embedding IS NOT NULL
             WITH parent, child,
             vector.similarity.cosine(parent.embedding, $query_vector) AS similarity
@@ -487,7 +473,13 @@ class COMStore(Neo4jPropertyGraphStore):
             # Filter out base labels and retain only the relevant labels
             for record in records:
                 record["labels"] = [label for label in record["labels"] if label not in [BASE_ENTITY_LABEL, BASE_NODE_LABEL]]
-            return records
+
+            # Format the results as a string
+            formatted_results = "Relevant Children in Subtree:\n\n" + "\n\n".join(
+                [f"{i+1}. **{result['name']}**:\n{result['summary']}" for i, result in enumerate(records)]
+            )
+            
+            return formatted_results
         
         except Exception as e:
             logging.error(f"Error retrieving relevant children in subtree: {e}")
@@ -673,7 +665,14 @@ class COMStore(Neo4jPropertyGraphStore):
             data = session.run(neo4j.Query(text=query), params)
             return [r.data() for r in data]
 
-    def upsert_to_neo4j(self, module_name: str, entities: List[Entity], relations: List[Relationship], other_relations: Dict[str, List[Tuple]]) -> None:
+    def upsert_to_neo4j(
+            self, 
+            module_name: str, 
+            entities: List[Entity], 
+            relations: List[Relationship], 
+            other_relations: Dict[str, List[Tuple]],
+            embed_nodes: Optional[bool] = False
+        ) -> None:
         """
         Upsert entities and relationships into Neo4j.
 
@@ -708,8 +707,9 @@ class COMStore(Neo4jPropertyGraphStore):
         self.upsert_nodes(entity_nodes)
         self.upsert_relations(relations)
 
-        # Embed the nodes
-        self._embed_nodes()
+        # Embed the nodes if specified
+        if embed_nodes:
+            self._embed_nodes()
 
         # Add labels recursively
         self._handle_inherited_methods(module_name)
@@ -722,6 +722,30 @@ class COMStore(Neo4jPropertyGraphStore):
 
         # Set the shortest call paths for all nodes in the module
         self._set_shortest_call_paths(module_name)
+
+        # Add dunder labels to entities starting with '_'
+        self._add_dunder_labels(module_name)
+
+    def _add_dunder_labels(self, module_name: str):
+        """
+        Add dunder labels to entities starting with '_' in the specified module's subtree.
+
+        Args:
+            module_name (str): The name of the module.
+        """
+        # Create cypher query to add dunder labels to entities starting with '_'
+        add_dunder_labels_query = (
+            """
+            MATCH (root:ROOT_MODULE {name: $module_name})
+            MATCH (root)-[:HAS_SUBMODULE|HAS_CLASS|HAS_METHOD|HAS_FUNCTION|EXPOSES*]->(children)
+            WHERE children.name STARTS WITH '_'
+            CALL apoc.create.addLabels(children, ['DUNDER'])
+            YIELD node
+            RETURN count(node) AS numNodesLabeled
+            """
+        )
+
+        self.structured_query(add_dunder_labels_query, {"module_name": module_name})
 
     def _add_other_relations_as_properties(self, other_relations: Dict[str, List[Tuple]]):
         """
@@ -844,7 +868,7 @@ class COMStore(Neo4jPropertyGraphStore):
         # Set the shortest call paths for all nodes in the module tree (recursively)
         set_shortest_call_paths_query = (
             """
-            MATCH (root:ROOT_MODULE {name: $module_name})
+            MATCH (root:ROOT_MODULE {name: 'emoji'})
             MATCH (end:MODULE|FUNCTION|CLASS|METHOD)<-[:HAS_CLASS|HAS_METHOD|HAS_FUNCTION|EXPOSES*]-(root)
             WITH root, collect(end) AS endNodes
             CALL apoc.path.spanningTree(root, {
@@ -854,6 +878,7 @@ class COMStore(Neo4jPropertyGraphStore):
             YIELD path
             WITH nodes(path) AS nodesInPath
             WITH nodesInPath[-1] AS targetNode, nodesInPath[-2] as parentNode
+            WHERE targetNode.shortest_call_path IS NULL
             SET targetNode.shortest_call_path =
             CASE
                 WHEN size(parentNode.name + "." + targetNode.__name__) < size(targetNode.name)
@@ -863,11 +888,11 @@ class COMStore(Neo4jPropertyGraphStore):
             RETURN count(targetNode) AS numPathsSet
             """
         )
-        numPathsSet = self.structured_query(set_shortest_call_paths_query, {"module_name": module_name})
+        numPathsSet = self.structured_query(set_shortest_call_paths_query, {"module_name": module_name})[0]["numPathsSet"]
         while numPathsSet > 0:
-            numPathsSet = self.structured_query(set_shortest_call_paths_query, {"module_name": module_name})
+            numPathsSet = self.structured_query(set_shortest_call_paths_query, {"module_name": module_name})[0]["numPathsSet"]
 
-    def _handle_inherited_methods(self, module_name):
+    def _handle_inherited_methods(self, module_name: str):
         """
         Create HAS_METHOD relations for inherited methods for all classes in the specified module.
 
@@ -994,12 +1019,11 @@ class COMStore(Neo4jPropertyGraphStore):
     def _parse_deps_response(self, response: str) -> List[str]:
         """
         Parse the dependencies response using regex.
+
         Response Format:
-        ANALYSIS:
-        [all analysis, thinking and reasoning goes here
-        ...
-        ....
-        ....]
+        <thinking>
+        (all thinking, reasoning, analysis to be written here IN DETAIL)
+        </thinking>
 
         Paths:
         (dependencies listed here, one per line)
@@ -1010,13 +1034,21 @@ class COMStore(Neo4jPropertyGraphStore):
         Returns:
             List[str]: The parsed dependencies.
         """
-        dependencies = re.findall(r"Paths:\n([\s\S]*)", response)
-        logging.info(f"Dependencies: {dependencies}")
-        if dependencies:
-            dependencies = dependencies[0].strip().split("\n")
+        # Remove THINKING part of the response
+        response = re.sub(r"<thinking>.*?</thinking>", "", response, flags=re.DOTALL)
+        response = response.strip()
 
-        if "NONE" in dependencies:
-            return []
+        # Extract the dependencies from the response
+        dependencies = re.findall(r"Paths:\n(.*?)", response, flags=re.DOTALL)
+
+        if dependencies:
+            if "NONE" in dependencies[0]:
+                logging.info("No dependencies found.")
+                return []
+
+            dependencies = dependencies[0].strip().split("\n")
+            logging.info(f"Dependencies found: {dependencies}")
+
         return dependencies
 
     async def _get_dependencies(self, entity_name: str, parent_module_repr: str) -> List[str]:
@@ -1030,7 +1062,6 @@ class COMStore(Neo4jPropertyGraphStore):
         Returns:
             List[str]: The dependencies of the entity.
         """
-        dependencies = []
         prompt = DEFAULT_DEPENDENCY_PATHS_PROMPT_TEMPLATE.format(
             main_entity_name=entity_name,
             parent_module_information=parent_module_repr
@@ -1115,7 +1146,7 @@ class COMStore(Neo4jPropertyGraphStore):
         name = retrieved_node[0]["name"]
         return name
 
-    async def generate_code(self, name: str, label: Optional[str] = "", other_instructions: Optional[str] = "") -> str:
+    async def generate_code(self, name: str, label: Optional[str] = "", other_instructions: Optional[str] =  None) -> str:
         """
         Generate code for a given entity name.
 
@@ -1141,6 +1172,18 @@ class COMStore(Neo4jPropertyGraphStore):
         deps = await self._get_dependencies(name, parent_module_repr)
         unique_dependencies = set(deps)
         logging.info(f"Initial dependencies for entity {name}: {deps}")
+
+        if other_instructions is None:
+            # Get only first level dependencies
+            for dep in deps:
+                dep = self._get_full_path_name(dep, "")
+                dep_parent_module = self._get_parent_module_info(dep)
+                dep_parent_module_repr = self._get_retrieved_entity_representation(dep_parent_module[0]) if dep_parent_module else ""
+
+                relevant_entities_repr.append((dep, dep_parent_module_repr, dep_parent_module[0]["shortest_call_path"] if dep_parent_module else ""))
+
+            # Generate code using LLM
+            return await self._generate_code_using_llm(name, relevant_entities_repr, "")
 
         while deps:
             next_deps = []

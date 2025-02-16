@@ -1,3 +1,5 @@
+#@title Create necessary types
+
 from llama_index.core import PromptTemplate
 from llama_index.core.bridge.pydantic import Field, BaseModel
 from llama_index.core.agent.react.types import (
@@ -8,22 +10,21 @@ from typing import List, Optional
 import math
 
 DEFAULT_COM_REFLECTION_PROMPT_STR = """
-Given a query and the current state of graph traversal, evaluate the progress in finding a relevant entity (ideally a METHOD or FUNCTION, unless SPECIFED OTHERWISE) within the Python code graph. The **primary objective is to find and return the NAME of the entity that best satisfies the query**, not to generate any code.
+Given a query and the current state of graph traversal, evaluate the progress in finding a relevant **METHOD or FUNCTION** within the Python code graph. The primary objective is to find and return the **NAME** of the **METHOD or FUNCTION** that best satisfies the query, not to generate any code.
 
 Consider the following:
 
 - **Correctness**: Are we exploring entities (ROOT_MODULE, MODULE, CLASS, METHOD, FUNCTION) that are potentially relevant to the query, given the graph structure and relationships (ROOT_MODULE-HAS_SUBMODULE->MODULE, MODULE-HAS_SUBMODULE->MODULE, MODULE-HAS_CLASS->CLASS, CLASS-HAS_CLASS->CLASS, CLASS-HAS_METHOD->METHOD, MODULE-HAS_FUNCTION->FUNCTION)?
 - **Efficiency**: Are we prioritizing the exploration of entities that have a higher cosine similarity score, indicating a stronger semantic match to the query?
-- **Completeness**: Have we found a potential solution (ideally a METHOD or FUNCTION node)? If so, how well does its description match the query based on its cosine similarity score?
-- **Necessity**: Given the current path, is it necessary to continue exploring, backtrack to a previous node, or start a new branch from a more promising root module?
+- **Completeness**: Have we found a potential solution (a METHOD or FUNCTION node)? If so, how well does its description match the query based on its cosine similarity score?
 
 Based on your assessment, provide an INTEGER score between 1 and 10, where:
-- 10 indicates an almost perfect match: a relevant entity (ideally a METHOD or FUNCTION) has been found, its description strongly aligns with the query, and it has a high cosine similarity score.
-- 1 indicates a complete mismatch or a dead end: the current path is unlikely to lead to a relevant entity.
+- 10 indicates an almost perfect match: a relevant **METHOD or FUNCTION** has been found, its description strongly aligns with the query, and it has a high cosine similarity score.
+- 1 indicates a complete mismatch or a dead end: the current path is unlikely to lead to a relevant **METHOD or FUNCTION**.
 
-Set `is_done` to True **immediately** once you find an entity that satisfies the query. **Do not continue exploring after finding a suitable match.**
+Set `is_done` to True **only** when you find a **METHOD or FUNCTION** that satisfies the query. **Do not stop exploring if you find other types of entities.**
 
-Your task is to **find and return the NAME of the entity only**. Do not generate any code or explanations.
+Your task is to find and return the **NAME** of the **METHOD or FUNCTION** only. Do not generate any code or explanations.
 
 Query: {query}
 Conversation History:
@@ -31,30 +32,29 @@ Conversation History:
 """
 
 DEFAULT_COM_CANDIDATE_EXPANSION_PROMPT_STR = """
-Given the current node in the graph and the query, suggest the next steps for traversing the Python code graph to find a relevant entity (ideally a METHOD or FUNCTION). The **primary objective is to find and return the NAME of the entity that best satisfies the query**, not to generate any code.
+Given the current node in the graph and the query, suggest the next steps for traversing the Python code graph to find a relevant **METHOD or FUNCTION**. The primary objective is to find and return the **NAME** of the **METHOD or FUNCTION** that best satisfies the query, not to generate any code.
 
 Consider the following:
 
 - **Node Type and Available Relationships**:
-    - If the current node is a METHOD or FUNCTION, suggest evaluating its description against the query to determine if it's a suitable match. **If it's a match, your task is complete. Return the entity's name immediately.**
-    - If the current node is a ROOT_MODULE, MODULE, or CLASS, use the `retrieve_relevant_children_in_subtree` tool to find the most relevant immediate children based on cosine similarity to the query.
-    - If needed, use the `retrieve_full_name` tool to get the full name of an entity before using it as input to other tools.
-- **Root Module Exploration**: If the current exploration path seems unpromising, consider using the `retrieve_relevant_root_modules` tool to identify and explore alternative root modules that might contain a relevant entity.
-- **Query Relevance**: Prioritize actions that are more likely to lead to entities closely related to the query.
+    - If the current node is a METHOD or FUNCTION, suggest evaluating its description against the query to determine if it's a suitable match. **If it's a match, your task is complete. Return the METHOD or FUNCTION's name immediately.**
+    - If the current node is a ROOT_MODULE, MODULE, or CLASS, use the `retrieve_relevant_children_in_subtree` tool to find the most relevant immediate children based on cosine similarity to the query. Prioritize exploring children with higher similarity scores.
+- **Root Module Exploration**: If the current exploration path seems unpromising, consider using the `retrieve_relevant_root_modules` tool to identify and explore alternative root modules that might contain a relevant METHOD or FUNCTION.
+- **Query Relevance**: Prioritize actions that are more likely to lead to a METHOD or FUNCTION closely related to the query.
 
-Suggest **only one** of the following actions:
+Suggest **up to {num_candidates}** of the following actions, ensuring that the suggested actions are **distinct and not extremely similar** to each other. It's acceptable to suggest **fewer** actions if there are not enough distinct and relevant options:
 
 - "Evaluate the current node" (if it's a METHOD or FUNCTION).
 - "Explore the most relevant children of the current node using `retrieve_relevant_children_in_subtree`".
-- "Retrieve the full name of an entity using `retrieve_full_name`".
 
-Remember, your goal is to **efficiently find and return the NAME of an entity** (ideally a METHOD or FUNCTION) whose description closely matches the query. **Stop immediately once a suitable match is found.**
+When using the `retrieve_relevant_children_in_subtree` action, make sure your query is descriptive and not just a couple of words.
+
+Remember, your goal is to efficiently find and return the **NAME** of a **METHOD or FUNCTION** whose description closely matches the query. **Stop immediately once a suitable METHOD or FUNCTION is found and return its NAME.**
+Provide your suggested next actions **concisely, focusing on the actions themselves**.
 
 Query: {query}
 Conversation History:
 {conversation_history}
-
-Provide your suggested next action **concisely, focusing on the action itself (e.g., "Explore children", "Evaluate node")**.
 """
 
 DEFAULT_COM_REFLECTION_PROMPT = PromptTemplate(DEFAULT_COM_REFLECTION_PROMPT_STR)

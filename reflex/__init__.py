@@ -14,6 +14,7 @@ import inspect
 import importlib
 import re
 import subprocess
+import traceback
 
 class Entity:
     """
@@ -55,13 +56,15 @@ def get_unused_imports(module_name: str, imported_names: Set[str]) -> Set[str]:
         # Get the full file path of the module
         module = importlib.import_module(module_name)
         module_file_path = module.__file__
+        print(f"Checking unused imports for {module_name} at {module_file_path}...")
 
         # Run flake8 and capture output
         process = subprocess.run(
-            ["flake8", "--select", "F401", module_file_path],
+            ["python", "-m", "flake8", "--select", "F401", module_file_path ],
             capture_output=True,
             text=True,
-            check=False,
+            check=True,
+            shell=True,
         )
 
         output = process.stdout
@@ -72,7 +75,6 @@ def get_unused_imports(module_name: str, imported_names: Set[str]) -> Set[str]:
             match = re.search(r":\d+:(\d+): F401 '(.*)' imported but unused", line)
             if match:
                 unused_names.append(match.group(2))
-
 
         # Handle aliases and from-imports statements
         for i in range(len(unused_names)):
@@ -99,7 +101,8 @@ def get_unused_imports(module_name: str, imported_names: Set[str]) -> Set[str]:
 
         return unused_imports
     except Exception as e:
-        print("error:", e)
+        print(f"Error getting unused imports for {module_name}: {e}")
+        print(traceback.format_exc())
         return set()
 
 def get_fully_qualified_name(cls):
@@ -114,17 +117,17 @@ def get_fully_qualified_name(cls):
     """
     return f"{cls.__module__}.{cls.__qualname__}"
 
-def check_dunders(path):
-    """
-    Check if a path starts with an underscore or contains '._'.
+# def check_dunders(path):
+#     """
+#     Check if a path starts with an underscore or contains '._'.
 
-    Args:
-        path (str): The path to check.
+#     Args:
+#         path (str): The path to check.
 
-    Returns:
-        bool: True if the path starts with an underscore or contains '._', False otherwise.
-    """
-    return path.startswith("_") or "._" in path
+#     Returns:
+#         bool: True if the path starts with an underscore or contains '._', False otherwise.
+#     """
+#     return path.startswith("_") or "._" in path
 
 def safe_get_source(obj) -> str:
     """
@@ -191,8 +194,8 @@ def process_member(
                 other_relations["IMPORTS"].add((parent_entity.name, obj_path))
             return [], []
 
-        if check_dunders(obj_path):
-            return [], []
+        # if check_dunders(obj_path):
+        #     return [], []
 
         sub_entities, sub_relations = traverse_recursive(
             obj, root_module_path, processed_paths, other_relations
@@ -206,8 +209,8 @@ def process_member(
     elif inspect.isfunction(obj) and parent_entity.label in {"ROOT_MODULE", "MODULE"}:
         obj_path = get_fully_qualified_name(obj)
 
-        if check_dunders(obj_path):
-            return [], []
+        # if check_dunders(obj_path):
+        #     return [], []
 
         if not obj_path.startswith(root_module_path):
             if parent_entity and parent_entity.label in {"ROOT_MODULE", "MODULE"}:
@@ -244,8 +247,8 @@ def process_member(
     elif parent_entity.label == "CLASS" and (inspect.ismethod(obj) or inspect.isfunction(obj)):
         obj_path = get_fully_qualified_name(obj)
 
-        if check_dunders(obj_path):
-            return [], []
+        # if check_dunders(obj_path):
+        #     return [], []
 
         if not obj_path.startswith(root_module_path):
             return [], []

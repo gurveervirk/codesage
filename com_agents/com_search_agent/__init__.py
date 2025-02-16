@@ -4,6 +4,7 @@ from llama_index.core.agent import (
     ReActOutputParser,
     Task,
 )
+# from llama_index.core.prompts import PromptTemplate
 from typing import Any, Dict, List, Optional, Tuple, cast
 from llama_index.core.utils import print_text
 from llama_index.core.agent.react.types import (
@@ -12,20 +13,22 @@ from llama_index.core.agent.react.types import (
     ObservationReasoningStep,
     ResponseReasoningStep,
 )
+# from llama_index.core.bridge.pydantic import Field
 from llama_index.agent.lats.types import Candidates
 from llama_index.core.tools import ToolSelection, acall_tool_with_selection
 from .types import COMEvaluation, COMSearchNode, DEFAULT_COM_CANDIDATE_EXPANSION_PROMPT, DEFAULT_COM_REFLECTION_PROMPT
 import asyncio
 
-class COMAgentWorker(LATSAgentWorker):
-    """COM Agent Worker class."""
+class COMSearchAgentWorker(LATSAgentWorker):
+    """COM Search Agent Worker class."""
+    com_search_agent: Any = None
 
     def __init__(self, *args, reflection_prompt=None, candidate_expansion_prompt=None, **kwargs):
-        self.candidate_expansion_prompt = candidate_expansion_prompt
+        # candidate_expansion_prompt = candidate_expansion_prompt or DEFAULT_COM_CANDIDATE_EXPANSION_PROMPT
         super().__init__(
             *args,
             reflection_prompt=reflection_prompt or DEFAULT_COM_REFLECTION_PROMPT,
-            candidate_expansion_prompt=candidate_expansion_prompt or DEFAULT_COM_CANDIDATE_EXPANSION_PROMPT,
+            candiate_expansion_prompt=candidate_expansion_prompt or DEFAULT_COM_CANDIDATE_EXPANSION_PROMPT,
             **kwargs,
         )
 
@@ -102,7 +105,7 @@ class COMAgentWorker(LATSAgentWorker):
 
         candidates = await self.llm.astructured_predict(
             Candidates,
-            prompt=self.candidate_expansion_prompt,
+            prompt=self.candiate_expansion_prompt,
             query=input,
             conversation_history=history_str,
             num_candidates=self.num_expansions,
@@ -231,7 +234,7 @@ class COMAgentWorker(LATSAgentWorker):
 
         # check if done
         state["count"] += 1
-        if self.max_rollouts == -1 and solution_queue:
+        if solution_queue:
             is_done = True
         elif self.max_rollouts > 0 and state["count"] >= self.max_rollouts:
             is_done = True
@@ -250,3 +253,25 @@ class COMAgentWorker(LATSAgentWorker):
 
         # return response
         return AgentChatResponse(response=str(response)), is_done
+    
+    async def retrieve_relevant_entity(self, input: str) -> str:
+        """
+        Retrieve relevant entity given an input query.
+        
+        Args:
+            input (str): Input to the agent.
+
+        Returns:
+            str: Relevant entity name.
+        """
+        # Initialize agent if not already initialized
+        if self.com_search_agent is None:
+            self.com_search_agent = self.as_agent()
+
+        # Run agent
+        response = await self.com_search_agent.achat(input)
+
+        # Reset agent state
+        self.com_search_agent.reset()
+
+        return response.response
