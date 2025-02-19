@@ -424,7 +424,7 @@ class COMStore(Neo4jPropertyGraphStore):
 
         # Format the results as a string
         formatted_results = "Relevant Root Modules:\n\n" + "\n\n".join(
-            [f"{i+1}. **{result['name']}**:\n{result['summary']}" for i, result in enumerate(results)]
+            [f"{i+1}. **{result['name']}** (similarity score: {result['score']}):{result['summary']}" for i, result in enumerate(results)]
         )
 
         return formatted_results
@@ -476,7 +476,7 @@ class COMStore(Neo4jPropertyGraphStore):
 
             # Format the results as a string
             formatted_results = "Relevant Children in Subtree:\n\n" + "\n\n".join(
-                [f"{i+1}. **{result['name']}**:\n{result['summary']}" for i, result in enumerate(records)]
+                [f"{i+1}. **{result['name']}** (similarity score: {result['score']}, relevant labels: {result['labels']}):\n{result['summary']}" for i, result in enumerate(records)]
             )
             
             return formatted_results
@@ -484,18 +484,6 @@ class COMStore(Neo4jPropertyGraphStore):
         except Exception as e:
             logging.error(f"Error retrieving relevant children in subtree: {e}")
             return []
-        
-    def retrieve_full_name(self, entity_name: str) -> str:
-        """
-        Retrieve the full name of the entity usin general full-text search.
-
-        Args:
-            entity_name (str): The name of the entity.
-
-        Returns:
-            str: The full name of the entity.
-        """
-        return self.query_fulltext_index("general_fts_index", entity_name)[0]["name"]
 
     def query_vector_index(
         self, index_name: str, query: str | List[float], top_k: int = 10,
@@ -525,7 +513,7 @@ class COMStore(Neo4jPropertyGraphStore):
         query_str = f"""
         CALL db.index.vector.queryNodes($index_name, $top_k, $query_vector)
         YIELD node AS n, score
-        RETURN {return_fields_str}, score
+        RETURN {return_fields_str}, score, labels(n) as labels
         """
         query_params = {
             "index_name": index_name,
@@ -1104,27 +1092,37 @@ class COMStore(Neo4jPropertyGraphStore):
         code = code.text.strip()
         return code
     
-    def _get_full_path_name(self, name: str, label: str) -> str:
+    def _get_full_path_name(self, name: str, label: str = None) -> str:
         """
         Get the full path name of the entity.
 
         Args:
             name (str): The name of the entity.
-            label (str): The label of the entity.
+            label (str): The label of the entity. Defaults to None. Accepts values 'ROOT_MODULE', 'MODULE', 'CLASS', 'METHOD' and 'FUNCTION'.
 
         Returns:
             str: The full path name of the entity.
         """
-        retrieve_node_by_name_query = (
-            """
-            MATCH (n:METHOD|FUNCTION|CLASS {name: $name})
-            WHERE $label = "" OR $label IN labels(n)
-            RETURN n.name AS name
-            """
-        )
+        if label:
+            retrieve_node_by_name_query = (
+                """
+                MATCH (n:{label} {name: $name})
+                RETURN n.name AS name
+                """
+            )
+            # Execute the query to retrieve the node by name
+            retrieved_node = self.structured_query(retrieve_node_by_name_query, {"name": name, "label": label})
 
-        # Execute the query to retrieve the node by name
-        retrieved_node = self.structured_query(retrieve_node_by_name_query, {"name": name, "label": label})
+        else:
+            retrieve_node_by_name_query = (
+                """
+                MATCH (n:METHOD|FUNCTION|CLASS {name: $name})
+                RETURN n.name AS name
+                """
+            )
+
+            # Execute the query to retrieve the node by name
+            retrieved_node = self.structured_query(retrieve_node_by_name_query, {"name": name})
 
         if not retrieved_node:
             # If no relevant nodes are found, try querying relationships with this name
@@ -1139,70 +1137,21 @@ class COMStore(Neo4jPropertyGraphStore):
             # Execute the query to retrieve relevant relationships
             retrieved_node = self.structured_query(retrieve_relationship_by_name_query, {"name": name})
 
+        if retrieved_node:
+            name = retrieved_node[0]["name"]
+            return name
+        
+        # If no relevant nodes or relationships are found, search in a full-text index
+        if label:
+            retrieved_node = self.query_fulltext_index(f"{label.lower()}_index", name)
+
+        else:
+            retrieved_node = self.query_fulltext_index("general_fts_index", name)
+
         if not retrieved_node:
-            # If no relevant nodes or relationships are found, return an error message
             return "NONE"
+
+        
 
         name = retrieved_node[0]["name"]
         return name
-
-    async def generate_code(self, name: str, label: Optional[str] = "", other_instructions: Optional[str] =  None) -> str:
-        """
-        Generate code for a given entity name.
-
-        Args:
-            name (str): The name of the entity.
-            label (Optional[str]): The label of the entity.
-            other_instructions (Optional[str]): Other instructions to be included in the prompt.
-
-        Returns:
-            str: The generated code for the entity.
-        """
-        # Check if the entity exists in the database
-        name = self._get_full_path_name(name, label)
-
-        if name == "NONE":
-            return "Entity not found in the database."
-
-        parent_module = self._get_parent_module_info(name)
-        parent_module_repr = self._get_retrieved_entity_representation(parent_module[0]) if parent_module else ""
-
-        relevant_entities_repr = [(name, parent_module_repr, parent_module[0]["shortest_call_path"] if parent_module else "")]
-
-        deps = await self._get_dependencies(name, parent_module_repr)
-        unique_dependencies = set(deps)
-        logging.info(f"Initial dependencies for entity {name}: {deps}")
-
-        if other_instructions is None:
-            # Get only first level dependencies
-            for dep in deps:
-                dep = self._get_full_path_name(dep, "")
-                dep_parent_module = self._get_parent_module_info(dep)
-                dep_parent_module_repr = self._get_retrieved_entity_representation(dep_parent_module[0]) if dep_parent_module else ""
-
-                relevant_entities_repr.append((dep, dep_parent_module_repr, dep_parent_module[0]["shortest_call_path"] if dep_parent_module else ""))
-
-            # Generate code using LLM
-            return await self._generate_code_using_llm(name, relevant_entities_repr, "")
-
-        while deps:
-            next_deps = []
-
-            for dep in deps:
-                dep = self._get_full_path_name(dep, "")
-                dep_parent_module = self._get_parent_module_info(dep)
-                dep_parent_module_repr = self._get_retrieved_entity_representation(dep_parent_module[0]) if dep_parent_module else ""
-
-                relevant_entities_repr.append((dep, dep_parent_module_repr, dep_parent_module[0]["shortest_call_path"] if dep_parent_module else ""))
-
-                new_deps = await self._get_dependencies(dep, dep_parent_module_repr)
-                for new_dep in new_deps:
-                    new_dep = self._get_full_path_name(new_dep, "")
-                    if new_dep not in unique_dependencies:
-                        next_deps.append(new_dep)
-                        unique_dependencies.add(new_dep)
-
-            logging.info(f"Next level dependencies: {next_deps}")
-            deps = next_deps
-
-        return await self._generate_code_using_llm(name, relevant_entities_repr, other_instructions)
