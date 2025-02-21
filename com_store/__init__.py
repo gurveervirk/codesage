@@ -1180,7 +1180,7 @@ class COMStore(Neo4jPropertyGraphStore):
         if not records:
             return "NONE"  
 
-        records_str += "\n\n".join([f"{i + 1}. {record["name"]}" for i, record in enumerate(records)])
+        records_str += "\n\n".join([f"{i + 1}. {record['name']}" for i, record in enumerate(records)])
         result = FULL_TEXT_FULL_NAME_SEARCH_TEMPLATE.format(
             top_3_matches=records_str
         )
