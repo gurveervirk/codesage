@@ -225,6 +225,13 @@ DEFAULT_DEPENDENCY_PATHS_PROMPT_TEMPLATE = """
     (dependencies listed here, one per line)
 """
 
+FULL_TEXT_FULL_NAME_SEARCH_TEMPLATE = """
+Could not find exact match...
+Used a full-text index search to find the following best matches for the full paths(top 3 max):
+
+{top_3_matches}
+"""
+
 class COMStore(Neo4jPropertyGraphStore):
     """
     COM stands for Code Object Model.
@@ -1143,15 +1150,17 @@ class COMStore(Neo4jPropertyGraphStore):
         
         # If no relevant nodes or relationships are found, search in a full-text index
         if label:
-            retrieved_node = self.query_fulltext_index(f"{label.lower()}_index", name)
+            records = self.query_fulltext_index(f"{label.lower()}_index", name)[:3]
 
         else:
-            retrieved_node = self.query_fulltext_index("general_fts_index", name)
+            records = self.query_fulltext_index("general_fts_index", name)[:3]
 
-        if not retrieved_node:
-            return "NONE"
+        if not records:
+            return "NONE"  
 
-        
+        records_str += "\n\n".join([f"{i + 1}. {record["name"]}" for i, record in enumerate(records)])
+        result = FULL_TEXT_FULL_NAME_SEARCH_TEMPLATE.format(
+            top_3_matches=records_str
+        )
 
-        name = retrieved_node[0]["name"]
-        return name
+        return result
