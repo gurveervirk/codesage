@@ -718,28 +718,50 @@ class COMStore(Neo4jPropertyGraphStore):
         # Set the shortest call paths for all nodes in the module
         self._set_shortest_call_paths(module_name)
 
-        # Add internal labels to entities starting with '_'
-        self._add_internal_labels(module_name)
+        # Add special labels to entities starting with '_'
+        self._add_special_labels(module_name)
 
-    def _add_internal_labels(self, module_name: str):
+    def _add_special_labels(self, module_name: str):
         """
         Add internal labels to entities starting with '_' in the specified module's subtree.
 
         Args:
             module_name (str): The name of the module.
         """
-        # Create cypher query to add internal labels to entities starting with '_'
+        # Create cypher queries to add special labels to entities starting with '_'
+        add_dunder_labels_query = (
+            """
+            MATCH (root:ROOT_MODULE {name: $module_name})
+            MATCH (root)-[:HAS_SUBMODULE|HAS_CLASS|HAS_METHOD|HAS_FUNCTION|EXPOSES*]->(children:FUNCTION|METHOD)
+            WHERE children.__name__ STARTS WITH '__' AND children.__name__ ENDS WITH '__'
+            CALL apoc.create.addLabels(children, ['DUNDER'])
+            YIELD node
+            RETURN count(node) AS numNodesLabeled
+            """
+        )
+        add_private_labels_query = (
+            """
+            MATCH (root:ROOT_MODULE {name: $module_name})
+            MATCH (root)-[:HAS_SUBMODULE|HAS_CLASS|HAS_METHOD|HAS_FUNCTION|EXPOSES*]->(children)
+            WHERE children.__name__ STARTS WITH '__' AND NOT children.__name__ ENDS WITH '__'
+            CALL apoc.create.addLabels(children, ['PRIVATE'])
+            YIELD node
+            RETURN count(node) AS numNodesLabeled
+            """
+        )
         add_internal_labels_query = (
             """
             MATCH (root:ROOT_MODULE {name: $module_name})
             MATCH (root)-[:HAS_SUBMODULE|HAS_CLASS|HAS_METHOD|HAS_FUNCTION|EXPOSES*]->(children)
-            WHERE children.__name__ STARTS WITH '_'
+            WHERE NOT children.__name__ STARTS WITH '__' AND (children.__name__ STARTS WITH '_' OR children.name CONTAINS '._')
             CALL apoc.create.addLabels(children, ['INTERNAL'])
             YIELD node
             RETURN count(node) AS numNodesLabeled
             """
         )
 
+        self.structured_query(add_dunder_labels_query, {"module_name": module_name})
+        self.structured_query(add_private_labels_query, {"module_name": module_name})
         self.structured_query(add_internal_labels_query, {"module_name": module_name})
 
     def _add_other_relations_as_properties(self, other_relations: Dict[str, List[Tuple]]):
