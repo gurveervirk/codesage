@@ -733,7 +733,7 @@ class COMStore(Neo4jPropertyGraphStore):
             """
             MATCH (root:ROOT_MODULE {name: $module_name})
             MATCH (root)-[:HAS_SUBMODULE|HAS_CLASS|HAS_METHOD|HAS_FUNCTION|EXPOSES*]->(children)
-            WHERE children.name STARTS WITH '_'
+            WHERE children.__name__ STARTS WITH '_'
             CALL apoc.create.addLabels(children, ['DUNDER'])
             YIELD node
             RETURN count(node) AS numNodesLabeled
