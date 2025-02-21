@@ -718,29 +718,29 @@ class COMStore(Neo4jPropertyGraphStore):
         # Set the shortest call paths for all nodes in the module
         self._set_shortest_call_paths(module_name)
 
-        # Add dunder labels to entities starting with '_'
-        self._add_dunder_labels(module_name)
+        # Add internal labels to entities starting with '_'
+        self._add_internal_labels(module_name)
 
-    def _add_dunder_labels(self, module_name: str):
+    def _add_internal_labels(self, module_name: str):
         """
-        Add dunder labels to entities starting with '_' in the specified module's subtree.
+        Add internal labels to entities starting with '_' in the specified module's subtree.
 
         Args:
             module_name (str): The name of the module.
         """
-        # Create cypher query to add dunder labels to entities starting with '_'
-        add_dunder_labels_query = (
+        # Create cypher query to add internal labels to entities starting with '_'
+        add_internal_labels_query = (
             """
             MATCH (root:ROOT_MODULE {name: $module_name})
             MATCH (root)-[:HAS_SUBMODULE|HAS_CLASS|HAS_METHOD|HAS_FUNCTION|EXPOSES*]->(children)
             WHERE children.__name__ STARTS WITH '_'
-            CALL apoc.create.addLabels(children, ['DUNDER'])
+            CALL apoc.create.addLabels(children, ['INTERNAL'])
             YIELD node
             RETURN count(node) AS numNodesLabeled
             """
         )
 
-        self.structured_query(add_dunder_labels_query, {"module_name": module_name})
+        self.structured_query(add_internal_labels_query, {"module_name": module_name})
 
     def _add_other_relations_as_properties(self, other_relations: Dict[str, List[Tuple]]):
         """
