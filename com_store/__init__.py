@@ -844,6 +844,7 @@ class COMStore(Neo4jPropertyGraphStore):
         entity_representation = f"""
         *Name*: {retrieved_node["__name__"]}
         *Full Path*: {retrieved_node["name"]}
+        *Shortest Call Path*: {retrieved_node["shortest_call_path"]}
         *Imports*: {retrieved_node["imports"]}
 
         *Summary*:
@@ -851,14 +852,31 @@ class COMStore(Neo4jPropertyGraphStore):
         {retrieved_node["summary"]}
         ```
 
-        Source: 
+        *Source*: 
         ```
         {retrieved_node["source"]}
         ```
         """
         return entity_representation
     
-    def _get_full_path_name(self, name: str, label: str = None) -> str:
+    def get_entity_info(self, entity_name: str) -> str:
+        """
+        Get information about the entity.
+
+        Args:
+            entity_name (str): The name of the entity.
+
+        Returns:
+            str: Information about the entity.
+        """
+        retrieved_node = self._get_parent_module_info(entity_name)
+        if not retrieved_node:
+            return "No information found for the entity."
+
+        entity_representation = self._get_retrieved_entity_representation(retrieved_node[0])
+        return entity_representation
+    
+    def get_full_path_name(self, name: str, label: str = None) -> str:
         """
         Get the full path name of the entity.
 
