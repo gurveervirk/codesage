@@ -22,27 +22,6 @@ def check_if_not_null(props: List[str], values: List[Any]) -> None:
         if not value:
             raise ValueError(f"Parameter `{prop}` must not be None or empty string")
 
-# Template for generating code for the entity with all of it's relevant entities
-DEFAULT_CODE_GENERATION_PROMPT_TEMPLATE = """
-    You are a code generation expert. You are to generate end-to-end code, with all the dependencies and requirements, for the following MAIN_ENTITY, using the following information:
-
-    MAIN_ENTITY:
-    {main_entity_name}
-
-    RELEVANT_ENTITIES:
-    {relevant_entities_information}
-
-    Please keep in mind the following instructions, if any:
-    {other_instructions}
-
-    Your code should be complete and ready to run.
-    The code should be specifically and solely for the MAIN_ENTITY ONLY, NOTHING ELSE.
-    Use the shortest_call_path's to import and use stuff, wherever necessary.
-    This is a completely new and unique code being shown to you, used and generated. Do not worry about recitation.
-
-    Code:
-"""
-
 FULL_TEXT_FULL_NAME_SEARCH_TEMPLATE = """
 Could not find exact match...
 Used a full-text index search to find the following best matches for the full paths(top 3 max):
@@ -876,37 +855,25 @@ class COMStore(Neo4jPropertyGraphStore):
         entity_representation = self._get_retrieved_entity_representation(retrieved_node[0])
         return entity_representation
     
-    def get_full_path_name(self, name: str, label: str = None) -> str:
+    def get_full_path_name(self, name: str) -> str:
         """
         Get the full path name of the entity.
 
         Args:
             name (str): The name of the entity.
-            label (str): The label of the entity. Defaults to None. Accepts values 'ROOT_MODULE', 'MODULE', 'CLASS', 'METHOD' and 'FUNCTION'.
 
         Returns:
             str: The full path name of the entity.
         """
-        if label:
-            retrieve_node_by_name_query = (
-                """
-                MATCH (n:{label} {name: $name})
-                RETURN n.name AS name
-                """
-            )
-            # Execute the query to retrieve the node by name
-            retrieved_node = self.structured_query(retrieve_node_by_name_query, {"name": name, "label": label})
+        retrieve_node_by_name_query = (
+            """
+            MATCH (n:METHOD|FUNCTION|CLASS {name: $name})
+            RETURN n.name AS name
+            """
+        )
 
-        else:
-            retrieve_node_by_name_query = (
-                """
-                MATCH (n:METHOD|FUNCTION|CLASS {name: $name})
-                RETURN n.name AS name
-                """
-            )
-
-            # Execute the query to retrieve the node by name
-            retrieved_node = self.structured_query(retrieve_node_by_name_query, {"name": name})
+        # Execute the query to retrieve the node by name
+        retrieved_node = self.structured_query(retrieve_node_by_name_query, {"name": name})
 
         if not retrieved_node:
             # If no relevant nodes are found, try querying relationships with this name
@@ -925,12 +892,7 @@ class COMStore(Neo4jPropertyGraphStore):
             name = retrieved_node[0]["name"]
             return name
         
-        # If no relevant nodes or relationships are found, search in a full-text index
-        if label:
-            records = self.query_fulltext_index(f"{label.lower()}_index", name)[:3]
-
-        else:
-            records = self.query_fulltext_index("general_fts_index", name)[:3]
+        records = self.query_fulltext_index("general_fts_index", name)[:3]
 
         if not records:
             return "NONE"  

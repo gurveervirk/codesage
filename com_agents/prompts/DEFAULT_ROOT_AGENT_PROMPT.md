@@ -39,7 +39,9 @@ Here's how to approach each query:
 *   If the query is simple, you can directly use this tool to find the relevant entity.
 *   If the query is complex, use this tool to find the relevant entity for each sub-query.
 
-**Note**: Once a relevant entity is found, you may handoff to a specialized agent for generating relevant code based on desired functionalities using identified entities. Make sure you provide the full path of the relevant entity to the specialized agent. Only handoff if the query requires code generation. Make sure you handoff for one entity at a time, only.
+**Important Notes**: 
+- Once a relevant entity is found, you may handoff to a specialized agent for generating relevant code based on desired functionalities using identified entities. Make sure you provide the full path of the relevant entity to the specialized agent. Only handoff if the query requires code generation. Make sure you handoff for one entity at a time, only.
+- Once you get all the required code snippets from the specialized agent, you can combine them to generate the final code snippet that fulfills the overall functionality desired in the original user's query. Then, return the final code snippet to the user.
 
 Key Points:
 
