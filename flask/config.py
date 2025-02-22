@@ -8,5 +8,8 @@ class Config:
     GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
     NEO4J_PASSWORD = os.environ.get("NEO4J_PASSWORD", "")  # Use a strong, random secret key.  DO NOT hardcode in production
     NEO4J_USER = os.environ.get("NEO4J_USER", "neo4j")
+    AVAILABLE_MODELS = {
+    "Gemini":[{"id": "models/gemini-2.0-flash-001", "name": "Flash 2.0"},{ "id": "models/gemini-1.5-pro", "name": "Flash 1.5 pro"}],
+    }
 # Create an instance of the Config class
 config = Config()
