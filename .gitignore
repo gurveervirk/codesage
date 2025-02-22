@@ -3,3 +3,8 @@
 /test2
 test.ipynb
 __pycache__/
+UI/node_modules
+
+UI/.cache
+UI/build
+UI/.env
