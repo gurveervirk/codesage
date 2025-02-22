@@ -225,6 +225,13 @@ DEFAULT_DEPENDENCY_PATHS_PROMPT_TEMPLATE = """
     (dependencies listed here, one per line)
 """
 
+FULL_TEXT_FULL_NAME_SEARCH_TEMPLATE = """
+Could not find exact match...
+Used a full-text index search to find the following best matches for the full paths(top 3 max):
+
+{top_3_matches}
+"""
+
 class COMStore(Neo4jPropertyGraphStore):
     """
     COM stands for Code Object Model.
@@ -711,29 +718,51 @@ class COMStore(Neo4jPropertyGraphStore):
         # Set the shortest call paths for all nodes in the module
         self._set_shortest_call_paths(module_name)
 
-        # Add dunder labels to entities starting with '_'
-        self._add_dunder_labels(module_name)
+        # Add special labels to entities starting with '_'
+        self._add_special_labels(module_name)
 
-    def _add_dunder_labels(self, module_name: str):
+    def _add_special_labels(self, module_name: str):
         """
-        Add dunder labels to entities starting with '_' in the specified module's subtree.
+        Add internal labels to entities starting with '_' in the specified module's subtree.
 
         Args:
             module_name (str): The name of the module.
         """
-        # Create cypher query to add dunder labels to entities starting with '_'
+        # Create cypher queries to add special labels to entities starting with '_'
         add_dunder_labels_query = (
             """
             MATCH (root:ROOT_MODULE {name: $module_name})
-            MATCH (root)-[:HAS_SUBMODULE|HAS_CLASS|HAS_METHOD|HAS_FUNCTION|EXPOSES*]->(children)
-            WHERE children.name STARTS WITH '_'
+            MATCH (root)-[:HAS_SUBMODULE|HAS_CLASS|HAS_METHOD|HAS_FUNCTION|EXPOSES*]->(children:FUNCTION|METHOD)
+            WHERE children.__name__ STARTS WITH '__' AND children.__name__ ENDS WITH '__'
             CALL apoc.create.addLabels(children, ['DUNDER'])
+            YIELD node
+            RETURN count(node) AS numNodesLabeled
+            """
+        )
+        add_private_labels_query = (
+            """
+            MATCH (root:ROOT_MODULE {name: $module_name})
+            MATCH (root)-[:HAS_SUBMODULE|HAS_CLASS|HAS_METHOD|HAS_FUNCTION|EXPOSES*]->(children)
+            WHERE children.__name__ STARTS WITH '__' AND NOT children.__name__ ENDS WITH '__'
+            CALL apoc.create.addLabels(children, ['PRIVATE'])
+            YIELD node
+            RETURN count(node) AS numNodesLabeled
+            """
+        )
+        add_internal_labels_query = (
+            """
+            MATCH (root:ROOT_MODULE {name: $module_name})
+            MATCH (root)-[:HAS_SUBMODULE|HAS_CLASS|HAS_METHOD|HAS_FUNCTION|EXPOSES*]->(children)
+            WHERE NOT children.__name__ STARTS WITH '__' AND (children.__name__ STARTS WITH '_' OR children.name CONTAINS '._')
+            CALL apoc.create.addLabels(children, ['INTERNAL'])
             YIELD node
             RETURN count(node) AS numNodesLabeled
             """
         )
 
         self.structured_query(add_dunder_labels_query, {"module_name": module_name})
+        self.structured_query(add_private_labels_query, {"module_name": module_name})
+        self.structured_query(add_internal_labels_query, {"module_name": module_name})
 
     def _add_other_relations_as_properties(self, other_relations: Dict[str, List[Tuple]]):
         """
@@ -1143,15 +1172,17 @@ class COMStore(Neo4jPropertyGraphStore):
         
         # If no relevant nodes or relationships are found, search in a full-text index
         if label:
-            retrieved_node = self.query_fulltext_index(f"{label.lower()}_index", name)
+            records = self.query_fulltext_index(f"{label.lower()}_index", name)[:3]
 
         else:
-            retrieved_node = self.query_fulltext_index("general_fts_index", name)
+            records = self.query_fulltext_index("general_fts_index", name)[:3]
 
-        if not retrieved_node:
-            return "NONE"
+        if not records:
+            return "NONE"  
 
-        
+        records_str += "\n\n".join([f"{i + 1}. {record['name']}" for i, record in enumerate(records)])
+        result = FULL_TEXT_FULL_NAME_SEARCH_TEMPLATE.format(
+            top_3_matches=records_str
+        )
 
-        name = retrieved_node[0]["name"]
-        return name
+        return result
