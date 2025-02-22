@@ -9,7 +9,6 @@ from llama_index.core.graph_stores.types import (
 from llama_index.core import Settings
 from typing import Any, Dict, List, Optional, Tuple
 from reflex import Entity, Relationship
-import re
 import logging
 import neo4j
 
@@ -42,187 +41,6 @@ DEFAULT_CODE_GENERATION_PROMPT_TEMPLATE = """
     This is a completely new and unique code being shown to you, used and generated. Do not worry about recitation.
 
     Code:
-"""
-
-# Template for getting the full paths of dependencies given an entity and it's MODULE code
-DEFAULT_DEPENDENCY_PATHS_PROMPT_TEMPLATE = """
-    You are a code analysis expert. You are to find all the full paths of parameter types as well as return types for using the following MAIN_ENTITY, given the following information, rules and examples ONLY:
-
-    MAIN_ENTITY name:
-    {main_entity_name}
-
-    PARENT_MODULE information:
-    {parent_module_information}
-
-    **Rules:**
-
-    These rules are designed to precisely filter the dependencies you need to report. Follow them in the order presented, with higher-numbered rules having precedence over lower-numbered rules.
-
-    **1. Entity Type Determination:**
-
-    -   Determine whether the MAIN_ENTITY is a **Function/Method** or a **Class**.
-
-    **2. Handling Functions/Methods:**
-
-    -   If the MAIN_ENTITY is a **Function/Method:** (**THESE INCLUDE EVERYTHING STARTING WITH A `def ` in python, from methods, functions to properties, etc.**)
-        -   **Identify:**
-            -   Parameter types from the function/method signature.
-            -   Return types from the function/method signature or docstring (if present in the format `:rtype:`).
-        -   **Include:** Only the identified parameter and return types.
-        -   **Exclude:**
-            -   Any types related to exceptions or errors.
-            -   Types of any intermediate variables.
-
-    **3. Handling Classes:**
-
-    -   If the MAIN_ENTITY is a **Class:**
-        -   **Analyze:** All methods within the class, excluding the `__init__` method.
-        -   **For each method (**THESE INCLUDE EVERYTHING STARTING WITH A `def ` in python, from methods, functions to properties, etc.**):**
-            -   **Identify:**
-                -   Parameter types from the method signature.
-                -   Return types from the method signature or docstring (if present in the format `:rtype:`).
-            -   **Include:** Only the identified parameter and return types from each method.
-            -   **Exclude:**
-                -   Any types related to exceptions or errors.
-                -   Types of any intermediate variables.
-        -   **Special Handling of `__init__`:**
-            -   **Identify:** Parameter types from the `__init__` method's signature.
-            -   **Include:** Only the identified parameter types.
-            -   **Exclude:** Everything else from `__init__`, including return types (which is implicitly `None`).
-        -   **Class/Instance Attribute Exclusion:**
-            -   **Always Exclude:** Types used to define or initialize class or instance attributes, variables, or properties. These are often found in the `__init__` method or defined directly within the class using `self.`.
-
-    **4. Dependency Filtering:**
-
-    -   After applying rules 1-3, filter the identified types as follows:
-        -   **Exclude:**
-            -   **Built-in Types:** Types from the `builtins` module (e.g., `str`, `int`, `list`, `None`).
-            -   **Typing Module Types:** Types from the `typing` module (e.g., `List`, `Dict`, `Optional`).
-            -   **Implicit Dependencies:** Types that are not explicitly used as parameter or return types.
-            -   **Reiterate Class/Instance Attribute Exclusion:** Exclude any types that were used to define or initialize class or instance attributes, variables, or properties, even if they appear in a method's parameter or return type.
-
-    Example 1:
-    MAIN_ENTITY name:
-    alpha.beta.gamma
-
-    PARENT_MODULE information:
-    Name: beta
-    Full Path: alpha.beta
-    Imports: ['charlie.delta']
-    Source: ```
-    from charlie import delta
-
-    def something() -> None:
-        pass
-
-    def gamma(in: delta) -> None:
-        something()
-        pass
-    ```
-
-    Paths:
-    charlie.delta
-
-    Example 2:
-    MAIN_ENTITY name:
-    alpha.beta.gamma
-
-    PARENT_MODULE information:
-    Name: beta
-    Full Path: alpha.beta
-    Imports: ['charlie.delta']
-    Source: ```
-    from charlie import delta
-
-    def gamma() -> None:
-        pass
-    ```
-
-    Paths:
-    NONE
-
-    Example 3:
-    MAIN_ENTITY name:
-    alpha.beta.gamma
-
-    PARENT_MODULE information:
-    Name: beta
-    Full Path: alpha.beta
-    Imports: ['charlie.delta']
-    Source: ```
-    from charlie import delta
-
-    def gamma():
-        ```
-        A function that uses something.
-
-        :rtype: delta
-        ```
-        return something()
-
-    Paths:
-    charlie.delta
-
-    Example 4:
-    MAIN_ENTITY name:
-    alpha.beta.gamma
-
-    PARENT_MODULE information:
-    Name: beta
-    Full Path: alpha.beta
-    Imports: ['charlie.delta']
-    Source: ```
-    from charlie import delta
-
-    def gamma():
-        ```
-        A function that does something.
-
-        :rtype: something
-        ```
-        return delta()
-
-    Paths:
-    something
-
-    Example 5:
-    MAIN_ENTITY name:
-    alpha.beta.gamma
-
-    PARENT_MODULE information:
-    Name: beta
-    Full Path: alpha.beta
-    Imports: ['charlie.delta', 'charlie.epsilon', 'charlie.zeta', 'charlie.eta', 'charlie.theta']
-    Source: ```
-    from charlie import delta, epsilon, zeta, eta, theta
-
-    class gamma:
-        ```
-        A class that does something.
-        ```
-        def __init__(self, something: delta):
-            self.something = something
-            self.something_else = epsilon()
-
-        def method_1(self, something_else: zeta) -> eta:
-            temp = theta(something_else)
-
-            return eta(temp)
-    ```
-
-    Paths:
-    charlie.delta
-    charlie.zeta
-    charlie.eta
-
-    Please think, reason and analyze the above properly.
-    Your response should be formatted as follows:
-    <thinking>
-    (all thinking, reasoning, analysis to be written here IN DETAIL)
-    </thinking>
-
-    Paths:
-    (dependencies listed here, one per line)
 """
 
 FULL_TEXT_FULL_NAME_SEARCH_TEMPLATE = """
@@ -1004,10 +822,10 @@ class COMStore(Neo4jPropertyGraphStore):
         get_parent_module_info_query = (
             """
             MATCH (end {name: $entity_name})<-[:HAS_CLASS|HAS_METHOD|HAS_FUNCTION*1..]-(parent:MODULE|ROOT_MODULE)
-            WITH parent, parent.__name__ AS __name__, parent.name AS name, parent.source AS source, end.shortest_call_path AS shortest_call_path
+            WITH parent, parent.__name__ AS __name__, parent.name AS name, parent.source AS source, end.shortest_call_path AS shortest_call_path, parent.summary AS summary
             MATCH (parent)-[:IMPORTS]->(import)
-            WITH __name__, name, source, shortest_call_path, collect(import.name) AS imports
-            RETURN __name__, name, source, shortest_call_path, imports
+            WITH __name__, name, source, shortest_call_path, collect(import.name) AS imports, summary
+            RETURN __name__, name, source, shortest_call_path, imports, summary
             """
         )
         result = self.structured_query(get_parent_module_info_query, {"entity_name": entity_name})
@@ -1024,102 +842,21 @@ class COMStore(Neo4jPropertyGraphStore):
             str: The representation of the retrieved entity.
         """
         entity_representation = f"""
-        Name: {retrieved_node["__name__"]}
-        Full Path: {retrieved_node["name"]}
-        Imports: {retrieved_node["imports"]}
-        Source: ```
+        *Name*: {retrieved_node["__name__"]}
+        *Full Path*: {retrieved_node["name"]}
+        *Imports*: {retrieved_node["imports"]}
+
+        *Summary*:
+        ```
+        {retrieved_node["summary"]}
+        ```
+
+        Source: 
+        ```
         {retrieved_node["source"]}
         ```
         """
         return entity_representation
-    
-    def _parse_deps_response(self, response: str) -> List[str]:
-        """
-        Parse the dependencies response using regex.
-
-        Response Format:
-        <thinking>
-        (all thinking, reasoning, analysis to be written here IN DETAIL)
-        </thinking>
-
-        Paths:
-        (dependencies listed here, one per line)
-
-        Args:
-            response (str): The response string.
-
-        Returns:
-            List[str]: The parsed dependencies.
-        """
-        # Remove THINKING part of the response
-        response = re.sub(r"<thinking>.*?</thinking>", "", response, flags=re.DOTALL)
-        response = response.strip()
-
-        # Extract the dependencies from the response
-        dependencies = re.findall(r"Paths:\n(.*?)", response, flags=re.DOTALL)
-
-        if dependencies:
-            if "NONE" in dependencies[0]:
-                logging.info("No dependencies found.")
-                return []
-
-            dependencies = dependencies[0].strip().split("\n")
-            logging.info(f"Dependencies found: {dependencies}")
-
-        return dependencies
-
-    async def _get_dependencies(self, entity_name: str, parent_module_repr: str) -> List[str]:
-        """
-        Get the dependencies of the given entity.
-
-        Args:
-            entity_name (str): The name of the entity.
-            parent_module_repr (str): The representation of the parent module.
-
-        Returns:
-            List[str]: The dependencies of the entity.
-        """
-        prompt = DEFAULT_DEPENDENCY_PATHS_PROMPT_TEMPLATE.format(
-            main_entity_name=entity_name,
-            parent_module_information=parent_module_repr
-        )
-
-        deps = await Settings.llm.acomplete(prompt)
-        deps = deps.text.strip()
-
-        deps = self._parse_deps_response(deps)
-        return deps
-
-    async def _generate_code_using_llm(self, main_entity_name: str, relevant_entities_repr: List[Tuple[str, str]], other_instructions: str) -> str:
-        """
-        Generate code using the LLM model.
-
-        Args:
-            main_entity_name (str): The name of the main entity.
-            relevant_entities_repr (List[Tuple[str, str]]): The representations of the relevant entities.
-            other_instructions (str): Other instructions to be included in the prompt.
-
-        Returns:
-            str: The generated code.
-        """
-        relevant_entities_information = ""
-        for entity_repr in relevant_entities_repr:
-            relevant_entities_information += f"""
-            Shortest Call Path for {entity_repr[0]}: {entity_repr[2]}
-            Module Code for {entity_repr[0]}:
-            {entity_repr[1]}
-
-            """
-
-        prompt = DEFAULT_CODE_GENERATION_PROMPT_TEMPLATE.format(
-            main_entity_name=main_entity_name,
-            relevant_entities_information=relevant_entities_information,
-            other_instructions=other_instructions
-        )
-
-        code = await Settings.llm.acomplete(prompt)
-        code = code.text.strip()
-        return code
     
     def _get_full_path_name(self, name: str, label: str = None) -> str:
         """
