@@ -204,13 +204,14 @@ class COMStore(Neo4jPropertyGraphStore):
         """
         self.database_query(general_fts_query)
 
-    def retrieve_relevant_root_modules(self, query: str, top_k: int = 10) -> str:
+    def retrieve_relevant_root_modules(self, query: str, top_k: int = 10, offset: int = 0) -> str:
         """
         Retrieve relevant root modules based on the query, using similarity search.
 
         Args:
             query (str): The query string.
-            top_k (int): The number of results to return. Defaults to None.
+            top_k (int): The number of results to return. Defaults to 10.
+            offset (int): The number of results to skip. Defaults to 0.
 
         Returns:
             str: Relevant root modules based on the query formatted as a string.
@@ -224,7 +225,30 @@ class COMStore(Neo4jPropertyGraphStore):
         ...
         ```
         """
-        results = self.query_vector_index("root_module_vector_index", query, top_k=top_k)
+        # Clean input params
+        top_k = int(top_k)
+        offset = int(offset)
+
+        # Create a Cypher query to return the top k root modules based on similarity to the query
+        retrieve_root_modules_query = """
+            MATCH (m:ROOT_MODULE)
+            WHERE m.embedding IS NOT NULL
+            WITH m,
+                vector.similarity.cosine(m.embedding, $query_vector) AS similarity
+            ORDER BY similarity DESC
+            SKIP $offset
+            LIMIT $top_k
+            RETURN m.name AS name, similarity AS score, m.summary AS summary
+        """
+
+        query_params = {
+            "query_vector": Settings.embed_model.get_query_embedding(query),
+            "top_k": top_k,
+            "offset": offset
+        }
+
+        # Execute the query to retrieve relevant root modules
+        results = self.database_query(retrieve_root_modules_query, query_params)
 
         # Format the results as a string
         formatted_results = "Relevant Root Modules:\n\n" + "\n\n".join(
@@ -233,13 +257,15 @@ class COMStore(Neo4jPropertyGraphStore):
 
         return formatted_results
     
-    def retrieve_relevant_children_in_subtree(self, query: str, parent_name: str) -> str:
+    def retrieve_relevant_children_in_subtree(self, query: str, parent_name: str, top_k: int = 20, offset: int = 0) -> str:
         """
         Retrieve relevant IMMEDIATE children in the subtree of the given parent based on the query, using similarity search.
 
         Args:
             query (str): The query string.
             parent_name (str): The name of the parent entity.
+            top_k (int): The number of results to return. Defaults to 20.
+            offset (int): The number of results to skip. Defaults to 0.
 
         Returns:
             str: Relevant children in the subtree of the parent based on the query formatted as a string.
@@ -253,6 +279,10 @@ class COMStore(Neo4jPropertyGraphStore):
         ...
         ```
         """
+        # Clean input params
+        top_k = int(top_k)
+        offset = int(offset)
+        
         # Embed the query
         query_vector = Settings.embed_model.get_query_embedding(query)
 
@@ -261,14 +291,18 @@ class COMStore(Neo4jPropertyGraphStore):
             MATCH (parent {name: $parent_name})-[:HAS_SUBMODULE|HAS_CLASS|HAS_METHOD|HAS_FUNCTION|EXPOSES]->(child)
             WHERE child.embedding IS NOT NULL
             WITH parent, child,
-            vector.similarity.cosine(parent.embedding, $query_vector) AS similarity
+                vector.similarity.cosine(parent.embedding, $query_vector) AS similarity
             ORDER BY similarity DESC
+            SKIP $offset
+            LIMIT $top_k
             RETURN child.name AS name, similarity AS score, labels(child) AS labels, child.summary AS summary
         """
 
         query_params = {
             "parent_name": parent_name,
             "query_vector": query_vector,
+            "top_k": top_k,
+            "offset": offset
         }
 
         try:

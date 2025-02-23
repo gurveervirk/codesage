@@ -48,6 +48,7 @@ Suggest **up to {num_candidates}** of the following actions, ensuring that the s
 - "Explore the most relevant children of the current node using `retrieve_relevant_children_in_subtree`".
 
 When using the `retrieve_relevant_children_in_subtree` action, make sure your query is descriptive and not just a couple of words.
+For example, a query designed as '____ in {/parent/}' would return pathetic results. Instead, use a query like 'python functionality that allows ___ and ___(related stuff, from your knwoledge) in {/parent/}'.
 
 Remember, your goal is to efficiently find and return the **NAME** of a **METHOD or FUNCTION** whose description closely matches the query. **Stop immediately once a suitable METHOD or FUNCTION is found and return its NAME.**
 Provide your suggested next actions **concisely, focusing on the actions themselves**.
@@ -75,7 +76,7 @@ class COMEvaluation(BaseModel):
         default="", description="Reasoning and justification for the evaluation."
     )
     entity_name: str = Field(
-        default="", description="Name of the entity IF the answer is found."
+        default="", description="The FULL PATH of the entity IF the answer is found."
     )
 
 class COMSearchNode(BaseModel):
