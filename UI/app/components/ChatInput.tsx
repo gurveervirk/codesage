@@ -40,9 +40,9 @@ export default function ChatInput({ onSend, models }: ChatInputProps) {
   }
 
   const handleModelChange = (event: SelectChangeEvent<string>) => {
-    const [provider, modelId] = event.target.value.split(":");
-    setSelectedModel(provider + ":" + modelId);
-    fetcher.submit({ provider, modelId }, { method: "post", action: "/change_model" });
+    const [provider, modelId] = event.target.value.split("::");
+    setSelectedModel(provider + "::" + modelId);
+    fetcher.submit({ provider, modelId }, { method: "post", action: "/api/change_model" });
   };
 
   React.useEffect(() => {
@@ -98,7 +98,7 @@ export default function ChatInput({ onSend, models }: ChatInputProps) {
                 models[provider].forEach((model) => {
                   provider != 'Current-Model' &&
                   acc.push(
-                    <MenuItem key={`${provider}:${model.id}`} value={`${provider}:${model.id}`}>
+                    <MenuItem key={`${provider}::${model.id}`} value={`${provider}::${model.id}`}>
                       {model.name}
                     </MenuItem>
                   );

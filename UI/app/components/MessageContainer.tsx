@@ -1,17 +1,19 @@
 import { Box, CircularProgress, Typography } from "@mui/material";
 import { useRef, useEffect } from "react";
-interface Message {
+import Message from "./Message";
+export interface MessageInterface {
     text: string;
     sender: "user" | "ai";
+    id: string;
 }
 
-interface MessageContainerProps {
-    messages: Message[];
+export interface MessageContainerProps {
+    messages: MessageInterface[];
     loading: boolean;
 
 }
 
-export default function MessageContainer({ messages, loading }: MessageContainerProps) {
+export function MessageContainer({ messages, loading }: MessageContainerProps) {
     const chatContainerRef = useRef<HTMLDivElement>(null);
 
     // Scroll to the bottom whenever messages change or loading is true
@@ -26,25 +28,7 @@ export default function MessageContainer({ messages, loading }: MessageContainer
             flexDirection: "column",
         }}>
             {messages.map((msg, index) => (
-                <Box
-                    key={index}
-                    display="flex"
-                    justifyContent={msg.sender === "user" ? "flex-end" : "flex-start"}
-                    mb={1}
-                >
-                    <Typography
-                        sx={{
-                            p: 1,
-                            borderRadius: "16px",
-                            maxWidth: "fit-content",
-                            bgcolor: msg.sender === "user" ? "primary.main" : "grey.300",
-                            color: msg.sender === "user" ? "primary.contrastText" : "text.primary",
-                            wordBreak: "break-word",
-                        }}
-                    >
-                        {msg.text}
-                    </Typography>
-                </Box>
+                <Message key={index} msg={msg} index={index} />
             ))}
 
             {/* Loading Indicator */}

@@ -1,13 +1,8 @@
 from config import config
 import sys
 import os
-
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__),  '..','..'))
-sys.path.insert(0, project_root)
-
-from flask import Blueprint, request, jsonify
-from reflex import process_module
-from com_store import COMStore
+from code_sage.reflex import process_module
+from flask import Blueprint, request, jsonify,current_app
 import subprocess
 
 
@@ -45,12 +40,7 @@ def upload_module():
             else:
                 print(f"Module {module_name} installed successfully.")
         entities,relations,other_relations = process_module(module_name)
-        com_store = COMStore(
-            username = config.NEO4J_USER,
-            password = config.NEO4J_PASSWORD,
-            url = config.NEO4J_URI
-        )
-        com_store.upsert_to_neo4j(module_name=module_name,entities=entities,relations=relations,other_relations=other_relations)
+        current_app.com_store.upsert_to_neo4j(module_name=module_name,entities=entities,relations=relations,other_relations=other_relations)
         return jsonify({'message': 'Module uploaded successfully'}), 200
     except Exception as e:
         print(e.with_traceback())

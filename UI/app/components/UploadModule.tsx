@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Button, Modal, Box, FormControl, TextField, CircularProgress } from '@mui/material';
 import UploadIcon from '@mui/icons-material/Upload';
-import { Form } from '@remix-run/react';
+import { Form, useFetcher } from '@remix-run/react';
 
 interface ApiResponse {
     message: string;
@@ -12,7 +12,7 @@ const UploadModule: React.FC = () => {
     const [loading, setLoading] = useState(false);
     const [successMessage, setSuccessMessage] = useState<string | null>(null);
     const [errorMessage, setErrorMessage] = useState<string | null>(null);
-
+    const fetcher = useFetcher();
     const handleOpen = () => setOpen(true);
     const handleClose = () => {
         setOpen(false);
@@ -30,24 +30,22 @@ const UploadModule: React.FC = () => {
             const inputBox = event.currentTarget as HTMLFormElement;
             const formData = new FormData(inputBox);
             const moduleName = formData.get('moduleName') as string;
-            const response = await fetch('/upload_module', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({ module_name: moduleName }),
-            });
 
-            if (!response.ok) {
-                const errorData: ApiResponse = await response.json();
-                const errorMessage = errorData.message || `Error: ${response.status} ${response.statusText}`;
-                throw new Error(errorMessage);
+            fetcher.submit({ module_name: moduleName }, { method: 'post', action: '/api/upload_module' });
+
+            if (fetcher.data) {
+                if ((fetcher.data as any).success) {
+                    const data = fetcher.data as ApiResponse;
+                    setSuccessMessage(data.message || "Module processed successfully!");
+                    setErrorMessage(null);
+                    inputBox.reset();
+                }
+                else {
+                    const errorData: ApiResponse = fetcher.data as ApiResponse;
+                    const errorMessage = errorData.message || "An unknown error occurred.";
+                    throw new Error(errorMessage);
+                }
             }
-
-            const data: ApiResponse = await response.json();
-            setSuccessMessage(data.message || "Module processed successfully!");
-            setErrorMessage(null);
-            inputBox.reset();
         } catch (error: any) {
             console.error("Error processing module:", error);
             setErrorMessage(error.message);

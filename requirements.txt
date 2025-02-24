@@ -1,0 +1,7 @@
+flask
+dotenv
+llama-index
+llama-index-graph-stores-neo4j
+llama-index-llms-gemini
+llama-index-embeddings-huggingface
+aiolimiter
