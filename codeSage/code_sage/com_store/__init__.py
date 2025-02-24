@@ -9,7 +9,6 @@ from llama_index.core.graph_stores.types import (
 from llama_index.core import Settings
 from typing import Any, Dict, List, Optional, Tuple
 from reflex import Entity, Relationship
-import re
 import logging
 import neo4j
 
@@ -22,208 +21,6 @@ def check_if_not_null(props: List[str], values: List[Any]) -> None:
     for prop, value in zip(props, values):
         if not value:
             raise ValueError(f"Parameter `{prop}` must not be None or empty string")
-
-# Template for generating code for the entity with all of it's relevant entities
-DEFAULT_CODE_GENERATION_PROMPT_TEMPLATE = """
-    You are a code generation expert. You are to generate end-to-end code, with all the dependencies and requirements, for the following MAIN_ENTITY, using the following information:
-
-    MAIN_ENTITY:
-    {main_entity_name}
-
-    RELEVANT_ENTITIES:
-    {relevant_entities_information}
-
-    Please keep in mind the following instructions, if any:
-    {other_instructions}
-
-    Your code should be complete and ready to run.
-    The code should be specifically and solely for the MAIN_ENTITY ONLY, NOTHING ELSE.
-    Use the shortest_call_path's to import and use stuff, wherever necessary.
-    This is a completely new and unique code being shown to you, used and generated. Do not worry about recitation.
-
-    Code:
-"""
-
-# Template for getting the full paths of dependencies given an entity and it's MODULE code
-DEFAULT_DEPENDENCY_PATHS_PROMPT_TEMPLATE = """
-    You are a code analysis expert. You are to find all the full paths of parameter types as well as return types for using the following MAIN_ENTITY, given the following information, rules and examples ONLY:
-
-    MAIN_ENTITY name:
-    {main_entity_name}
-
-    PARENT_MODULE information:
-    {parent_module_information}
-
-    **Rules:**
-
-    These rules are designed to precisely filter the dependencies you need to report. Follow them in the order presented, with higher-numbered rules having precedence over lower-numbered rules.
-
-    **1. Entity Type Determination:**
-
-    -   Determine whether the MAIN_ENTITY is a **Function/Method** or a **Class**.
-
-    **2. Handling Functions/Methods:**
-
-    -   If the MAIN_ENTITY is a **Function/Method:** (**THESE INCLUDE EVERYTHING STARTING WITH A `def ` in python, from methods, functions to properties, etc.**)
-        -   **Identify:**
-            -   Parameter types from the function/method signature.
-            -   Return types from the function/method signature or docstring (if present in the format `:rtype:`).
-        -   **Include:** Only the identified parameter and return types.
-        -   **Exclude:**
-            -   Any types related to exceptions or errors.
-            -   Types of any intermediate variables.
-
-    **3. Handling Classes:**
-
-    -   If the MAIN_ENTITY is a **Class:**
-        -   **Analyze:** All methods within the class, excluding the `__init__` method.
-        -   **For each method (**THESE INCLUDE EVERYTHING STARTING WITH A `def ` in python, from methods, functions to properties, etc.**):**
-            -   **Identify:**
-                -   Parameter types from the method signature.
-                -   Return types from the method signature or docstring (if present in the format `:rtype:`).
-            -   **Include:** Only the identified parameter and return types from each method.
-            -   **Exclude:**
-                -   Any types related to exceptions or errors.
-                -   Types of any intermediate variables.
-        -   **Special Handling of `__init__`:**
-            -   **Identify:** Parameter types from the `__init__` method's signature.
-            -   **Include:** Only the identified parameter types.
-            -   **Exclude:** Everything else from `__init__`, including return types (which is implicitly `None`).
-        -   **Class/Instance Attribute Exclusion:**
-            -   **Always Exclude:** Types used to define or initialize class or instance attributes, variables, or properties. These are often found in the `__init__` method or defined directly within the class using `self.`.
-
-    **4. Dependency Filtering:**
-
-    -   After applying rules 1-3, filter the identified types as follows:
-        -   **Exclude:**
-            -   **Built-in Types:** Types from the `builtins` module (e.g., `str`, `int`, `list`, `None`).
-            -   **Typing Module Types:** Types from the `typing` module (e.g., `List`, `Dict`, `Optional`).
-            -   **Implicit Dependencies:** Types that are not explicitly used as parameter or return types.
-            -   **Reiterate Class/Instance Attribute Exclusion:** Exclude any types that were used to define or initialize class or instance attributes, variables, or properties, even if they appear in a method's parameter or return type.
-
-    Example 1:
-    MAIN_ENTITY name:
-    alpha.beta.gamma
-
-    PARENT_MODULE information:
-    Name: beta
-    Full Path: alpha.beta
-    Imports: ['charlie.delta']
-    Source: ```
-    from charlie import delta
-
-    def something() -> None:
-        pass
-
-    def gamma(in: delta) -> None:
-        something()
-        pass
-    ```
-
-    Paths:
-    charlie.delta
-
-    Example 2:
-    MAIN_ENTITY name:
-    alpha.beta.gamma
-
-    PARENT_MODULE information:
-    Name: beta
-    Full Path: alpha.beta
-    Imports: ['charlie.delta']
-    Source: ```
-    from charlie import delta
-
-    def gamma() -> None:
-        pass
-    ```
-
-    Paths:
-    NONE
-
-    Example 3:
-    MAIN_ENTITY name:
-    alpha.beta.gamma
-
-    PARENT_MODULE information:
-    Name: beta
-    Full Path: alpha.beta
-    Imports: ['charlie.delta']
-    Source: ```
-    from charlie import delta
-
-    def gamma():
-        ```
-        A function that uses something.
-
-        :rtype: delta
-        ```
-        return something()
-
-    Paths:
-    charlie.delta
-
-    Example 4:
-    MAIN_ENTITY name:
-    alpha.beta.gamma
-
-    PARENT_MODULE information:
-    Name: beta
-    Full Path: alpha.beta
-    Imports: ['charlie.delta']
-    Source: ```
-    from charlie import delta
-
-    def gamma():
-        ```
-        A function that does something.
-
-        :rtype: something
-        ```
-        return delta()
-
-    Paths:
-    something
-
-    Example 5:
-    MAIN_ENTITY name:
-    alpha.beta.gamma
-
-    PARENT_MODULE information:
-    Name: beta
-    Full Path: alpha.beta
-    Imports: ['charlie.delta', 'charlie.epsilon', 'charlie.zeta', 'charlie.eta', 'charlie.theta']
-    Source: ```
-    from charlie import delta, epsilon, zeta, eta, theta
-
-    class gamma:
-        ```
-        A class that does something.
-        ```
-        def __init__(self, something: delta):
-            self.something = something
-            self.something_else = epsilon()
-
-        def method_1(self, something_else: zeta) -> eta:
-            temp = theta(something_else)
-
-            return eta(temp)
-    ```
-
-    Paths:
-    charlie.delta
-    charlie.zeta
-    charlie.eta
-
-    Please think, reason and analyze the above properly.
-    Your response should be formatted as follows:
-    <thinking>
-    (all thinking, reasoning, analysis to be written here IN DETAIL)
-    </thinking>
-
-    Paths:
-    (dependencies listed here, one per line)
-"""
 
 FULL_TEXT_FULL_NAME_SEARCH_TEMPLATE = """
 Could not find exact match...
@@ -407,13 +204,14 @@ class COMStore(Neo4jPropertyGraphStore):
         """
         self.database_query(general_fts_query)
 
-    def retrieve_relevant_root_modules(self, query: str, top_k: int = 10) -> str:
+    def retrieve_relevant_root_modules(self, query: str, top_k: int = 10, offset: int = 0) -> str:
         """
         Retrieve relevant root modules based on the query, using similarity search.
 
         Args:
             query (str): The query string.
-            top_k (int): The number of results to return. Defaults to None.
+            top_k (int): The number of results to return. Defaults to 10.
+            offset (int): The number of results to skip. Defaults to 0.
 
         Returns:
             str: Relevant root modules based on the query formatted as a string.
@@ -427,7 +225,30 @@ class COMStore(Neo4jPropertyGraphStore):
         ...
         ```
         """
-        results = self.query_vector_index("root_module_vector_index", query, top_k=top_k)
+        # Clean input params
+        top_k = int(top_k)
+        offset = int(offset)
+
+        # Create a Cypher query to return the top k root modules based on similarity to the query
+        retrieve_root_modules_query = """
+            MATCH (m:ROOT_MODULE)
+            WHERE m.embedding IS NOT NULL
+            WITH m,
+                vector.similarity.cosine(m.embedding, $query_vector) AS similarity
+            ORDER BY similarity DESC
+            SKIP $offset
+            LIMIT $top_k
+            RETURN m.name AS name, similarity AS score, m.summary AS summary
+        """
+
+        query_params = {
+            "query_vector": Settings.embed_model.get_query_embedding(query),
+            "top_k": top_k,
+            "offset": offset
+        }
+
+        # Execute the query to retrieve relevant root modules
+        results = self.database_query(retrieve_root_modules_query, query_params)
 
         # Format the results as a string
         formatted_results = "Relevant Root Modules:\n\n" + "\n\n".join(
@@ -436,13 +257,15 @@ class COMStore(Neo4jPropertyGraphStore):
 
         return formatted_results
     
-    def retrieve_relevant_children_in_subtree(self, query: str, parent_name: str) -> str:
+    def retrieve_relevant_children_in_subtree(self, query: str, parent_name: str, top_k: int = 20, offset: int = 0) -> str:
         """
         Retrieve relevant IMMEDIATE children in the subtree of the given parent based on the query, using similarity search.
 
         Args:
             query (str): The query string.
             parent_name (str): The name of the parent entity.
+            top_k (int): The number of results to return. Defaults to 20.
+            offset (int): The number of results to skip. Defaults to 0.
 
         Returns:
             str: Relevant children in the subtree of the parent based on the query formatted as a string.
@@ -456,6 +279,10 @@ class COMStore(Neo4jPropertyGraphStore):
         ...
         ```
         """
+        # Clean input params
+        top_k = int(top_k)
+        offset = int(offset)
+        
         # Embed the query
         query_vector = Settings.embed_model.get_query_embedding(query)
 
@@ -464,14 +291,18 @@ class COMStore(Neo4jPropertyGraphStore):
             MATCH (parent {name: $parent_name})-[:HAS_SUBMODULE|HAS_CLASS|HAS_METHOD|HAS_FUNCTION|EXPOSES]->(child)
             WHERE child.embedding IS NOT NULL
             WITH parent, child,
-            vector.similarity.cosine(parent.embedding, $query_vector) AS similarity
+                vector.similarity.cosine(parent.embedding, $query_vector) AS similarity
             ORDER BY similarity DESC
+            SKIP $offset
+            LIMIT $top_k
             RETURN child.name AS name, similarity AS score, labels(child) AS labels, child.summary AS summary
         """
 
         query_params = {
             "parent_name": parent_name,
             "query_vector": query_vector,
+            "top_k": top_k,
+            "offset": offset
         }
 
         try:
@@ -1004,10 +835,10 @@ class COMStore(Neo4jPropertyGraphStore):
         get_parent_module_info_query = (
             """
             MATCH (end {name: $entity_name})<-[:HAS_CLASS|HAS_METHOD|HAS_FUNCTION*1..]-(parent:MODULE|ROOT_MODULE)
-            WITH parent, parent.__name__ AS __name__, parent.name AS name, parent.source AS source, end.shortest_call_path AS shortest_call_path
+            WITH parent, parent.__name__ AS __name__, parent.name AS name, parent.source AS source, end.shortest_call_path AS shortest_call_path, parent.summary AS summary
             MATCH (parent)-[:IMPORTS]->(import)
-            WITH __name__, name, source, shortest_call_path, collect(import.name) AS imports
-            RETURN __name__, name, source, shortest_call_path, imports
+            WITH __name__, name, source, shortest_call_path, collect(import.name) AS imports, summary
+            RETURN __name__, name, source, shortest_call_path, imports, summary
             """
         )
         result = self.structured_query(get_parent_module_info_query, {"entity_name": entity_name})
@@ -1024,134 +855,59 @@ class COMStore(Neo4jPropertyGraphStore):
             str: The representation of the retrieved entity.
         """
         entity_representation = f"""
-        Name: {retrieved_node["__name__"]}
-        Full Path: {retrieved_node["name"]}
-        Imports: {retrieved_node["imports"]}
-        Source: ```
+        *Name*: {retrieved_node["__name__"]}
+        *Full Path*: {retrieved_node["name"]}
+        *Shortest Call Path*: {retrieved_node["shortest_call_path"]}
+        *Imports*: {retrieved_node["imports"]}
+
+        *Summary*:
+        ```
+        {retrieved_node["summary"]}
+        ```
+
+        *Source*: 
+        ```
         {retrieved_node["source"]}
         ```
         """
         return entity_representation
     
-    def _parse_deps_response(self, response: str) -> List[str]:
+    def get_entity_info(self, entity_name: str) -> str:
         """
-        Parse the dependencies response using regex.
-
-        Response Format:
-        <thinking>
-        (all thinking, reasoning, analysis to be written here IN DETAIL)
-        </thinking>
-
-        Paths:
-        (dependencies listed here, one per line)
-
-        Args:
-            response (str): The response string.
-
-        Returns:
-            List[str]: The parsed dependencies.
-        """
-        # Remove THINKING part of the response
-        response = re.sub(r"<thinking>.*?</thinking>", "", response, flags=re.DOTALL)
-        response = response.strip()
-
-        # Extract the dependencies from the response
-        dependencies = re.findall(r"Paths:\n(.*?)", response, flags=re.DOTALL)
-
-        if dependencies:
-            if "NONE" in dependencies[0]:
-                logging.info("No dependencies found.")
-                return []
-
-            dependencies = dependencies[0].strip().split("\n")
-            logging.info(f"Dependencies found: {dependencies}")
-
-        return dependencies
-
-    async def _get_dependencies(self, entity_name: str, parent_module_repr: str) -> List[str]:
-        """
-        Get the dependencies of the given entity.
+        Get information about the entity.
 
         Args:
             entity_name (str): The name of the entity.
-            parent_module_repr (str): The representation of the parent module.
 
         Returns:
-            List[str]: The dependencies of the entity.
+            str: Information about the entity.
         """
-        prompt = DEFAULT_DEPENDENCY_PATHS_PROMPT_TEMPLATE.format(
-            main_entity_name=entity_name,
-            parent_module_information=parent_module_repr
-        )
+        retrieved_node = self._get_parent_module_info(entity_name)
+        if not retrieved_node:
+            return "No information found for the entity."
 
-        deps = await Settings.llm.acomplete(prompt)
-        deps = deps.text.strip()
-
-        deps = self._parse_deps_response(deps)
-        return deps
-
-    async def _generate_code_using_llm(self, main_entity_name: str, relevant_entities_repr: List[Tuple[str, str]], other_instructions: str) -> str:
-        """
-        Generate code using the LLM model.
-
-        Args:
-            main_entity_name (str): The name of the main entity.
-            relevant_entities_repr (List[Tuple[str, str]]): The representations of the relevant entities.
-            other_instructions (str): Other instructions to be included in the prompt.
-
-        Returns:
-            str: The generated code.
-        """
-        relevant_entities_information = ""
-        for entity_repr in relevant_entities_repr:
-            relevant_entities_information += f"""
-            Shortest Call Path for {entity_repr[0]}: {entity_repr[2]}
-            Module Code for {entity_repr[0]}:
-            {entity_repr[1]}
-
-            """
-
-        prompt = DEFAULT_CODE_GENERATION_PROMPT_TEMPLATE.format(
-            main_entity_name=main_entity_name,
-            relevant_entities_information=relevant_entities_information,
-            other_instructions=other_instructions
-        )
-
-        code = await Settings.llm.acomplete(prompt)
-        code = code.text.strip()
-        return code
+        entity_representation = self._get_retrieved_entity_representation(retrieved_node[0])
+        return entity_representation
     
-    def _get_full_path_name(self, name: str, label: str = None) -> str:
+    def get_full_path_name(self, name: str) -> str:
         """
         Get the full path name of the entity.
 
         Args:
             name (str): The name of the entity.
-            label (str): The label of the entity. Defaults to None. Accepts values 'ROOT_MODULE', 'MODULE', 'CLASS', 'METHOD' and 'FUNCTION'.
 
         Returns:
             str: The full path name of the entity.
         """
-        if label:
-            retrieve_node_by_name_query = (
-                """
-                MATCH (n:{label} {name: $name})
-                RETURN n.name AS name
-                """
-            )
-            # Execute the query to retrieve the node by name
-            retrieved_node = self.structured_query(retrieve_node_by_name_query, {"name": name, "label": label})
+        retrieve_node_by_name_query = (
+            """
+            MATCH (n:METHOD|FUNCTION|CLASS {name: $name})
+            RETURN n.name AS name
+            """
+        )
 
-        else:
-            retrieve_node_by_name_query = (
-                """
-                MATCH (n:METHOD|FUNCTION|CLASS {name: $name})
-                RETURN n.name AS name
-                """
-            )
-
-            # Execute the query to retrieve the node by name
-            retrieved_node = self.structured_query(retrieve_node_by_name_query, {"name": name})
+        # Execute the query to retrieve the node by name
+        retrieved_node = self.structured_query(retrieve_node_by_name_query, {"name": name})
 
         if not retrieved_node:
             # If no relevant nodes are found, try querying relationships with this name
@@ -1170,12 +926,7 @@ class COMStore(Neo4jPropertyGraphStore):
             name = retrieved_node[0]["name"]
             return name
         
-        # If no relevant nodes or relationships are found, search in a full-text index
-        if label:
-            records = self.query_fulltext_index(f"{label.lower()}_index", name)[:3]
-
-        else:
-            records = self.query_fulltext_index("general_fts_index", name)[:3]
+        records = self.query_fulltext_index("general_fts_index", name)[:3]
 
         if not records:
             return "NONE"  

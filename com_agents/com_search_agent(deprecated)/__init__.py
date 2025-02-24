@@ -21,7 +21,6 @@ import asyncio
 
 class COMSearchAgentWorker(LATSAgentWorker):
     """COM Search Agent Worker class."""
-    com_search_agent: Any = None
 
     def __init__(self, *args, reflection_prompt=None, candidate_expansion_prompt=None, **kwargs):
         # candidate_expansion_prompt = candidate_expansion_prompt or DEFAULT_COM_CANDIDATE_EXPANSION_PROMPT
@@ -264,14 +263,17 @@ class COMSearchAgentWorker(LATSAgentWorker):
         Returns:
             str: Relevant entity name.
         """
-        # Initialize agent if not already initialized
-        if self.com_search_agent is None:
-            self.com_search_agent = self.as_agent()
+        try:
+            search_agent = self.as_agent()
 
-        # Run agent
-        response = await self.com_search_agent.achat(input)
+            # Run agent
+            response = await search_agent.achat(input)
 
-        # Reset agent state
-        self.com_search_agent.reset()
+            # Reset agent state
+            search_agent.reset()
 
-        return response.response
+            return response.response
+        
+        except Exception as e:
+            search_agent = None
+            return f"Error: {e!s}"
