@@ -26,7 +26,7 @@ FULL_TEXT_FULL_NAME_SEARCH_TEMPLATE = """
 Could not find exact match...
 Used a full-text index search to find the following best matches for the full paths(top 3 max):
 
-{top_3_matches}
+{top_10_matches}
 """
 
 class COMStore(Neo4jPropertyGraphStore):
@@ -200,17 +200,17 @@ class COMStore(Neo4jPropertyGraphStore):
         self.database_query(method_vector_index_query)
 
         general_fts_query = """
-        CREATE FULLTEXT INDEX general_fts_index IF NOT EXISTS FOR (n:__Entity__) ON EACH [n.name, n.source]
+        CREATE FULLTEXT INDEX general_fts_index IF NOT EXISTS FOR (n:__Entity__) ON EACH [n.name]
         """
         self.database_query(general_fts_query)
 
-    def retrieve_relevant_root_modules(self, query: str, top_k: int = 10, offset: int = 0) -> str:
+    def retrieve_relevant_root_modules(self, query: str, top_k: int = 5, offset: int = 0) -> str:
         """
         Retrieve relevant root modules based on the query, using similarity search.
 
         Args:
             query (str): The query string.
-            top_k (int): The number of results to return. Defaults to 10.
+            top_k (int): The number of results to return. Defaults to 5.
             offset (int): The number of results to skip. Defaults to 0.
 
         Returns:
@@ -257,14 +257,14 @@ class COMStore(Neo4jPropertyGraphStore):
 
         return formatted_results
     
-    def retrieve_relevant_children_in_subtree(self, query: str, parent_name: str, top_k: int = 20, offset: int = 0) -> str:
+    def retrieve_relevant_children_in_subtree(self, query: str, parent_name: str, top_k: int = 5, offset: int = 0) -> str:
         """
         Retrieve relevant IMMEDIATE children in the subtree of the given parent based on the query, using similarity search.
 
         Args:
             query (str): The query string.
             parent_name (str): The name of the parent entity.
-            top_k (int): The number of results to return. Defaults to 20.
+            top_k (int): The number of results to return. Defaults to 5.
             offset (int): The number of results to skip. Defaults to 0.
 
         Returns:
@@ -691,7 +691,7 @@ class COMStore(Neo4jPropertyGraphStore):
         )
         add_names_to_EXPOSES_rels_query = (
             """
-            MATCH (n)-[r:EXPOSES]-(m)
+            MATCH (n)-[r:EXPOSES]->(m)
             WHERE r.name IS NULL
             SET r.name = n.name + "." + m.__name__
             RETURN count(r)
@@ -716,8 +716,8 @@ class COMStore(Neo4jPropertyGraphStore):
         # Set the shortest call paths for all nodes in the module tree (recursively)
         set_shortest_call_paths_query = (
             """
-            MATCH (root:ROOT_MODULE {name: 'emoji'})
-            MATCH (end:MODULE|FUNCTION|CLASS|METHOD)<-[:HAS_CLASS|HAS_METHOD|HAS_FUNCTION|EXPOSES*]-(root)
+            MATCH (root:ROOT_MODULE {name: $module_name})
+            MATCH (end:MODULE|FUNCTION|CLASS|METHOD)<-[:HAS_SUBMODULE|HAS_CLASS|HAS_METHOD|HAS_FUNCTION|EXPOSES*]-(root)
             WITH root, collect(end) AS endNodes
             CALL apoc.path.spanningTree(root, {
             relationshipFilter: 'HAS_SUBMODULE|HAS_CLASS|HAS_METHOD|HAS_FUNCTION|EXPOSES>',
@@ -834,11 +834,20 @@ class COMStore(Neo4jPropertyGraphStore):
         """
         get_parent_module_info_query = (
             """
-            MATCH (end {name: $entity_name})<-[:HAS_CLASS|HAS_METHOD|HAS_FUNCTION*1..]-(parent:MODULE|ROOT_MODULE)
-            WITH parent, parent.__name__ AS __name__, parent.name AS name, parent.source AS source, end.shortest_call_path AS shortest_call_path, parent.summary AS summary
-            MATCH (parent)-[:IMPORTS]->(import)
-            WITH __name__, name, source, shortest_call_path, collect(import.name) AS imports, summary
-            RETURN __name__, name, source, shortest_call_path, imports, summary
+            MATCH (end {name: $entity_name})  
+            OPTIONAL MATCH (end)-[:HAS_CLASS|HAS_METHOD|HAS_FUNCTION*1..]-(parent:MODULE|ROOT_MODULE)  
+            WITH end, parent, end.__name__ AS __name__, end.name AS name, end.source AS source, end.shortest_call_path AS shortest_call_path, end.summary AS summary, parent IS NULL AS isModule  
+            CALL apoc.do.case([
+            isModule,  
+            'RETURN __name__, name, source, shortest_call_path, summary, [] AS imports'
+            ],
+            'MATCH (parent)-[:IMPORTS]->(import)  
+            WITH parent, collect(import.name) AS imports  
+            RETURN parent.__name__ AS __name__, parent.name AS name, parent.source AS source, parent.shortest_call_path AS shortest_call_path, parent.summary AS summary, imports',  
+            {end: end, parent: parent, __name__: __name__, name: name, source: source, shortest_call_path: shortest_call_path, summary: summary}  
+            )  
+            YIELD value  
+            RETURN value.__name__ AS __name__, value.name AS name, value.source AS source, value.shortest_call_path AS shortest_call_path, value.imports AS imports, value.summary AS summary
             """
         )
         result = self.structured_query(get_parent_module_info_query, {"entity_name": entity_name})
@@ -901,7 +910,7 @@ class COMStore(Neo4jPropertyGraphStore):
         """
         retrieve_node_by_name_query = (
             """
-            MATCH (n:METHOD|FUNCTION|CLASS {name: $name})
+            MATCH (n:METHOD|FUNCTION|CLASS|MODULE {name: $name})
             RETURN n.name AS name
             """
         )
@@ -926,14 +935,16 @@ class COMStore(Neo4jPropertyGraphStore):
             name = retrieved_node[0]["name"]
             return name
         
-        records = self.query_fulltext_index("general_fts_index", name)[:3]
+        # Clean the name for FTS
+        name = name.replace(".", "*")
+        records = self.query_fulltext_index("general_fts_index", name)[:10]
 
         if not records:
             return "NONE"  
 
         records_str += "\n\n".join([f"{i + 1}. {record['name']}" for i, record in enumerate(records)])
         result = FULL_TEXT_FULL_NAME_SEARCH_TEMPLATE.format(
-            top_3_matches=records_str
+            top_10_matches=records_str
         )
 
         return result
