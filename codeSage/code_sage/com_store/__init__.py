@@ -53,6 +53,13 @@ class COMStore(Neo4jPropertyGraphStore):
     _is_enterprise: bool = PrivateAttr()
     custom_fts_indices: Any = []
 
+    _root_modules: List[Dict] = PrivateAttr()
+    _children: List[Dict] = PrivateAttr()
+    _root_modules_index: int = PrivateAttr()
+    _children_index: int = PrivateAttr()
+    _last_root_modules_query: Dict = PrivateAttr()
+    _last_children_query: Dict = PrivateAttr()
+
     def __init__(
         self,
         username: str,
@@ -97,6 +104,12 @@ class COMStore(Neo4jPropertyGraphStore):
             [index_name, node_label, embedding_node_property, text_node_property],
         )
         self.create_required_indices()
+        self._root_modules = []
+        self._children = []
+        self._root_modules_index = 0
+        self._children_index = 0
+        self._last_root_modules_query = {}
+        self._last_children_query = {}
 
     def create_required_indices(self) -> None:
         """
@@ -204,84 +217,63 @@ class COMStore(Neo4jPropertyGraphStore):
         """
         self.database_query(general_fts_query)
 
-    def retrieve_relevant_root_modules(self, query: str, top_k: int = 5, offset: int = 0) -> str:
+    def retrieve_relevant_root_modules(self, query: str, top_k: int = 5) -> str:
         """
-        Retrieve relevant root modules based on the query, using similarity search.
+        Retrieve all relevant root modules based on the query, using similarity search, and store them.
 
         Args:
             query (str): The query string.
             top_k (int): The number of results to return. Defaults to 5.
-            offset (int): The number of results to skip. Defaults to 0.
 
         Returns:
-            str: Relevant root modules based on the query formatted as a string.
-
-        Example Output:
-        ```
-        Relevant Root Modules:
-
-        1. module1: summary1
-        2. module2: summary2
-        ...
-        ```
+            str: Top k relevant root modules based on the query formatted as a string.
         """
         # Clean input params
         top_k = int(top_k)
-        offset = int(offset)
 
-        # Create a Cypher query to return the top k root modules based on similarity to the query
+        # Create a Cypher query to return all root modules based on similarity to the query
         retrieve_root_modules_query = """
             MATCH (m:ROOT_MODULE)
             WHERE m.embedding IS NOT NULL
             WITH m,
                 vector.similarity.cosine(m.embedding, $query_vector) AS similarity
             ORDER BY similarity DESC
-            SKIP $offset
-            LIMIT $top_k
             RETURN m.name AS name, similarity AS score, m.summary AS summary
         """
 
         query_params = {
-            "query_vector": Settings.embed_model.get_query_embedding(query),
-            "top_k": top_k,
-            "offset": offset
+            "query_vector": Settings.embed_model.get_query_embedding(query)
         }
 
-        # Execute the query to retrieve relevant root modules
+        # Execute the query to retrieve all relevant root modules
         results = self.database_query(retrieve_root_modules_query, query_params)
 
-        # Format the results as a string
+        # Store the results
+        self._root_modules = results
+        self._root_modules_index = top_k
+        self._last_root_modules_query = {"query": query, "top_k": top_k}
+
+        # Format the top k results as a string
         formatted_results = "Relevant Root Modules:\n\n" + "\n\n".join(
-            [f"{i+1}. **{result['name']}** (similarity score: {result['score']}):{result['summary']}" for i, result in enumerate(results)]
+            [f"{i+1}. **{result['name']}** (similarity score: {result['score']}):{result['summary']}" for i, result in enumerate(self._root_modules[:top_k])]
         )
 
         return formatted_results
     
-    def retrieve_relevant_children_in_subtree(self, query: str, parent_name: str, top_k: int = 5, offset: int = 0) -> str:
+    def retrieve_relevant_children_in_subtree(self, query: str, parent_name: str, top_k: int = 5) -> str:
         """
-        Retrieve relevant IMMEDIATE children in the subtree of the given parent based on the query, using similarity search.
+        Retrieve all relevant IMMEDIATE children in the subtree of the given parent based on the query, using similarity search, and store them.
 
         Args:
             query (str): The query string.
             parent_name (str): The name of the parent entity.
             top_k (int): The number of results to return. Defaults to 5.
-            offset (int): The number of results to skip. Defaults to 0.
 
         Returns:
-            str: Relevant children in the subtree of the parent based on the query formatted as a string.
-
-        Example Output:
-        ```
-        Relevant Children in Subtree:
-
-        1. child1: summary1
-        2. child2: summary2
-        ...
-        ```
+            str: Top k Relevant children in the subtree of the parent based on the query formatted as a string.
         """
         # Clean input params
         top_k = int(top_k)
-        offset = int(offset)
         
         # Embed the query
         query_vector = Settings.embed_model.get_query_embedding(query)
@@ -293,16 +285,12 @@ class COMStore(Neo4jPropertyGraphStore):
             WITH parent, child,
                 vector.similarity.cosine(parent.embedding, $query_vector) AS similarity
             ORDER BY similarity DESC
-            SKIP $offset
-            LIMIT $top_k
             RETURN child.name AS name, similarity AS score, labels(child) AS labels, child.summary AS summary
         """
 
         query_params = {
             "parent_name": parent_name,
             "query_vector": query_vector,
-            "top_k": top_k,
-            "offset": offset
         }
 
         try:
@@ -312,9 +300,14 @@ class COMStore(Neo4jPropertyGraphStore):
             for record in records:
                 record["labels"] = [label for label in record["labels"] if label not in [BASE_ENTITY_LABEL, BASE_NODE_LABEL]]
 
-            # Format the results as a string
+            # Store the results
+            self._children = records
+            self._children_index = top_k
+            self._last_children_query = {"query": query, "parent_name": parent_name, "top_k": top_k}
+
+            # Format the top k results as a string
             formatted_results = "Relevant Children in Subtree:\n\n" + "\n\n".join(
-                [f"{i+1}. **{result['name']}** (similarity score: {result['score']}, relevant labels: {result['labels']}):\n{result['summary']}" for i, result in enumerate(records)]
+                [f"{i+1}. **{result['name']}** (similarity score: {result['score']}, relevant labels: {result['labels']}):\n{result['summary']}" for i, result in enumerate(self._children[:top_k])]
             )
             
             return formatted_results
@@ -322,6 +315,52 @@ class COMStore(Neo4jPropertyGraphStore):
         except Exception as e:
             logging.error(f"Error retrieving relevant children in subtree: {e}")
             return []
+
+    def next_entities(self, from_: str, top_k: int) -> str:
+        """
+        Retrieve the next top_k entities from the stored list.
+
+        Args:
+            from_ (str): "ROOT_MODULE" or "CHILDREN", indicating which list to retrieve from.
+            top_k (int): The number of entities to retrieve.
+
+        Returns:
+            str: Formatted string of the next top_k entities.
+        """
+        top_k = int(top_k)
+        if from_ == "ROOT_MODULE":
+            if self._root_modules == None or self._root_modules_index == -1:
+                return "NO ROOT MODULES HAVE BEEN QUERIED FOR. PROCEED WITH QUERYING `retrieve_relevant_root_modules`."
+            start_index = self._root_modules_index
+            end_index = min(start_index + top_k, len(self._root_modules))
+            entities = self._root_modules[start_index:end_index]
+            self._root_modules_index = end_index
+            formatted_results = "Next Relevant Root Modules:\n\n" + "\n\n".join(
+                [f"{i+1}. **{result['name']}** (similarity score: {result['score']}):{result['summary']}" for i, result in enumerate(entities)]
+            )
+            if end_index == len(self._root_modules):
+                formatted_results += "\n\nALL RELEVANT ROOT MODULES RETRIEVED. PROCEED WITH ANOTHER QUERY USING `retrieve_relevant_root_modules`."
+                self._root_modules = None
+                self._root_modules_index = -1
+
+        elif from_ == "CHILDREN":
+            if self._children == None or self._children_index == -1:
+                return "NO CHILDREN HAVE BEEN QUERIED FOR. PROCEED WITH QUERYING `retrieve_relevant_children_in_subtree`."
+            start_index = self._children_index
+            end_index = min(start_index + top_k, len(self._children))
+            entities = self._children[start_index:end_index]
+            self._children_index = end_index
+            formatted_results = "Next Relevant Children in Subtree:\n\n" + "\n\n".join(
+                [f"{i+1}. **{result['name']}** (similarity score: {result['score']}, relevant labels: {result['labels']}):\n{result['summary']}" for i, result in enumerate(entities)]
+            )
+            if end_index == len(self._root_modules):
+                formatted_results += "\n\nALL RELEVANT CHILDREN RETRIEVED. PROCEED WITH ANOTHER QUERY USING `retrieve_relevant_children_in_subtree`."
+                self._children = None
+                self._children_index = -1
+        else:
+            raise ValueError("`from` must be either 'ROOT_MODULE' or 'CHILDREN'")
+
+        return formatted_results
 
     def query_vector_index(
         self, index_name: str, query: str | List[float], top_k: int = 10,
