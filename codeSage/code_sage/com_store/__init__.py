@@ -283,7 +283,7 @@ class COMStore(Neo4jPropertyGraphStore):
             MATCH (parent {name: $parent_name})-[:HAS_SUBMODULE|HAS_CLASS|HAS_METHOD|HAS_FUNCTION|EXPOSES]->(child)
             WHERE child.embedding IS NOT NULL
             WITH parent, child,
-                vector.similarity.cosine(parent.embedding, $query_vector) AS similarity
+                vector.similarity.cosine(child.embedding, $query_vector) AS similarity
             ORDER BY similarity DESC
             RETURN child.name AS name, similarity AS score, labels(child) AS labels, child.summary AS summary
         """
