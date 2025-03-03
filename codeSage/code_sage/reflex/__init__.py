@@ -15,6 +15,8 @@ import importlib
 import re
 import subprocess
 import traceback
+import ast 
+import os
 
 class Entity:
     """
@@ -40,6 +42,83 @@ class Relationship:
 
     def __repr__(self):
         return f"{self.from_entity} --{self.label}--> {self.to_entity}"
+
+def get_import_statements(source_code: str) -> str:
+    """
+    Extracts all import statements from the source code, including full
+    statements, handling different types, multi-line imports, and 'as' clauses.
+
+    Args:
+        source_code (str): The source code of an entity.
+    
+    Returns:
+        str: All import statements in one clean string block
+    """
+    tree = ast.parse(source_code)
+    imports = []
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            # Handles: import os, sys
+            import_statement = "import " + ", ".join(alias.name + (f" as {alias.asname}" if alias.asname else "") for alias in node.names)
+            imports.append(import_statement)
+        elif isinstance(node, ast.ImportFrom):
+            # Handles: from datetime import date, datetime as dt
+            names = ", ".join(alias.name + (f" as {alias.asname}" if alias.asname else "") for alias in node.names)
+            module = node.module or ''
+            level = node.level
+            if level > 0:
+              module = "." * level + module
+            import_statement = f"from {module} import {names}"  #Handles relative imports as well
+            imports.append(import_statement)
+
+    return '\n'.join(imports)
+
+def get_import_as_aliases(source_code: str, current_file_path: str) -> Dict[str, str]:
+    """
+    Extracts all import ... as ... statements and returns a list of tuples.
+    Each tuple contains the full path to the entity and its alias.
+    It uses the current_file_path to resolve relative imports to absolute paths.
+
+    Args:
+        source_code (str): The source code of an entity.
+        current_file_path (str): Full Path of the entity whose source code is being processed
+    
+    Returns:
+        Dict[str, str]: Mapping from full path of imported entities to their corresponding alias
+
+    """
+    tree = ast.parse(source_code)
+    aliases = {}
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.asname:
+                    aliases[alias.name] = alias.asname
+        elif isinstance(node, ast.ImportFrom):
+            module = node.module or ''
+            level = node.level
+            if level > 0:
+                # Resolve relative import
+                package_path = current_file_path
+                for _ in range(level):
+                    package_path = os.path.dirname(package_path)
+                    if not package_path:
+                        #Reached top level
+                        module = "." * level + module
+                        break # or raise ValueError("Relative import goes beyond top-level package")
+
+                if package_path:
+                  module = os.path.basename(package_path) + "." + module
+                #If relative import goes beyond current module
+                else:
+                  module = "." * level + module
+            for alias in node.names:
+                if alias.asname:
+                    full_path = f"{module}.{alias.name}" if module else alias.name
+                    aliases[full_path] = alias.asname
+    return aliases
 
 def get_unused_imports(module_name: str, imported_names: Set[str]) -> Set[str]:
     """
@@ -117,18 +196,6 @@ def get_fully_qualified_name(cls):
     """
     return f"{cls.__module__}.{cls.__qualname__}"
 
-# def check_dunders(path):
-#     """
-#     Check if a path starts with an underscore or contains '._'.
-
-#     Args:
-#         path (str): The path to check.
-
-#     Returns:
-#         bool: True if the path starts with an underscore or contains '._', False otherwise.
-#     """
-#     return path.startswith("_") or "._" in path
-
 def safe_get_source(obj) -> str:
     """
     Retrieve the source code of an object or fallback to its representation.
@@ -194,9 +261,6 @@ def process_member(
                 other_relations["IMPORTS"].add((parent_entity.name, obj_path))
             return [], []
 
-        # if check_dunders(obj_path):
-        #     return [], []
-
         sub_entities, sub_relations = traverse_recursive(
             obj, root_module_path, processed_paths, other_relations
         )
@@ -208,9 +272,6 @@ def process_member(
 
     elif inspect.isfunction(obj) and parent_entity.label in {"ROOT_MODULE", "MODULE"}:
         obj_path = get_fully_qualified_name(obj)
-
-        # if check_dunders(obj_path):
-        #     return [], []
 
         if not obj_path.startswith(root_module_path):
             if parent_entity and parent_entity.label in {"ROOT_MODULE", "MODULE"}:
@@ -246,9 +307,6 @@ def process_member(
 
     elif parent_entity.label == "CLASS" and (inspect.ismethod(obj) or inspect.isfunction(obj)):
         obj_path = get_fully_qualified_name(obj)
-
-        # if check_dunders(obj_path):
-        #     return [], []
 
         if not obj_path.startswith(root_module_path):
             return [], []
@@ -310,9 +368,13 @@ def traverse_recursive(
         processed_paths.add(obj_path)
 
     source = safe_get_source(obj)
+    all_import_statements = get_import_statements(source)
+    import_as_aliases = get_import_as_aliases(source, obj_path)
     properties = {
         "source": source,
         "__name__": obj.__name__,
+        "import_statements": all_import_statements,
+        "import_as_aliases": import_as_aliases
     }
 
     entity = Entity(obj_path, entity_type, properties)
@@ -378,9 +440,13 @@ def process_module(module_name: str):
     module_object = importlib.import_module(module_name)
 
     source = safe_get_source(module_object)
+    all_import_statements = get_import_statements(source)
+    import_as_aliases = get_import_as_aliases(source, module_name)
     properties = {
         "source": source,
         "__name__": module_object.__name__,
+        "import_statements": all_import_statements,
+        "import_as_aliases": import_as_aliases
     }
 
     root_entity = Entity(module_name, "ROOT_MODULE", properties)
@@ -465,13 +531,25 @@ def process_module(module_name: str):
             continue
         cleaned_exposed_relations.add((from_entity, to_entity))
 
-    other_relations["EXPOSES"] = list(cleaned_exposed_relations)
-    other_relations["IMPORTS"] = list(cleaned_imports_relations)
-    other_relations["INHERITS"] = list(other_relations["INHERITS"])
-
     # Deduplicate entities and relations
     entities = list(set(entities))
     relations = list(set(relations))
+
+    # Clean up Alias Imports
+    for entity in entities:
+        if entity.label not in ("ROOT_MODULE", "MODULE", "CLASS"):
+            continue
+
+        cleaned_import_aliases = {}
+        for key in entity.properties["import_as_aliases"].keys():
+            if (entity, key) in other_relations["EXPOSES"] or (entity, key) in other_relations["IMPORTS"]:
+                cleaned_import_aliases[key] = entity.properties["import_as_aliases"][key]
+        
+        entity.properties["import_as_aliases"] = cleaned_import_aliases
+
+    other_relations["EXPOSES"] = list(cleaned_exposed_relations)
+    other_relations["IMPORTS"] = list(cleaned_imports_relations)
+    other_relations["INHERITS"] = list(other_relations["INHERITS"])
 
     print(f"Processed {len(entities)} entities and {len(relations)} relations in {module_name}.")
 
