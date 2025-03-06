@@ -785,7 +785,6 @@ class COMStore(Neo4jPropertyGraphStore):
 
         Args:
             module_name (str): The name of the module.
-
         """
         handle_inheritance_query = (
             """

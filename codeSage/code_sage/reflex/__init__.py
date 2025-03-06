@@ -17,6 +17,7 @@ import subprocess
 import traceback
 import ast 
 import os
+import pkgutil
 
 class Entity:
     """
@@ -54,27 +55,30 @@ def get_import_statements(source_code: str) -> str:
     Returns:
         str: All import statements in one clean string block
     """
-    tree = ast.parse(source_code)
-    imports = []
+    try:
+      tree = ast.parse(source_code)
+      imports = []
 
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            # Handles: import os, sys
-            import_statement = "import " + ", ".join(alias.name + (f" as {alias.asname}" if alias.asname else "") for alias in node.names)
-            imports.append(import_statement)
-        elif isinstance(node, ast.ImportFrom):
-            # Handles: from datetime import date, datetime as dt
-            names = ", ".join(alias.name + (f" as {alias.asname}" if alias.asname else "") for alias in node.names)
-            module = node.module or ''
-            level = node.level
-            if level > 0:
-              module = "." * level + module
-            import_statement = f"from {module} import {names}"  #Handles relative imports as well
-            imports.append(import_statement)
+      for node in ast.walk(tree):
+          if isinstance(node, ast.Import):
+              # Handles: import os, sys
+              import_statement = "import " + ", ".join(alias.name + (f" as {alias.asname}" if alias.asname else "") for alias in node.names)
+              imports.append(import_statement)
+          elif isinstance(node, ast.ImportFrom):
+              # Handles: from datetime import date, datetime as dt
+              names = ", ".join(alias.name + (f" as {alias.asname}" if alias.asname else "") for alias in node.names)
+              module = node.module or ''
+              level = node.level
+              if level > 0:
+                module = "." * level + module
+              import_statement = f"from {module} import {names}"  #Handles relative imports as well
+              imports.append(import_statement)
 
-    return '\n'.join(imports)
+      return '\n'.join(imports)
+    except:
+      return ""
 
-def get_import_as_aliases(source_code: str, current_file_path: str) -> Dict[str, str]:
+def get_import_as_aliases(source_code: str, current_file_path: str) -> List[Tuple[str, str]]:
     """
     Extracts all import ... as ... statements and returns a list of tuples.
     Each tuple contains the full path to the entity and its alias.
@@ -85,40 +89,42 @@ def get_import_as_aliases(source_code: str, current_file_path: str) -> Dict[str,
         current_file_path (str): Full Path of the entity whose source code is being processed
     
     Returns:
-        Dict[str, str]: Mapping from full path of imported entities to their corresponding alias
-
+        List[Tuple[str, str]]: List of tuples containing the full path to the entity and its alias.
     """
-    tree = ast.parse(source_code)
-    aliases = {}
+    try:
+      tree = ast.parse(source_code)
+      aliases = []
 
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                if alias.asname:
-                    aliases[alias.name] = alias.asname
-        elif isinstance(node, ast.ImportFrom):
-            module = node.module or ''
-            level = node.level
-            if level > 0:
-                # Resolve relative import
-                package_path = current_file_path
-                for _ in range(level):
-                    package_path = os.path.dirname(package_path)
-                    if not package_path:
-                        #Reached top level
-                        module = "." * level + module
-                        break # or raise ValueError("Relative import goes beyond top-level package")
+      for node in ast.walk(tree):
+          if isinstance(node, ast.Import):
+              for alias in node.names:
+                  if alias.asname:
+                      aliases.append((alias.name, alias.asname))
+          elif isinstance(node, ast.ImportFrom):
+              module = node.module or ''
+              level = node.level
+              if level > 0:
+                  # Resolve relative import
+                  package_path = current_file_path
+                  for _ in range(level):
+                      package_path = os.path.dirname(package_path)
+                      if not package_path:
+                          #Reached top level
+                          module = "." * level + module
+                          break # or raise ValueError("Relative import goes beyond top-level package")
 
-                if package_path:
-                  module = os.path.basename(package_path) + "." + module
-                #If relative import goes beyond current module
-                else:
-                  module = "." * level + module
-            for alias in node.names:
-                if alias.asname:
-                    full_path = f"{module}.{alias.name}" if module else alias.name
-                    aliases[full_path] = alias.asname
-    return aliases
+                  if package_path:
+                    module = os.path.basename(package_path) + "." + module
+                  #If relative import goes beyond current module
+                  else:
+                    module = "." * level + module
+              for alias in node.names:
+                  if alias.asname:
+                      full_path = f"{module}.{alias.name}" if module else alias.name
+                      aliases.append((full_path, alias.asname))
+      return aliases
+    except:
+      return []
 
 def get_unused_imports(module_name: str, imported_names: Set[str]) -> Set[str]:
     """
@@ -368,15 +374,15 @@ def traverse_recursive(
         processed_paths.add(obj_path)
 
     source = safe_get_source(obj)
-    all_import_statements = get_import_statements(source)
-    import_as_aliases = get_import_as_aliases(source, obj_path)
     properties = {
         "source": source,
         "__name__": obj.__name__,
-        "import_statements": all_import_statements,
-        "import_as_aliases": import_as_aliases
     }
 
+    if inspect.ismodule(obj):
+        properties["import_statements"] = get_import_statements(source)
+        properties["import_as_aliases"] = get_import_as_aliases(source, obj_path)
+        
     entity = Entity(obj_path, entity_type, properties)
     entities.append(entity)
 
@@ -389,13 +395,25 @@ def traverse_recursive(
                     continue
                 other_relations["INHERITS"].add((obj_path, base_path))
 
-    # Process sub-modules
-    for name, member in inspect.getmembers(obj, inspect.ismodule):
-        sub_entities, sub_relations = process_member(
-            name, member, root_module_path, entity, processed_paths, other_relations
-        )
-        entities.extend(sub_entities)
-        relations.extend(sub_relations)
+    # Get all sub-modules using `pkgutil` and NOT `inspect` and then process them
+    if inspect.ismodule(obj):
+        try:
+          path = [obj.__path__[0]]
+        except:
+          path = [obj.__file__]
+        submodules = [name for _, name, _ in pkgutil.iter_modules(path)]
+        for submodule_name in submodules:
+            submodule_path = f"{obj.__name__}.{submodule_name}"
+            sub_entities, sub_relations = process_member(
+                submodule_name,
+                importlib.import_module(submodule_path),
+                root_module_path,
+                entity,
+                processed_paths,
+                other_relations
+            )
+            entities.extend(sub_entities)
+            relations.extend(sub_relations)
 
     # Process sub-classes
     for name, member in inspect.getmembers(obj, inspect.isclass):
@@ -452,10 +470,21 @@ def process_module(module_name: str):
     root_entity = Entity(module_name, "ROOT_MODULE", properties)
     entities.append(root_entity)
 
-    # Process sub-modules
-    for name, member in inspect.getmembers(module_object, inspect.ismodule):
+    # Get all sub-modules using `pkgutil` and NOT `inspect` and then process them
+    try:
+      path = [module_object.__path__[0]]
+    except:
+      path = [module_object.__file__]
+    submodules = [name for _, name, _ in pkgutil.iter_modules(path)]
+    for submodule_name in submodules:
+        submodule_path = f"{module_object.__name__}.{submodule_name}"
         sub_entities, sub_relations = process_member(
-            name, member, module_name, root_entity, processed_paths, other_relations
+            submodule_name,
+            importlib.import_module(submodule_path),
+            module_name,
+            root_entity,
+            processed_paths,
+            other_relations
         )
         entities.extend(sub_entities)
         relations.extend(sub_relations)
@@ -537,13 +566,13 @@ def process_module(module_name: str):
 
     # Clean up Alias Imports
     for entity in entities:
-        if entity.label not in ("ROOT_MODULE", "MODULE", "CLASS"):
+        if entity.label not in ("ROOT_MODULE", "MODULE"):
             continue
 
-        cleaned_import_aliases = {}
-        for key in entity.properties["import_as_aliases"].keys():
+        cleaned_import_aliases = []
+        for key, value in entity.properties["import_as_aliases"]:
             if (entity, key) in other_relations["EXPOSES"] or (entity, key) in other_relations["IMPORTS"]:
-                cleaned_import_aliases[key] = entity.properties["import_as_aliases"][key]
+                cleaned_import_aliases.append((key, value))
         
         entity.properties["import_as_aliases"] = cleaned_import_aliases
 
