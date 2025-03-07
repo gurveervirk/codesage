@@ -683,6 +683,7 @@ class COMStore(Neo4jPropertyGraphStore):
             MERGE (c)-[:INHERITS]->(p)
             WITH c, COLLECT(parent) AS parentNames
             SET c.INHERITS = [name IN c.INHERITS WHERE NOT name IN parentNames]
+            SET c.NEW_INHERIT_RELS = parentNames
             """
         )
         process_imports_query = (
@@ -788,22 +789,22 @@ class COMStore(Neo4jPropertyGraphStore):
         """
         handle_inheritance_query = (
             """
-            MATCH (base:ROOT_MODULE {name: $module_name})-[r*0..]->(child:CLASS)
-            WHERE NONE(rel IN r WHERE type(rel) = 'INHERITS')
-            WITH DISTINCT child
-            MATCH (child)-[:INHERITS*0..]->(parent:CLASS)
-            WITH child, parent
-            MATCH (parent)-[:HAS_METHOD]->(member)
+            MATCH (child:CLASS)
+            WHERE child.NEW_INHERIT_RELS IS NOT NULL
+            UNWIND child.NEW_INHERIT_RELS AS parentName
+            MATCH (parent:CLASS {name: parentName})-[:HAS_METHOD]->(member)
             WHERE NOT EXISTS {
                 MATCH (child)-[:HAS_METHOD]->(childMethod)
                 WHERE childMethod.__name__ = member.__name__ AND childMethod.signature = member.signature
             }
             WITH member, child
             MERGE (child)-[:HAS_METHOD]->(member)
+            WITH child, member
+            REMOVE child.NEW_INHERIT_RELS
             RETURN child.name AS ChildClass, COUNT(DISTINCT member) AS TotalParentMembersLabeled
             """
         )
-        self.structured_query(handle_inheritance_query, {"module_name": module_name})
+        self.structured_query(handle_inheritance_query)
 
     def _remove_empty_values(self, input_dict):
         """

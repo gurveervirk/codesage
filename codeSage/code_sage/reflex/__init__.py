@@ -241,9 +241,6 @@ def process_member(
     """
     entities, relations = [], []
 
-    if name.startswith("_"):
-        return [], []
-
     if inspect.ismodule(obj) or inspect.isclass(obj):
         obj_path = None
 
