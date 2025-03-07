@@ -15,7 +15,7 @@ import importlib
 import re
 import subprocess
 import traceback
-import ast 
+import ast
 import os
 import pkgutil
 
@@ -51,7 +51,7 @@ def get_import_statements(source_code: str) -> str:
 
     Args:
         source_code (str): The source code of an entity.
-    
+
     Returns:
         str: All import statements in one clean string block
     """
@@ -87,7 +87,7 @@ def get_import_as_aliases(source_code: str, current_file_path: str) -> List[Tupl
     Args:
         source_code (str): The source code of an entity.
         current_file_path (str): Full Path of the entity whose source code is being processed
-    
+
     Returns:
         List[Tuple[str, str]]: List of tuples containing the full path to the entity and its alias.
     """
@@ -252,7 +252,7 @@ def process_member(
         elif inspect.isclass(obj):
             obj_path = get_fully_qualified_name(obj)
 
-        if not obj_path.startswith(root_module_path):
+        if not obj_path.startswith(root_module_path + "."):
             if parent_entity and parent_entity.label in {"ROOT_MODULE", "MODULE"}:
                 other_relations["IMPORTS"].add((parent_entity.name, obj_path))
             return [], []
@@ -261,8 +261,8 @@ def process_member(
             if parent_entity and parent_entity.label in {"ROOT_MODULE", "MODULE"}:
                 other_relations["IMPORTS"].add((parent_entity.name, obj_path))
             return [], []
-        
-        if not obj_path.startswith(parent_entity.name):
+
+        if not obj_path.startswith(parent_entity.name + "."):
             if parent_entity and parent_entity.label in {"ROOT_MODULE", "MODULE"}:
                 other_relations["IMPORTS"].add((parent_entity.name, obj_path))
             return [], []
@@ -279,7 +279,7 @@ def process_member(
     elif inspect.isfunction(obj) and parent_entity.label in {"ROOT_MODULE", "MODULE"}:
         obj_path = get_fully_qualified_name(obj)
 
-        if not obj_path.startswith(root_module_path):
+        if not obj_path.startswith(root_module_path + "."):
             if parent_entity and parent_entity.label in {"ROOT_MODULE", "MODULE"}:
                 other_relations["IMPORTS"].add((parent_entity.name, obj_path))
             return [], []
@@ -288,12 +288,12 @@ def process_member(
             if parent_entity and parent_entity.label in {"ROOT_MODULE", "MODULE"}:
                 other_relations["IMPORTS"].add((parent_entity.name, obj_path))
             return [], []
-        
-        elif not obj_path.startswith(parent_entity.name):
+
+        elif not obj_path.startswith(parent_entity.name + "."):
             if parent_entity and parent_entity.label in {"ROOT_MODULE", "MODULE"}:
                 other_relations["IMPORTS"].add((parent_entity.name, obj_path))
             return [], []
-        
+
         else:
             processed_paths.add(obj_path)
 
@@ -314,7 +314,7 @@ def process_member(
     elif parent_entity.label == "CLASS" and (inspect.ismethod(obj) or inspect.isfunction(obj)):
         obj_path = get_fully_qualified_name(obj)
 
-        if not obj_path.startswith(root_module_path):
+        if not obj_path.startswith(root_module_path + "."):
             return [], []
 
         if obj_path in processed_paths:
@@ -364,7 +364,7 @@ def traverse_recursive(
     elif entity_type == "CLASS":
         obj_path = get_fully_qualified_name(obj)
 
-    if not obj_path.startswith(root_module_path):
+    if not obj_path.startswith(root_module_path + "."):
         return [], []
 
     if obj_path in processed_paths:
@@ -382,7 +382,7 @@ def traverse_recursive(
     if inspect.ismodule(obj):
         properties["import_statements"] = get_import_statements(source)
         properties["import_as_aliases"] = get_import_as_aliases(source, obj_path)
-        
+
     entity = Entity(obj_path, entity_type, properties)
     entities.append(entity)
 
@@ -400,20 +400,27 @@ def traverse_recursive(
         try:
           path = [obj.__path__[0]]
         except:
-          path = [obj.__file__]
-        submodules = [name for _, name, _ in pkgutil.iter_modules(path)]
-        for submodule_name in submodules:
-            submodule_path = f"{obj.__name__}.{submodule_name}"
-            sub_entities, sub_relations = process_member(
-                submodule_name,
-                importlib.import_module(submodule_path),
-                root_module_path,
-                entity,
-                processed_paths,
-                other_relations
-            )
-            entities.extend(sub_entities)
-            relations.extend(sub_relations)
+          try:
+            path = [obj.__file__]
+          except:
+            path = None
+        if path:
+          submodules = [name for _, name, _ in pkgutil.iter_modules(path)]
+          for submodule_name in submodules:
+            try:
+              submodule_path = f"{obj.__name__}.{submodule_name}"
+              sub_entities, sub_relations = process_member(
+                  submodule_name,
+                  importlib.import_module(submodule_path),
+                  root_module_path,
+                  entity,
+                  processed_paths,
+                  other_relations
+              )
+              entities.extend(sub_entities)
+              relations.extend(sub_relations)
+            except:
+              continue
 
     # Process sub-classes
     for name, member in inspect.getmembers(obj, inspect.isclass):
@@ -474,20 +481,27 @@ def process_module(module_name: str):
     try:
       path = [module_object.__path__[0]]
     except:
-      path = [module_object.__file__]
-    submodules = [name for _, name, _ in pkgutil.iter_modules(path)]
-    for submodule_name in submodules:
-        submodule_path = f"{module_object.__name__}.{submodule_name}"
-        sub_entities, sub_relations = process_member(
-            submodule_name,
-            importlib.import_module(submodule_path),
-            module_name,
-            root_entity,
-            processed_paths,
-            other_relations
-        )
-        entities.extend(sub_entities)
-        relations.extend(sub_relations)
+      try:
+        path = [module_object.__file__]
+      except:
+        path = None
+    if path:
+      submodules = [name for _, name, _ in pkgutil.iter_modules(path)]
+      for submodule_name in submodules:
+        try:
+          submodule_path = f"{module_object.__name__}.{submodule_name}"
+          sub_entities, sub_relations = process_member(
+              submodule_name,
+              importlib.import_module(submodule_path),
+              module_name,
+              root_entity,
+              processed_paths,
+              other_relations
+          )
+          entities.extend(sub_entities)
+          relations.extend(sub_relations)
+        except:
+          continue
 
     # Process sub-classes
     for name, member in inspect.getmembers(module_object, inspect.isclass):
@@ -573,7 +587,7 @@ def process_module(module_name: str):
         for key, value in entity.properties["import_as_aliases"]:
             if (entity, key) in other_relations["EXPOSES"] or (entity, key) in other_relations["IMPORTS"]:
                 cleaned_import_aliases.append((key, value))
-        
+
         entity.properties["import_as_aliases"] = cleaned_import_aliases
 
     other_relations["EXPOSES"] = list(cleaned_exposed_relations)

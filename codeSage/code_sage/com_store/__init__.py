@@ -796,7 +796,7 @@ class COMStore(Neo4jPropertyGraphStore):
             MATCH (parent)-[:HAS_METHOD]->(member)
             WHERE NOT EXISTS {
                 MATCH (child)-[:HAS_METHOD]->(childMethod)
-                WHERE childMethod.__name__ = member.__name__
+                WHERE childMethod.__name__ = member.__name__ AND childMethod.signature = member.signature
             }
             WITH member, child
             MERGE (child)-[:HAS_METHOD]->(member)
