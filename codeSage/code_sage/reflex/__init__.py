@@ -311,7 +311,7 @@ def process_member(
     elif parent_entity.label == "CLASS" and (inspect.ismethod(obj) or inspect.isfunction(obj)):
         obj_path = get_fully_qualified_name(obj)
 
-        if not obj_path.startswith(root_module_path + "."):
+        if not obj_path.startswith(root_module_path + ".") or not obj_path.startswith(parent_entity.name + "."):
             return [], []
 
         if obj_path in processed_paths:

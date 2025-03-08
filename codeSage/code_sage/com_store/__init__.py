@@ -791,9 +791,9 @@ class COMStore(Neo4jPropertyGraphStore):
             REMOVE child.NEW_INHERIT_RELS
             WITH child, parentNames
             UNWIND parentNames AS parentName
-            OPTIONAL MATCH (parent:CLASS {name: parentName})-[:HAS_METHOD]->(member)
+            MATCH (parent:CLASS {name: parentName})-[:HAS_METHOD]->(member)
             WHERE NOT EXISTS {
-                OPTIONAL MATCH (child)-[:HAS_METHOD]->(childMethod)
+                MATCH (child)-[:HAS_METHOD]->(childMethod)
                 WHERE childMethod.__name__ = member.__name__ AND childMethod.signature = member.signature
             }
             WITH child, collect(DISTINCT member) AS members
