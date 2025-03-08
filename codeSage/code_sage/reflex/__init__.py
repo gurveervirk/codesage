@@ -557,16 +557,13 @@ def process_module(module_name: str):
         to_entity_ancestor_path = ".".join(to_entity.split(".")[:-1])
         if to_entity_ancestor_path == from_entity:
             continue
-        elif from_entity == module_name and to_entity.startswith(module_name):
+        elif to_entity.startswith(module_name):
             other_relations["EXPOSES"].add((from_entity, to_entity))
         else:
             cleaned_imports_relations.add((from_entity, to_entity))
 
     # Clean up EXPOSED relations
     for from_entity, to_entity in other_relations["EXPOSES"]:
-        to_entity_ancestor_path = ".".join(to_entity.split(".")[:-1])
-        if to_entity_ancestor_path == from_entity:
-            continue
         if not to_entity.startswith(from_entity):
             continue
         cleaned_exposed_relations.add((from_entity, to_entity))

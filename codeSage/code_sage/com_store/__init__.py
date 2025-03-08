@@ -601,8 +601,7 @@ class COMStore(Neo4jPropertyGraphStore):
         # Create cypher queries to add special labels to entities starting with '_'
         add_dunder_labels_query = (
             """
-            MATCH (root:ROOT_MODULE {name: $module_name})
-            MATCH (root)-[:HAS_SUBMODULE|HAS_CLASS|HAS_METHOD|HAS_FUNCTION|EXPOSES*]->(children:FUNCTION|METHOD)
+            MATCH (root:ROOT_MODULE {name: $module_name})-[:HAS_SUBMODULE|HAS_CLASS|HAS_METHOD|HAS_FUNCTION|EXPOSES*]->(children:FUNCTION|METHOD)
             WHERE children.__name__ STARTS WITH '__' AND children.__name__ ENDS WITH '__'
             CALL apoc.create.addLabels(children, ['DUNDER'])
             YIELD node
@@ -611,8 +610,7 @@ class COMStore(Neo4jPropertyGraphStore):
         )
         add_private_labels_query = (
             """
-            MATCH (root:ROOT_MODULE {name: $module_name})
-            MATCH (root)-[:HAS_SUBMODULE|HAS_CLASS|HAS_METHOD|HAS_FUNCTION|EXPOSES*]->(children)
+            MATCH (root:ROOT_MODULE {name: $module_name})-[:HAS_SUBMODULE|HAS_CLASS|HAS_METHOD|HAS_FUNCTION|EXPOSES*]->(children)
             WHERE children.__name__ STARTS WITH '__' AND NOT children.__name__ ENDS WITH '__'
             CALL apoc.create.addLabels(children, ['PRIVATE'])
             YIELD node
@@ -621,9 +619,8 @@ class COMStore(Neo4jPropertyGraphStore):
         )
         add_internal_labels_query = (
             """
-            MATCH (root:ROOT_MODULE {name: $module_name})
-            MATCH (root)-[:HAS_SUBMODULE|HAS_CLASS|HAS_METHOD|HAS_FUNCTION|EXPOSES*]->(children)
-            WHERE NOT children.__name__ STARTS WITH '__' AND (children.__name__ STARTS WITH '_' OR children.name CONTAINS '._')
+            MATCH (root:ROOT_MODULE {name: $module_name})-[:HAS_SUBMODULE|HAS_CLASS|HAS_METHOD|HAS_FUNCTION|EXPOSES*]->(children)
+            WHERE NOT children.__name__ STARTS WITH '__' AND (children.__name__ STARTS WITH '_' OR children.shortest_call_path CONTAINS '._')
             CALL apoc.create.addLabels(children, ['INTERNAL'])
             YIELD node
             RETURN count(node) AS numNodesLabeled
@@ -756,16 +753,15 @@ class COMStore(Neo4jPropertyGraphStore):
         # Set the shortest call paths for all nodes in the module tree (recursively)
         set_shortest_call_paths_query = (
             """
-            MATCH (root:ROOT_MODULE {name: $module_name})
-            MATCH (end:MODULE|FUNCTION|CLASS|METHOD)<-[:HAS_SUBMODULE|HAS_CLASS|HAS_METHOD|HAS_FUNCTION|EXPOSES*]-(root)
+            MATCH (end:MODULE|FUNCTION|CLASS|METHOD)<-[:HAS_SUBMODULE|HAS_CLASS|HAS_METHOD|HAS_FUNCTION|EXPOSES*]-(root:ROOT_MODULE {name: $module_name})
             WITH root, collect(end) AS endNodes
             CALL apoc.path.spanningTree(root, {
-            relationshipFilter: 'HAS_SUBMODULE|HAS_CLASS|HAS_METHOD|HAS_FUNCTION|EXPOSES>',
-            terminatorNodes: endNodes
+            relationshipFilter: 'HAS_SUBMODULE>|HAS_CLASS>|HAS_METHOD>|HAS_FUNCTION>|EXPOSES>',
+            endNodes: endNodes
             })
             YIELD path
             WITH nodes(path) AS nodesInPath
-            WITH nodesInPath[-1] AS targetNode, nodesInPath[-2] as parentNode
+            WITH LAST(nodesInPath) AS targetNode, nodesInPath[-2] as parentNode
             WHERE targetNode.shortest_call_path IS NULL
             SET targetNode.shortest_call_path =
             CASE
@@ -791,17 +787,20 @@ class COMStore(Neo4jPropertyGraphStore):
             """
             MATCH (child:CLASS)
             WHERE child.NEW_INHERIT_RELS IS NOT NULL
-            UNWIND child.NEW_INHERIT_RELS AS parentName
-            MATCH (parent:CLASS {name: parentName})-[:HAS_METHOD]->(member)
+            WITH child, child.NEW_INHERIT_RELS AS parentNames
+            REMOVE child.NEW_INHERIT_RELS
+            WITH child, parentNames
+            UNWIND parentNames AS parentName
+            OPTIONAL MATCH (parent:CLASS {name: parentName})-[:HAS_METHOD]->(member)
             WHERE NOT EXISTS {
-                MATCH (child)-[:HAS_METHOD]->(childMethod)
+                OPTIONAL MATCH (child)-[:HAS_METHOD]->(childMethod)
                 WHERE childMethod.__name__ = member.__name__ AND childMethod.signature = member.signature
             }
-            WITH member, child
+            WITH child, collect(DISTINCT member) AS members
+            UNWIND members AS member
             MERGE (child)-[:HAS_METHOD]->(member)
-            WITH child, member
-            REMOVE child.NEW_INHERIT_RELS
-            RETURN child.name AS ChildClass, COUNT(DISTINCT member) AS TotalParentMembersLabeled
+            WITH DISTINCT child, collect(member) AS members
+            RETURN child.name AS ChildClass, size(members) AS TotalParentMembersLabeled
             """
         )
         self.structured_query(handle_inheritance_query)
