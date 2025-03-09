@@ -1,13 +1,14 @@
 from typing import (
-    Union,
-    List,
+    TYPE_CHECKING,
     Any,
     Dict,
     Generator,
+    List,
     Optional,
     Sequence,
+    Union,
+    cast,
 )
-from llama_index.core.types import Model
 from llama_index.llms.gemini.utils import (
     chat_from_gemini_response,
     chat_message_to_gemini,
@@ -20,12 +21,38 @@ from llama_index.core.base.llms.types import (
     CompletionResponse
 )
 from llama_index.core.bridge.pydantic import Field
-from llama_index.core.constants import DEFAULT_TEMPERATURE
+from llama_index.core.constants import DEFAULT_NUM_OUTPUTS, DEFAULT_TEMPERATURE
 from llama_index.core.callbacks import CallbackManager
+from llama_index.core.instrumentation.events.llm import (
+    LLMPredictEndEvent,
+    LLMPredictStartEvent,
+    LLMStructuredPredictInProgressEvent,
+    LLMStructuredPredictEndEvent,
+    LLMStructuredPredictStartEvent,
+)
+from llama_index.core.base.llms.types import (
+    ChatMessage,
+    ChatResponse,
+    ChatResponseAsyncGen,
+    ChatResponseGen,
+    CompletionResponse,
+    CompletionResponseAsyncGen,
+    CompletionResponseGen,
+    LLMMetadata,
+    MessageRole,
+)
 from llama_index.core.bridge.pydantic import (
     BaseModel,
+    WithJsonSchema,
     Field,
+    field_validator,
+    model_validator,
+    ConfigDict,
+    ValidationError,
 )
+from llama_index.core.types import Model
+from llama_index.core.prompts import BasePromptTemplate, PromptTemplate
+from llama_index.core.llms.callbacks import llm_chat_callback, llm_completion_callback
 from aiolimiter import AsyncLimiter
 import google.generativeai as genai
 import llama_index.core.instrumentation as instrument
@@ -33,26 +60,19 @@ import llama_index.core.instrumentation as instrument
 dispatcher = instrument.get_dispatcher(__name__)
 
 GEMINI_MODELS = (
-    "models/gemini-2.0-flash-001",
-    "models/gemini-2.0-flash-exp",
-    # Gemini 1.0 Pro Vision has been deprecated on July 12, 2024.
-    # According to official recommendations, switch the default model to gemini-1.5-flash
+    "models/gemini-2.0-flash",
+    "models/gemini-2.0-flash-lite",
+    "models/gemini-2.0-flash-thinking",
+    "models/gemini-2.0-flash-thinking-exp-01-21",
+    "models/gemini-2.0-flash-lite-preview-02-05",
+    "models/gemini-2.0-pro-exp-02-05",
     "models/gemini-1.5-flash",
-    "models/gemini-1.5-flash-latest",
-    "models/gemini-pro",
-    "models/gemini-pro-latest",
-    "models/gemini-1.5-pro",
-    "models/gemini-1.5-pro-latest",
+    "models/gemini-1.5-flash-8b",
     "models/gemini-1.0-pro",
-    # for some reason, google lists this without the models prefix
-    "gemini-1.5-flash",
-    "gemini-1.5-flash-latest",
-    "gemini-1.0-pro",
 )
 from llama_index.core.utilities.gemini_utils import (
     merge_neighboring_same_role_messages,
 )
-from llama_index.llms.gemini import Gemini
 
 class GeminiWithRateLimits(Gemini):
     rate_limit: int = Field(
@@ -70,42 +90,19 @@ class GeminiWithRateLimits(Gemini):
     )
     def __init__(
         self,
-        api_key: Optional[str] = None,
-        model: str = GEMINI_MODELS[0],
-        temperature: float = DEFAULT_TEMPERATURE,
-        max_tokens: Optional[int] = None,
-        generation_config: Optional[genai.types.GenerationConfigDict] = None,
-        safety_settings: Optional[genai.types.SafetySettingDict] = None,
-        callback_manager: Optional[CallbackManager] = None,
-        api_base: Optional[str] = None,
-        transport: Optional[str] = None,
-        model_name: Optional[str] = None,
-        default_headers: Optional[Dict[str, str]] = None,
-        request_options: Optional[genai.types.RequestOptions] = None,
         rate_limit: Optional[int] = 10,  # Default rate limit
         period: Optional[int] = 60,  # Default period
-        **generate_kwargs: Any,
+        **kwargs: Any,
     ):
         """Creates a new Gemini model interface."""
         super().__init__(
-            api_key=api_key,
-            model=model,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            generation_config=generation_config,
-            safety_settings=safety_settings,
-            callback_manager=callback_manager,
-            api_base=api_base,
-            transport=transport,
-            model_name=model_name,
-            default_headers=default_headers,
-            request_options=request_options,
-            **generate_kwargs,
+            **kwargs,
         )
         self.rate_limit = rate_limit
         self.period = period
         self.limiter = AsyncLimiter(self.rate_limit, self.period)
 
+    @llm_chat_callback()
     async def achat(
         self, messages: Sequence[ChatMessage], **kwargs: Any
     ) -> ChatResponse:
@@ -120,6 +117,7 @@ class GeminiWithRateLimits(Gemini):
             )
             return chat_from_gemini_response(response)
 
+    @llm_completion_callback()
     async def acomplete(
         self, prompt: str, formatted: bool = False, **kwargs: Any
     ) -> CompletionResponse:
@@ -130,6 +128,53 @@ class GeminiWithRateLimits(Gemini):
             )
             return completion_from_gemini_response(result)
 
+    @llm_completion_callback()
+    def astream_complete(
+        self, prompt: str, formatted: bool = False, **kwargs: Any
+    ) -> CompletionResponseAsyncGen:
+        request_options = self._request_options or kwargs.pop("request_options", None)
+
+        async def gen():
+            async with self.limiter:
+              it = await self._model.generate_content_async(
+                  prompt, stream=True, request_options=request_options, **kwargs
+              )
+              async for r in it:
+                  yield completion_from_gemini_response(r)
+
+        return gen()
+
+    @llm_chat_callback()
+    async def astream_chat(
+        self, messages: Sequence[ChatMessage], **kwargs: Any
+    ) -> ChatResponseAsyncGen:
+        request_options = self._request_options or kwargs.pop("request_options", None)
+        merged_messages = merge_neighboring_same_role_messages(messages)
+        *history, next_msg = map(chat_message_to_gemini, merged_messages)
+        chat = self._model.start_chat(history=history)
+        async with self.limiter:
+          response = await chat.send_message_async(
+              next_msg, stream=True, request_options=request_options, **kwargs
+          )
+
+          async def gen() -> ChatResponseAsyncGen:
+              content = ""
+              existing_tool_calls = []
+              async for r in response:
+                  top_candidate = r.candidates[0]
+                  content_delta = top_candidate.content.parts[0].text
+                  content += content_delta
+                  llama_resp = chat_from_gemini_response(r)
+                  existing_tool_calls.extend(
+                      llama_resp.message.additional_kwargs.get("tool_calls", [])
+                  )
+                  llama_resp.delta = content_delta
+                  llama_resp.message.content = content
+                  llama_resp.message.additional_kwargs["tool_calls"] = existing_tool_calls
+                  yield llama_resp
+
+          return gen()
+
     @dispatcher.span
     async def astructured_predict(
         self, *args: Any, llm_kwargs: Optional[Dict[str, Any]] = None, **kwargs: Any
@@ -138,14 +183,16 @@ class GeminiWithRateLimits(Gemini):
         llm_kwargs = llm_kwargs or {}
         all_kwargs = {**llm_kwargs, **kwargs}
 
-        llm_kwargs["tool_choice"] = (
-            "required" if "tool_choice" not in all_kwargs else all_kwargs["tool_choice"]
-        )
+        if self._is_function_call_model:
+            llm_kwargs["tool_choice"] = (
+                "required"
+                if "tool_choice" not in all_kwargs
+                else all_kwargs["tool_choice"]
+            )
         # by default structured prediction uses function calling to extract structured outputs
         # here we force tool_choice to be required
-
         async with self.limiter:
-            return await super().astructured_predict(*args, llm_kwargs=llm_kwargs, **kwargs)
+          return await super().astructured_predict(*args, llm_kwargs=llm_kwargs, **kwargs)
 
     @dispatcher.span
     async def astream_structured_predict(
@@ -155,12 +202,15 @@ class GeminiWithRateLimits(Gemini):
         llm_kwargs = llm_kwargs or {}
         all_kwargs = {**llm_kwargs, **kwargs}
 
-        llm_kwargs["tool_choice"] = (
-            "required" if "tool_choice" not in all_kwargs else all_kwargs["tool_choice"]
-        )
+        if self._is_function_call_model:
+            llm_kwargs["tool_choice"] = (
+                "required"
+                if "tool_choice" not in all_kwargs
+                else all_kwargs["tool_choice"]
+            )
         # by default structured prediction uses function calling to extract structured outputs
         # here we force tool_choice to be required
         async with self.limiter:
-            return await super().astream_structured_predict(
-                *args, llm_kwargs=llm_kwargs, **kwargs
-            )
+          return await super().astream_structured_predict(
+              *args, llm_kwargs=llm_kwargs, **kwargs
+          )
