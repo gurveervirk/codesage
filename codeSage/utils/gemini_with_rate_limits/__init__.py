@@ -76,7 +76,7 @@ from llama_index.core.utilities.gemini_utils import (
 
 class GeminiWithRateLimits(Gemini):
     rate_limit: int = Field(
-        default=10,
+        default=15,
         description="The number of allowed calls per period."
     )
     period: int = Field(

@@ -24,8 +24,8 @@ def initialize_llamaindex():
         embed_model = HuggingFaceEmbedding(model_name = "mixedbread-ai/mxbai-embed-large-v1",
             embed_batch_size = 25)
         Settings.embed_model = embed_model
-        Settings.llm = Gemini(model_name = "models/gemini-2.0-flash-001",api_key=app.config["GEMINI_API_KEY"], temperature=1, rate_limit=5, period=60)
-        app.current_model="Gemini::models/gemini-2.0-flash-001"
+        Settings.llm = Gemini(api_key=app.config["GEMINI_API_KEY"], temperature=1, rate_limit=15, period=60)
+        app.current_model=Settings.llm.model
         print("LlamaIndex settings initialized successfully using Settings object.")
         app.com_store = COMStore(username=app.config["NEO4J_USER"], password=app.config["NEO4J_PASSWORD"], url=app.config["NEO4J_URI"])
 
