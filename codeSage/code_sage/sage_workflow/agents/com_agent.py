@@ -1,5 +1,5 @@
 from llama_index.core.agent.workflow import FunctionAgent
-from typing import List, Sequence, Union, Literal
+from typing import List, Sequence, Union, Literal, Callable
 from llama_index.core.agent.workflow.workflow_events import (
     AgentInput,
     AgentOutput,
@@ -13,6 +13,7 @@ from llama_index.core.llms import ChatMessage
 from llama_index.core.memory import BaseMemory
 from llama_index.core.tools import AsyncBaseTool
 from llama_index.core.workflow import Context
+from llama_index.core.utils import get_tokenizer
 from .prompts import SUMMARIZE_CODE_SCRATCHPAD_PROMPT, SUMMARIZE_SEARCH_SCRATCHPAD_PROMPT
 
 class COMAgent(FunctionAgent):
@@ -31,6 +32,22 @@ class COMAgent(FunctionAgent):
         description = "The prompt to summarize the search scratchpad",
         default = SUMMARIZE_SEARCH_SCRATCHPAD_PROMPT
     )
+    max_mem_token_limit: int = Field(
+        description = "The maximum number of tokens to store in memory",
+        default = 100000
+    )
+    tokenizer_fn: Callable[[str], List] = Field(
+        default_factory=get_tokenizer,
+        exclude=True,
+    )
+
+    # Picked from llama_index.core.memory.chat_memory_buffer
+    def _token_count_for_messages(self, messages: List[ChatMessage]) -> int:
+        if len(messages) <= 0:
+            return 0
+
+        msg_str = " ".join(str(m.content) for m in messages)
+        return len(self.tokenizer_fn(msg_str))
 
     async def take_step(
         self,
@@ -117,11 +134,24 @@ class COMAgent(FunctionAgent):
             f"{PROMPT.format(current_agent_input=current_agent_input, scratchpad=scratchpad_str)}"
         )
 
-        # Append the summarized message to the code memory of this agent and to the memory
+        # Append the summarized message to the memory
         com_mem.append(response.text)
-        await ctx.set(mem_key, com_mem)
         summary_message = ChatMessage(role="assistant", content=response.text)
         await memory.aput(summary_message)
+
+        # If the agent's memory is too large, remove the oldest messages, then update the memory of this agent
+        message_count = len(com_mem)
+        token_count = self._token_count_for_messages(com_mem)
+
+        while token_count > self.max_mem_token_limit and message_count > 1:
+            message_count -= 1
+            com_mem.pop(0)
+            token_count = self._token_count_for_messages(com_mem)
+
+        if token_count > self.max_mem_token_limit or message_count <= 0:
+            com_mem = []
+
+        await ctx.set(mem_key, com_mem)
 
         # Reset current agent input
         await ctx.set(self.current_agent_input_key, None)
