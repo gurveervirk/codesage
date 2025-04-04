@@ -8,7 +8,7 @@ from llama_index.core.graph_stores.types import (
 )
 from llama_index.core import Settings
 from typing import Any, Dict, List, Optional, Tuple
-from reflex import Entity, Relationship
+from ..reflex import Entity, Relationship
 import logging
 import neo4j
 
@@ -825,7 +825,10 @@ class COMStore(Neo4jPropertyGraphStore):
         retrieve_new_nodes = (
             """
             MATCH (e)
-            WHERE e.embedding IS NULL
+            WHERE NOT e:INTERNAL
+            AND NOT e:PRIVATE
+            AND NOT e:DUNDER
+            AND e.embedding IS NULL
             RETURN
             e.id AS name,
             labels(e)[0] AS type,
@@ -847,7 +850,14 @@ class COMStore(Neo4jPropertyGraphStore):
                 properties=self._remove_empty_values(node["properties"])
             )
             entity_nodes.append(entity_node)
-            summaries.append(entity_node.properties.get("summary", ""))
+            summary = entity_node.properties.get("summary", "")
+    
+            if node["type"] in ("ROOT_MODULE", "MODULE", "CLASS"):
+                docstring = self._get_docstring(entity_node.properties.get("source", ""))
+                if docstring is not None and len(docstring) > 0:
+                    summary += f"\n\nDocstring:\n{docstring}"
+        
+            summaries.append(summary)
 
         # Embed the nodes
         embeddings = Settings.embed_model.get_text_embedding_batch(
@@ -860,35 +870,34 @@ class COMStore(Neo4jPropertyGraphStore):
 
         self.upsert_nodes(entity_nodes)
 
-    def _get_parent_module_info(self, entity_name: str) -> List[str]:
+    def _get_entity_info(self, entity_name: str) -> List[str]:
         """
-        Get the path from the given entity to the parent module.
+        Get information about the entity.
 
         Args:
             entity_name (str): The name of the entity.
 
         Returns:
-            List[str]: The path from the entity to the parent module.
+            List[str]: Information about the entity.
         """
-        get_parent_module_info_query = (
+        get_entity_info_query = (
             """
-            MATCH (end {name: $entity_name})  
-            OPTIONAL MATCH (end)-[:HAS_CLASS|HAS_METHOD|HAS_FUNCTION*1..]-(parent:MODULE|ROOT_MODULE)  
-            WITH end, parent, end.__name__ AS __name__, end.name AS name, end.source AS source, end.shortest_call_path AS shortest_call_path, end.summary AS summary, parent IS NULL AS isModule  
-            CALL apoc.do.case([
-            isModule,  
-            'RETURN __name__, name, source, shortest_call_path, summary, [] AS imports'
-            ],
-            'MATCH (parent)-[:IMPORTS]->(import)  
-            WITH parent, collect(import.name) AS imports  
-            RETURN parent.__name__ AS __name__, parent.name AS name, parent.source AS source, parent.shortest_call_path AS shortest_call_path, parent.summary AS summary, imports',  
-            {end: end, parent: parent, __name__: __name__, name: name, source: source, shortest_call_path: shortest_call_path, summary: summary}  
-            )  
-            YIELD value  
-            RETURN value.__name__ AS __name__, value.name AS name, value.source AS source, value.shortest_call_path AS shortest_call_path, value.imports AS imports, value.summary AS summary
+MATCH (end {name: $entity_name})
+OPTIONAL MATCH (end:CLASS)-[:HAS_METHOD]->(init {__name__: "__init__"})
+WHERE "CLASS" IN labels(end)
+RETURN 
+    end.name AS name, 
+    end.__name__ AS __name__, 
+    end.summary AS summary, 
+    CASE 
+        WHEN "CLASS" IN labels(end) AND init IS NOT NULL THEN init.signature
+        ELSE end.signature
+    END AS signature,
+    end.llm_signature AS llm_signature, 
+    end.shortest_call_path AS shortest_call_path
             """
         )
-        result = self.structured_query(get_parent_module_info_query, {"entity_name": entity_name})
+        result = self.structured_query(get_entity_info_query, {"entity_name": entity_name})
         return result if result else []
 
     def _get_retrieved_entity_representation(self, retrieved_node: Dict) -> str:
@@ -905,16 +914,13 @@ class COMStore(Neo4jPropertyGraphStore):
         *Name*: {retrieved_node["__name__"]}
         *Full Path*: {retrieved_node["name"]}
         *Shortest Call Path*: {retrieved_node["shortest_call_path"]}
-        *Imports*: {retrieved_node["imports"]}
+        *Signature*: {retrieved_node["signature"]}
+        *Signature identified by LLM as JSON (ONLY TO BE USED IF TYPES CANNOT BE ASCERTAINED FROM THE `Signature` FIELD)*: 
+        {retrieved_node["llm_signature"]}
 
-        *Summary*:
+        *Summary of the Entity*:
         ```
         {retrieved_node["summary"]}
-        ```
-
-        *Source*: 
-        ```
-        {retrieved_node["source"]}
         ```
         """
         return entity_representation
@@ -929,11 +935,11 @@ class COMStore(Neo4jPropertyGraphStore):
         Returns:
             str: Information about the entity.
         """
-        retrieved_node = self._get_parent_module_info(entity_name)
-        if not retrieved_node:
+        entity_node = self._get_entity_info(entity_name)
+        if not entity_node:
             return "No information found for the entity."
 
-        entity_representation = self._get_retrieved_entity_representation(retrieved_node[0])
+        entity_representation = self._get_retrieved_entity_representation(entity_node[0])
         return entity_representation
     
     def get_full_path_name(self, name: str) -> str:

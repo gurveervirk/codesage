@@ -216,6 +216,21 @@ def safe_get_source(obj) -> str:
         return inspect.getsource(obj)
     except (OSError, TypeError):
         return f"# Representation:\n{repr(obj)}"
+    
+def safe_get_docstring(obj) -> str:
+    """
+    Retrieve the docstring of an object or fallback to its representation.
+
+    Args:
+        obj: The object to retrieve the docstring for.
+
+    Returns:
+        str: The docstring or representation of the object.
+    """
+    try:
+        return inspect.getdoc(obj) or ""
+    except (OSError, TypeError):
+        return f"# Representation:\n{repr(obj)}"
 
 def process_member(
     name: str,
@@ -295,13 +310,15 @@ def process_member(
             processed_paths.add(obj_path)
 
         source_code = safe_get_source(obj)
+        docstring = safe_get_docstring(obj)
         function_entity = Entity(
             obj_path,
             "FUNCTION",
             {
                 "source": source_code,
                 "__name__": obj.__name__,
-                "signature": str(inspect.signature(obj))
+                "signature": str(inspect.signature(obj)),
+                "docstring": docstring
             }
         )
         entities.append(function_entity)
@@ -320,13 +337,15 @@ def process_member(
             processed_paths.add(obj_path)
 
         source_code = safe_get_source(obj)
+        docstring = safe_get_docstring(obj)
         method_entity = Entity(
             obj_path,
             "METHOD",
             {
                 "source": source_code,
                 "__name__": obj.__name__,
-                "signature": str(inspect.signature(obj))
+                "signature": str(inspect.signature(obj)),
+                "docstring": docstring
             }
         )
         entities.append(method_entity)
@@ -371,9 +390,11 @@ def traverse_recursive(
         processed_paths.add(obj_path)
 
     source = safe_get_source(obj)
+    docstring = safe_get_docstring(obj)
     properties = {
         "source": source,
         "__name__": obj.__name__,
+        "docstring": docstring
     }
 
     if inspect.ismodule(obj):
@@ -462,10 +483,12 @@ def process_module(module_name: str):
     module_object = importlib.import_module(module_name)
 
     source = safe_get_source(module_object)
+    docstring = safe_get_docstring(module_object)
     all_import_statements = get_import_statements(source)
     import_as_aliases = get_import_as_aliases(source, module_name)
     properties = {
         "source": source,
+        "docstring": docstring,
         "__name__": module_object.__name__,
         "import_statements": all_import_statements,
         "import_as_aliases": import_as_aliases

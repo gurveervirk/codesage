@@ -135,8 +135,8 @@ class COMAgent(FunctionAgent):
         )
 
         # Append the summarized message to the memory
-        com_mem.append(response.text)
         summary_message = ChatMessage(role="assistant", content=response.text)
+        com_mem.append(summary_message)
         await memory.aput(summary_message)
 
         # If the agent's memory is too large, remove the oldest messages, then update the memory of this agent

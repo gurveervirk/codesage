@@ -19,6 +19,10 @@ export default function Chat() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const eventSourceRef = useRef<EventSource | null>(null);
 
+  useEffect(() => {
+      console.log(models);
+    }, [models]);
+
   const handleSendMessage = async (message: string) => {
     // 1. Add user message to the state immediately
     const newMessage: MessageInterface = { text: message, sender: "user", id: Date.now().toString() };

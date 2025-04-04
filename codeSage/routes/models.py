@@ -30,7 +30,7 @@ def change_models():
         provider = request.json.get('provider')
         id = request.json.get('id')
         if provider=="Gemini":
-            Settings.llm = Gemini(model_name=id,api_key=config.GEMINI_API_KEY, temperature=1, rate_limit=5, period=60)
+            Settings.llm = Gemini(model_name=id,api_key=config.GEMINI_API_KEY, temperature=1, rate_limit=15, period=60)
             current_app.current_model = "Gemini::"+id
         elif provider=="Ollama":
             Settings.llm = Ollama(model=id, request_timeout=120.0, base_url="http://localhost:11434")

@@ -1,5 +1,4 @@
 from typing import (
-    TYPE_CHECKING,
     Any,
     Dict,
     Generator,
@@ -7,7 +6,6 @@ from typing import (
     Optional,
     Sequence,
     Union,
-    cast,
 )
 from llama_index.llms.gemini.utils import (
     chat_from_gemini_response,
@@ -21,40 +19,20 @@ from llama_index.core.base.llms.types import (
     CompletionResponse
 )
 from llama_index.core.bridge.pydantic import Field
-from llama_index.core.constants import DEFAULT_NUM_OUTPUTS, DEFAULT_TEMPERATURE
-from llama_index.core.callbacks import CallbackManager
-from llama_index.core.instrumentation.events.llm import (
-    LLMPredictEndEvent,
-    LLMPredictStartEvent,
-    LLMStructuredPredictInProgressEvent,
-    LLMStructuredPredictEndEvent,
-    LLMStructuredPredictStartEvent,
-)
 from llama_index.core.base.llms.types import (
     ChatMessage,
     ChatResponse,
     ChatResponseAsyncGen,
-    ChatResponseGen,
     CompletionResponse,
     CompletionResponseAsyncGen,
-    CompletionResponseGen,
-    LLMMetadata,
-    MessageRole,
 )
 from llama_index.core.bridge.pydantic import (
     BaseModel,
-    WithJsonSchema,
     Field,
-    field_validator,
-    model_validator,
-    ConfigDict,
-    ValidationError,
 )
 from llama_index.core.types import Model
-from llama_index.core.prompts import BasePromptTemplate, PromptTemplate
 from llama_index.core.llms.callbacks import llm_chat_callback, llm_completion_callback
 from aiolimiter import AsyncLimiter
-import google.generativeai as genai
 import llama_index.core.instrumentation as instrument
 
 dispatcher = instrument.get_dispatcher(__name__)
@@ -90,12 +68,14 @@ class GeminiWithRateLimits(Gemini):
     )
     def __init__(
         self,
-        rate_limit: Optional[int] = 10,  # Default rate limit
+        model: str = GEMINI_MODELS[0],
+        rate_limit: Optional[int] = 15,  # Default rate limit
         period: Optional[int] = 60,  # Default period
         **kwargs: Any,
     ):
         """Creates a new Gemini model interface."""
         super().__init__(
+            model=model,
             **kwargs,
         )
         self.rate_limit = rate_limit

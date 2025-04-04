@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useEffect } from "react";
 import { useState } from "react";
 import {
   TextField,
@@ -32,6 +32,10 @@ export default function ChatInput({ onSend, models }: ChatInputProps) {
   const [snackbarOpen, setSnackbarOpen] = useState(false);
   const [snackbarMessage, setSnackbarMessage] = useState("");
   const [snackbarSeverity, setSnackbarSeverity] = useState<"success" | "error">("success");
+
+  useEffect(() => {
+    console.log(models);
+  }, [models]);
 
   const handleSend = () => {
     if (!input.trim()) return;

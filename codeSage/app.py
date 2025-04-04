@@ -25,14 +25,13 @@ def initialize_llamaindex():
             embed_batch_size = 25)
         Settings.embed_model = embed_model
         Settings.llm = Gemini(api_key=app.config["GEMINI_API_KEY"], temperature=1, rate_limit=15, period=60)
-        app.current_model=Settings.llm.model
+        app.current_model="Gemini::"+Settings.llm.model
         print("LlamaIndex settings initialized successfully using Settings object.")
         app.com_store = COMStore(username=app.config["NEO4J_USER"], password=app.config["NEO4J_PASSWORD"], url=app.config["NEO4J_URI"])
 
     except Exception as e:
         print(f"Error initializing LlamaIndex: {e}")
         exit(1)
-        # Handle the error appropriately (e.g., log, raise, exit)
 
 with app.app_context():
         initialize_llamaindex()

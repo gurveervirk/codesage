@@ -1,10 +1,6 @@
-from config import config
-import sys
-import os
 import json
 from llama_index.core.settings import Settings
 from flask import Blueprint, request, jsonify, stream_with_context, Response, current_app
-import asyncio
 from code_sage.com_store import COMStore
 from code_sage.sage_workflow import SageWorkflow
 
@@ -39,27 +35,27 @@ def generate():
     finally:
         pass
 
-def generate_code(prompt:str):
-    try:
-        sage_workflow = SageWorkflow(com_store=current_app.com_store)
-        agent_workflow = sage_workflow.create_agent_workflow()
-        response = agent_workflow.stream
-    finally:
-        pass
+# def generate_code(prompt:str):
+#     try:
+#         sage_workflow = SageWorkflow(com_store=current_app.com_store)
+#         agent_workflow = sage_workflow.create_agent_workflow()
+#         response = agent_workflow.stream
+#     finally:
+#         pass
 
 
-@generate_bp.route('/generate-code', methods=['POST'])
-def generate():
-    data = request.get_json()
-    try:
-        prompt = data['prompt']
-        return Response(stream_with_context(generate_reply(prompt)), content_type='text/event-stream') , 200
-    except KeyError as e:
-        print(f"KeyError: {e}")
-        return jsonify({"error": "Invalid input, 'prompt' key is missing"}), 400
-    except Exception as e:
-        print(f"Error in generate: {e}")
-        return jsonify({"error": str(e)}), 500
-    finally:
-        pass
+# @generate_bp.route('/generate-code', methods=['POST'])
+# def generate():
+#     data = request.get_json()
+#     try:
+#         prompt = data['prompt']
+#         return Response(stream_with_context(generate_reply(prompt)), content_type='text/event-stream') , 200
+#     except KeyError as e:
+#         print(f"KeyError: {e}")
+#         return jsonify({"error": "Invalid input, 'prompt' key is missing"}), 400
+#     except Exception as e:
+#         print(f"Error in generate: {e}")
+#         return jsonify({"error": str(e)}), 500
+#     finally:
+#         pass
     

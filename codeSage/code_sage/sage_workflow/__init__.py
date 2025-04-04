@@ -1,12 +1,12 @@
 
 from llama_index.core.tools import FunctionTool
-from com_store import COMStore
+from ..com_store import COMStore
 from llama_index.core.agent.workflow import (
     AgentWorkflow,
     FunctionAgent,
 )
-from codeSage.code_sage.sage_workflow.agents.prompts import SEARCH_SYSTEM_PROMPT, CODE_SYSTEM_PROMPT, ROOT_SYSTEM_PROMPT
-from codeSage.code_sage.sage_workflow.agents.com_agent import COMAgent
+from .agents.prompts import SEARCH_SYSTEM_PROMPT, CODE_SYSTEM_PROMPT, ROOT_SYSTEM_PROMPT
+from .agents.com_agent import COMAgent
 
 class SageWorkflow:
     def __init__(self, com_store: COMStore):
