@@ -4,4 +4,5 @@ llama-index
 llama-index-graph-stores-neo4j
 llama-index-llms-gemini
 llama-index-embeddings-huggingface
+llama_index.llms.ollama
 aiolimiter

@@ -8,3 +8,4 @@ UI/node_modules
 UI/.cache
 UI/build
 UI/.env
+/venv
