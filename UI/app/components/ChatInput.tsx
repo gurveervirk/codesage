@@ -28,10 +28,16 @@ interface ChatInputProps {
 export default function ChatInput({ onSend, models }: ChatInputProps) {
   const fetcher = useFetcher();
   const [input, setInput] = useState("");
-  const [selectedModel, setSelectedModel] = useState(models['Current-Model'][0].id);
+  const [selectedModel, setSelectedModel] = useState<string>("");
   const [snackbarOpen, setSnackbarOpen] = useState(false);
   const [snackbarMessage, setSnackbarMessage] = useState("");
   const [snackbarSeverity, setSnackbarSeverity] = useState<"success" | "error">("success");
+
+  useEffect(() => {
+    if (models && models['Current-Model'] && models['Current-Model'].length > 0) {
+      setSelectedModel(models['Current-Model'][0].id);
+    }
+  }, [models]);
 
   useEffect(() => {
     console.log(models);

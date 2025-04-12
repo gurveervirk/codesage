@@ -24,4 +24,13 @@ export default defineConfig({
   ssr: {
     noExternal: ["@mui/icons-material"],
   },
+  optimizeDeps: {
+    include: ["@mui/material", "@mui/icons-material"],
+    exclude: ["@mui/icons-material/esm"],
+  },
+  build: {
+    commonjsOptions: {
+      include: [/node_modules/],
+    },
+  },
 });

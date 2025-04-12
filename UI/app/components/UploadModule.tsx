@@ -31,9 +31,17 @@ const UploadModule: React.FC = () => {
             const formData = new FormData(inputBox);
             const moduleName = formData.get('moduleName') as string;
 
-            fetcher.submit({ module_name: moduleName }, { method: 'post', action: '/api/upload_module' });
+            fetcher.submit(
+                { module_name: moduleName },
+                { 
+                    method: 'post', 
+                    action: '/api/upload_module',
+                    encType: 'application/json'
+                }
+            );
 
             if (fetcher.data) {
+                console.log(fetcher.data);
                 if ((fetcher.data as any).success) {
                     const data = fetcher.data as ApiResponse;
                     setSuccessMessage(data.message || "Module processed successfully!");

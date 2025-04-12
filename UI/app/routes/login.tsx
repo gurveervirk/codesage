@@ -1,4 +1,3 @@
-// app/routes/login.tsx
 import React from "react";
 import { useNavigate, Form, useActionData } from "@remix-run/react";
 import { ActionFunctionArgs, redirect, json } from "@remix-run/node";
@@ -7,8 +6,10 @@ import { initializeApp, getApps } from "firebase/app";
 import { getAuth, signInWithEmailAndPassword } from "firebase/auth";
 
 // MUI Components
-import {Box,Typography,Grid2} from "@mui/material"
+import { Box, Typography, Paper, Container,Grid, useTheme, useMediaQuery } from "@mui/material";
+
 import { LoginDialog } from "~/components/LoginDialog";
+import CodeIcon from '@mui/icons-material/Code';
 
 // Initialize Firebase app only once
 if (!getApps().length) {
@@ -58,37 +59,165 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 export default function Login() {
+  const theme = useTheme();
+  const isMobile = useMediaQuery(theme.breakpoints.down('sm'));
+  
   return (
-    <Grid2 container component="main" sx={{ height: "100vh" }}>
-      <Grid2
-        size = {{ xs: 12, sm: 4, md: 7 }}
-        sx={{
-          backgroundImage: "url(https://source.unsplash.com/random)", // Replace with your image
-          backgroundRepeat: "no-repeat",
-          backgroundColor: (t) =>
-            t.palette.mode === "light"
-              ? t.palette.grey[50]
-              : t.palette.grey[900],
-          backgroundSize: "cover",
-          backgroundPosition: "center",
-        }}
-      />
-      <Grid2 size = {{ xs: 12, sm: 8, md: 5 }} sx={{ boxShadow: '0px 2px 4px rgba(0,0,0,0.2)' }}>
-        <Box
+    <Box 
+      sx={{ 
+        height: "100vh",
+        overflow: "hidden",
+        background: "linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%)"
+      }}
+    >
+      <Grid container sx={{ height: "100%" }}>
+        {/* Left panel with image - hidden on mobile */}
+        <Grid 
+          xs={0} 
+          md={7} 
+          lg={8}
           sx={{
-            my: 8,
-            mx: 4,
-            display: "flex",
-            flexDirection: "column",
-            alignItems: "center",
+            display: { xs: 'none', md: 'block' },
+            position: 'relative',
+            backgroundImage: "url(https://images.unsplash.com/photo-1566837945700-30057527ade0?q=80&w=2070)",
+            backgroundRepeat: "no-repeat",
+            backgroundSize: "cover",
+            backgroundPosition: "center",
+            boxShadow: "inset -10px 0px 20px rgba(0,0,0,0.1)",
+            
+            "&::before": {
+              content: '""',
+              position: 'absolute',
+              top: 0,
+              left: 0,
+              width: '100%',
+              height: '100%',
+              backgroundColor: 'rgba(0,0,0,0.4)',
+              backdropFilter: 'blur(2px)',
+            }
           }}
         >
-          <Typography component="h1" variant="h5">
-            Sign in
-          </Typography>
-          <LoginDialog />
-        </Box>
-      </Grid2>
-    </Grid2>
+          <Box 
+            sx={{ 
+              position: 'absolute', 
+              bottom: 60, 
+              left: 60, 
+              maxWidth: '60%',
+              zIndex: 1
+            }}
+          >
+            <Typography 
+              variant="h3" 
+              sx={{ 
+                color: 'white', 
+                fontWeight: 700, 
+                textShadow: '0px 2px 4px rgba(0,0,0,0.3)',
+                mb: 2
+              }}
+            >
+              CodeSage
+            </Typography>
+            <Typography 
+              variant="h6" 
+              sx={{ 
+                color: 'rgba(255,255,255,0.9)', 
+                fontWeight: 400,
+                textShadow: '0px 1px 2px rgba(0,0,0,0.3)',
+                lineHeight: 1.5,
+              }}
+            >
+              Your AI-powered coding assistant. Get instant answers and explanations for your programming questions.
+            </Typography>
+          </Box>
+        </Grid>
+        
+        {/* Right panel with login form */}
+        <Grid 
+          xs={12} 
+          md={5} 
+          lg={4} 
+          sx={{ 
+            display: 'flex',
+            flexDirection: 'column',
+            justifyContent: 'center',
+            p: { xs: 2, sm: 4, md: 6 },
+          }}
+        >
+          <Paper 
+            elevation={isMobile ? 0 : 6} 
+            sx={{ 
+              p: { xs: 3, sm: 4 },
+              borderRadius: 2,
+              backdropFilter: 'blur(10px)',
+              backgroundColor: 'rgba(255, 255, 255, 0.95)',
+              maxWidth: 500,
+              mx: 'auto',
+              width: '100%',
+              boxShadow: isMobile ? 'none' : '0 8px 32px rgba(0, 0, 0, 0.12)'
+            }}
+          >
+            <Box
+              sx={{
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+              }}
+            >
+              <Box 
+                sx={{ 
+                  display: 'flex', 
+                  alignItems: 'center', 
+                  mb: 4, 
+                  gap: 1.5 
+                }}
+              >
+                <CodeIcon 
+                  sx={{ 
+                    color: 'primary.main', 
+                    fontSize: { xs: 32, sm: 40 } 
+                  }} 
+                />
+                <Typography 
+                  component="h1" 
+                  variant={isMobile ? "h5" : "h4"} 
+                  sx={{ 
+                    fontWeight: 700, 
+                    color: 'text.primary',
+                    letterSpacing: '-0.01em'
+                  }}
+                >
+                  CodeSage
+                </Typography>
+              </Box>
+              
+              <Typography 
+                variant="body1" 
+                align="center" 
+                sx={{ 
+                  mb: 3, 
+                  color: 'text.secondary', 
+                  maxWidth: 400
+                }}
+              >
+                Sign in to your account to continue your coding journey
+              </Typography>
+              
+              <LoginDialog />
+              
+              <Typography 
+                variant="caption" 
+                sx={{ 
+                  mt: 4, 
+                  color: 'text.disabled', 
+                  textAlign: 'center' 
+                }}
+              >
+                By signing in, you agree to our Terms of Service and Privacy Policy
+              </Typography>
+            </Box>
+          </Paper>
+        </Grid>
+      </Grid>
+    </Box>
   );
 }
