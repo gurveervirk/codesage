@@ -16,12 +16,6 @@ from llama_index.llms.gemini import Gemini
 from llama_index.core.base.llms.types import (
     ChatMessage,
     ChatResponse,
-    CompletionResponse
-)
-from llama_index.core.bridge.pydantic import Field
-from llama_index.core.base.llms.types import (
-    ChatMessage,
-    ChatResponse,
     ChatResponseAsyncGen,
     CompletionResponse,
     CompletionResponseAsyncGen,
@@ -32,8 +26,8 @@ from llama_index.core.bridge.pydantic import (
 )
 from llama_index.core.types import Model
 from llama_index.core.llms.callbacks import llm_chat_callback, llm_completion_callback
-from aiolimiter import AsyncLimiter
 import llama_index.core.instrumentation as instrument
+from aiolimiter import AsyncLimiter
 
 dispatcher = instrument.get_dispatcher(__name__)
 

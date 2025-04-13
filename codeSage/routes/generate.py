@@ -35,6 +35,27 @@ def generate():
     finally:
         pass
 
+@generate_bp.route('/chat-workflow', methods=['POST'])
+async def chat_workflow():
+    data = request.get_json()
+    try:
+        prompt = data['prompt']
+        # Initialize the SageWorkflow and create an agent workflow
+        sage_workflow = current_app.workflow
+
+        # Call the chat_with_agent_workflow method with the prompt
+        response = await sage_workflow.chat_with_agent_workflow(prompt)
+        
+        return jsonify({"response": response}), 200
+    except KeyError as e:
+        print(f"KeyError: {e}")
+        return jsonify({"error": "Invalid input, 'prompt' key is missing"}), 400
+    except Exception as e:
+        print(f"Error in chat_workflow: {e}")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        pass
+
 # def generate_code(prompt:str):
 #     try:
 #         sage_workflow = SageWorkflow(com_store=current_app.com_store)

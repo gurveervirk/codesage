@@ -5,6 +5,7 @@ from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from routes.upload_module import upload_module_bp
 from routes.generate import generate_bp
 from routes.models import models_bp
+from code_sage.sage_workflow import SageWorkflow
 from utils.gemini_with_rate_limits import GeminiWithRateLimits as Gemini
 from code_sage.com_store import COMStore
 app = Flask(__name__)
@@ -28,13 +29,14 @@ def initialize_llamaindex():
         app.current_model="Gemini::"+Settings.llm.model
         print("LlamaIndex settings initialized successfully using Settings object.")
         app.com_store = COMStore(username=app.config["NEO4J_USER"], password=app.config["NEO4J_PASSWORD"], url=app.config["NEO4J_URI"])
+        app.workflow = SageWorkflow(com_store=app.com_store)
 
     except Exception as e:
         print(f"Error initializing LlamaIndex: {e}")
         exit(1)
 
 with app.app_context():
-        initialize_llamaindex()
+    initialize_llamaindex()
 
 if __name__ == "__main__":
     app.run()

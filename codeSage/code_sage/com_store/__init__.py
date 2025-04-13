@@ -894,7 +894,8 @@ RETURN
         ELSE end.signature
     END AS signature,
     end.llm_signature AS llm_signature, 
-    end.shortest_call_path AS shortest_call_path
+    end.shortest_call_path AS shortest_call_path,
+    end.doc AS docstring
             """
         )
         result = self.structured_query(get_entity_info_query, {"entity_name": entity_name})
@@ -911,17 +912,22 @@ RETURN
             str: The representation of the retrieved entity.
         """
         entity_representation = f"""
-        *Name*: {retrieved_node["__name__"]}
-        *Full Path*: {retrieved_node["name"]}
-        *Shortest Call Path*: {retrieved_node["shortest_call_path"]}
-        *Signature*: {retrieved_node["signature"]}
-        *Signature identified by LLM as JSON (ONLY TO BE USED IF TYPES CANNOT BE ASCERTAINED FROM THE `Signature` FIELD)*: 
-        {retrieved_node["llm_signature"]}
+*Name*: {retrieved_node["__name__"]}
+*Full Path*: {retrieved_node["name"]}
+*Shortest Call Path*: {retrieved_node["shortest_call_path"]}
+*Signature*: {retrieved_node["signature"]}
+*Signature identified by LLM as JSON (ONLY TO BE USED IF TYPES CANNOT BE ASCERTAINED FROM THE `Signature` FIELD)*: 
+{retrieved_node["llm_signature"]}
 
-        *Summary of the Entity*:
-        ```
-        {retrieved_node["summary"]}
-        ```
+*Summary of the Entity*:
+```
+{retrieved_node["summary"]}
+```
+
+*Docstring*:
+```
+{retrieved_node["docstring"]}
+```
         """
         return entity_representation
     
