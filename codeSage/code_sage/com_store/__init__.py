@@ -23,7 +23,7 @@ def check_if_not_null(props: List[str], values: List[Any]) -> None:
             raise ValueError(f"Parameter `{prop}` must not be None or empty string")
 
 FULL_TEXT_FULL_NAME_SEARCH_TEMPLATE = """
-Could not find exact match...
+Could not find exact match for {entity_name} in the database.
 Used a full-text index search to find the following best matches for the full paths(top 3 max):
 
 {top_10_matches}
@@ -217,7 +217,7 @@ class COMStore(Neo4jPropertyGraphStore):
         """
         self.database_query(general_fts_query)
 
-    def retrieve_relevant_root_modules(self, query: str, top_k: int = 5) -> str:
+    def retrieve_relevant_root_modules(self, query: str, top_k: int) -> str:
         """
         Retrieve all relevant root modules based on the query, using similarity search, and store them.
 
@@ -260,7 +260,7 @@ class COMStore(Neo4jPropertyGraphStore):
 
         return formatted_results
     
-    def retrieve_relevant_children_in_subtree(self, query: str, parent_name: str, top_k: int = 5) -> str:
+    def retrieve_relevant_children_in_subtree(self, query: str, parent_name: str, top_k: int) -> str:
         """
         Retrieve all relevant IMMEDIATE children in the subtree of the given parent based on the query, using similarity search, and store them.
 
@@ -943,10 +943,27 @@ RETURN
         """
         entity_node = self._get_entity_info(entity_name)
         if not entity_node:
-            return "No information found for the entity."
+            return f"No information found for the entity: {entity_name}"
 
         entity_representation = self._get_retrieved_entity_representation(entity_node[0])
         return entity_representation
+    
+    def get_info_for_entities(self, entity_names: List[str]) -> str:
+        """
+        Get information about multiple entities.
+
+        Args:
+            entity_names (List[str]): List of entity names.
+
+        Returns:
+            str: Information about the entities.
+        """
+        results = []
+        for name in entity_names:
+            entity_info = self.get_entity_info(name)
+            results.append(entity_info)
+
+        return "\n\n".join(results)
     
     def get_full_path_name(self, name: str) -> str:
         """
@@ -982,19 +999,37 @@ RETURN
             retrieved_node = self.structured_query(retrieve_relationship_by_name_query, {"name": name})
 
         if retrieved_node:
-            name = retrieved_node[0]["name"]
-            return name
+            retrieved_name = retrieved_node[0]["name"]
+            return f"Full path name found for the entity {name}: {retrieved_name}"
         
         # Clean the name for FTS
         name = name.replace(".", "*")
         records = self.query_fulltext_index("general_fts_index", name)[:10]
 
         if not records:
-            return "NONE"  
+            return f"No full path name found for the entity: {name}"  
 
         records_str += "\n\n".join([f"{i + 1}. {record['name']}" for i, record in enumerate(records)])
         result = FULL_TEXT_FULL_NAME_SEARCH_TEMPLATE.format(
+            name=name,
             top_10_matches=records_str
         )
 
         return result
+    
+    def get_full_path_names(self, names: List[str]) -> str:
+        """
+        Get the full path names of multiple entities.
+
+        Args:
+            names (List[str]): List of entity names.
+
+        Returns:
+            str: The full path names of the entities.
+        """
+        results = []
+        for name in names:
+            full_path_name = self.get_full_path_name(name)
+            results.append(full_path_name)
+
+        return "\n\n".join(results)

@@ -1,82 +1,86 @@
-import json
-from llama_index.core.settings import Settings
-from flask import Blueprint, request, jsonify, stream_with_context, Response, current_app
-from code_sage.com_store import COMStore
-from code_sage.sage_workflow import SageWorkflow
+from fastapi import APIRouter, HTTPException, Request
+from .models import ChatRequest, ContextRequest
 
-generate_bp = Blueprint('generate', __name__)
+# FastAPI router for generate endpoints
+generate_router = APIRouter()
 
-def generate_reply(prompt):
+@generate_router.post(
+    "/chat-workflow",
+    response_model=dict,
+    summary="Process chat workflow with a given prompt"
+)
+async def chat_workflow(request: Request, payload: ChatRequest):
+    """
+    Takes a prompt and returns the response from the SageWorkflow agent.
+    """
     try:
-        llm = Settings.llm
-        response = llm.stream_complete(prompt)
-        for r in response:
-            print(r)
-            wrapped_data = {'wrapped_response': r.text}  # Encapsulate the response
-            yield f"data: {json.dumps(wrapped_data)}\n\n"
+        # Access the workflow instance from app state
+        workflow = request.app.state.workflow
+        result = await workflow.chat_with_agent_workflow(payload.prompt)
+        return {"response": result}
     except Exception as e:
-        print(f"Error in generate_reply: {e}")
-        error_data = {'wrapped_response': f"Error: {e}"}  # Encapsulate the error
-        yield f"data: {json.dumps(error_data)}\n\n"
+        raise HTTPException(status_code=500, detail=str(e))
 
-
-@generate_bp.route('/generate-example', methods=['POST'])
-def generate():
-    data = request.get_json()
+@generate_router.get(
+    "/get-contexts",
+    response_model=dict,
+    summary="Retrieve list of available contexts"
+)
+async def get_contexts(request: Request):
+    """
+    Returns the list of context identifiers available in the workflow.
+    """
     try:
-        prompt = data['prompt']
-        return Response(stream_with_context(generate_reply(prompt)), content_type='text/event-stream') , 200
-    except KeyError as e:
-        print(f"KeyError: {e}")
-        return jsonify({"error": "Invalid input, 'prompt' key is missing"}), 400
+        contexts = request.app.state.workflow.ctx_index
+        return {"contexts": contexts}
     except Exception as e:
-        print(f"Error in generate: {e}")
-        return jsonify({"error": str(e)}), 500
-    finally:
-        pass
+        raise HTTPException(status_code=500, detail=str(e))
 
-@generate_bp.route('/chat-workflow', methods=['POST'])
-async def chat_workflow():
-    data = request.get_json()
+@generate_router.post(
+    "/reset-context",
+    response_model=dict,
+    summary="Reset the current context in the workflow"
+)
+async def reset_context(request: Request):
+    """
+    Resets the current conversation context in the SageWorkflow.
+    """
     try:
-        prompt = data['prompt']
-        # Initialize the SageWorkflow and create an agent workflow
-        sage_workflow = current_app.workflow
-
-        # Call the chat_with_agent_workflow method with the prompt
-        response = await sage_workflow.chat_with_agent_workflow(prompt)
-        
-        return jsonify({"response": response}), 200
-    except KeyError as e:
-        print(f"KeyError: {e}")
-        return jsonify({"error": "Invalid input, 'prompt' key is missing"}), 400
+        await request.app.state.workflow.reset_context()
+        return {"message": "Context reset successfully"}
     except Exception as e:
-        print(f"Error in chat_workflow: {e}")
-        return jsonify({"error": str(e)}), 500
-    finally:
-        pass
+        raise HTTPException(status_code=500, detail=str(e))
 
-# def generate_code(prompt:str):
-#     try:
-#         sage_workflow = SageWorkflow(com_store=current_app.com_store)
-#         agent_workflow = sage_workflow.create_agent_workflow()
-#         response = agent_workflow.stream
-#     finally:
-#         pass
+@generate_router.post(
+    "/load-context",
+    response_model=dict,
+    summary="Load a specific context by ID"
+)
+async def load_context(request: Request, payload: ContextRequest):
+    """
+    Loads the conversation history for a given context ID.
+    """
+    try:
+        chat_history = await request.app.state.workflow.load_context(payload.id)
+        if chat_history is None:
+            raise HTTPException(status_code=404, detail="Context not found")
+        return {"chat_history": chat_history}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-
-# @generate_bp.route('/generate-code', methods=['POST'])
-# def generate():
-#     data = request.get_json()
-#     try:
-#         prompt = data['prompt']
-#         return Response(stream_with_context(generate_reply(prompt)), content_type='text/event-stream') , 200
-#     except KeyError as e:
-#         print(f"KeyError: {e}")
-#         return jsonify({"error": "Invalid input, 'prompt' key is missing"}), 400
-#     except Exception as e:
-#         print(f"Error in generate: {e}")
-#         return jsonify({"error": str(e)}), 500
-#     finally:
-#         pass
-    
+@generate_router.post(
+    "/delete-context",
+    response_model=dict,
+    summary="Delete a context by ID"
+)
+async def delete_context(request: Request, payload: ContextRequest):
+    """
+    Deletes a stored context by its ID from the SageWorkflow.
+    """
+    try:
+        request.app.state.workflow.delete_context(payload.id)
+        return {"message": "Context deleted successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

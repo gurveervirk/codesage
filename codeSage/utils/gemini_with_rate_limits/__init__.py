@@ -1,7 +1,7 @@
 from typing import (
     Any,
     Dict,
-    Generator,
+    AsyncGenerator,
     List,
     Optional,
     Sequence,
@@ -28,6 +28,7 @@ from llama_index.core.types import Model
 from llama_index.core.llms.callbacks import llm_chat_callback, llm_completion_callback
 import llama_index.core.instrumentation as instrument
 from aiolimiter import AsyncLimiter
+from tenacity import retry, stop_after_attempt, wait_incrementing
 
 dispatcher = instrument.get_dispatcher(__name__)
 
@@ -44,6 +45,12 @@ GEMINI_MODELS = (
 )
 from llama_index.core.utilities.gemini_utils import (
     merge_neighboring_same_role_messages,
+)
+
+# Define retry strategy: wait 5s, then 10s, stop after 3 attempts total
+retry_strategy = retry(
+    stop=stop_after_attempt(3),
+    wait=wait_incrementing(start=5, increment=5),
 )
 
 class GeminiWithRateLimits(Gemini):
@@ -77,6 +84,7 @@ class GeminiWithRateLimits(Gemini):
         self.limiter = AsyncLimiter(self.rate_limit, self.period)
 
     @llm_chat_callback()
+    @retry_strategy
     async def achat(
         self, messages: Sequence[ChatMessage], **kwargs: Any
     ) -> ChatResponse:
@@ -92,6 +100,7 @@ class GeminiWithRateLimits(Gemini):
             return chat_from_gemini_response(response)
 
     @llm_completion_callback()
+    @retry_strategy
     async def acomplete(
         self, prompt: str, formatted: bool = False, **kwargs: Any
     ) -> CompletionResponse:
@@ -103,6 +112,7 @@ class GeminiWithRateLimits(Gemini):
             return completion_from_gemini_response(result)
 
     @llm_completion_callback()
+    @retry_strategy
     def astream_complete(
         self, prompt: str, formatted: bool = False, **kwargs: Any
     ) -> CompletionResponseAsyncGen:
@@ -119,6 +129,7 @@ class GeminiWithRateLimits(Gemini):
         return gen()
 
     @llm_chat_callback()
+    @retry_strategy
     async def astream_chat(
         self, messages: Sequence[ChatMessage], **kwargs: Any
     ) -> ChatResponseAsyncGen:
@@ -150,6 +161,7 @@ class GeminiWithRateLimits(Gemini):
           return gen()
 
     @dispatcher.span
+    @retry_strategy
     async def astructured_predict(
         self, *args: Any, llm_kwargs: Optional[Dict[str, Any]] = None, **kwargs: Any
     ) -> BaseModel:
@@ -169,9 +181,10 @@ class GeminiWithRateLimits(Gemini):
           return await super().astructured_predict(*args, llm_kwargs=llm_kwargs, **kwargs)
 
     @dispatcher.span
+    @retry_strategy
     async def astream_structured_predict(
         self, *args: Any, llm_kwargs: Optional[Dict[str, Any]] = None, **kwargs: Any
-    ) -> Generator[Union[Model, List[Model]], None, None]:
+    ) -> AsyncGenerator[Union[Model, List[Model]], None]:
         """Stream structured predict."""
         llm_kwargs = llm_kwargs or {}
         all_kwargs = {**llm_kwargs, **kwargs}
@@ -185,6 +198,7 @@ class GeminiWithRateLimits(Gemini):
         # by default structured prediction uses function calling to extract structured outputs
         # here we force tool_choice to be required
         async with self.limiter:
-          return await super().astream_structured_predict(
+          async for item in await super().astream_structured_predict(
               *args, llm_kwargs=llm_kwargs, **kwargs
-          )
+          ):
+              yield item

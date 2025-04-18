@@ -9,3 +9,4 @@ UI/.cache
 UI/build
 UI/.env
 /venv
+/codesage_overview

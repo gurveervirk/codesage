@@ -14,7 +14,10 @@ from llama_index.core.memory import BaseMemory
 from llama_index.core.tools import AsyncBaseTool
 from llama_index.core.workflow import Context
 from llama_index.core.utils import get_tokenizer
-from .prompts import SUMMARIZE_CODE_SCRATCHPAD_PROMPT, SUMMARIZE_SEARCH_SCRATCHPAD_PROMPT
+from utils.prompts import (
+    SUMMARIZE_CODE_SCRATCHPAD_PROMPT,
+    SUMMARIZE_SEARCH_SCRATCHPAD_PROMPT,
+)
 
 class COMAgent(FunctionAgent):
     """Custom COM agent implementation."""
@@ -66,6 +69,7 @@ class COMAgent(FunctionAgent):
         current_agent_input: ChatMessage = await ctx.get(
             self.current_agent_input_key, default=None
         )
+        system_prompt = llm_input[0]
 
         # If the current agent input is None, set it to the last input in the input list (as that would be the input to this agent)
         if current_agent_input is None:
@@ -73,7 +77,7 @@ class COMAgent(FunctionAgent):
             current_agent_input = llm_input[-1]
 
         # Prepare the input for the LLM, including only the code memory of this agent, the input to this agent, and it's temporary scratchpad
-        current_llm_input = [*com_mem, current_agent_input, *scratchpad]
+        current_llm_input = [system_prompt, *com_mem, current_agent_input, *scratchpad]
 
         ctx.write_event_to_stream(
             AgentInput(input=current_llm_input, current_agent_name=self.name)
@@ -128,7 +132,15 @@ class COMAgent(FunctionAgent):
         )
 
         # Summarize the scratchpad into a single message using the LLM
-        scratchpad_str = "\n\n".join([m.content for m in scratchpad])
+        scratchpad_str = ""
+        for message in scratchpad:
+            message_str = f"{message.role}: "
+            if message.content is not None:
+                message_str += f"{message.content}\n"
+            else:
+                message_str += "No content, presumably tool usage only.\n"
+            scratchpad_str += message_str + "\n"
+
         PROMPT = self.code_summarize_prompt if self.agent_type == "code" else self.search_summarize_prompt
         response = await self.llm.acomplete(
             f"{PROMPT.format(current_agent_input=current_agent_input, scratchpad=scratchpad_str)}"
@@ -136,8 +148,11 @@ class COMAgent(FunctionAgent):
 
         # Append the summarized message to the memory
         summary_message = ChatMessage(role="assistant", content=response.text)
+        handoff_message = ChatMessage(role='tool', content='I have provided a summary of my work. Handing off to Root Agent. Please proceed.')
         com_mem.append(summary_message)
+        com_mem.append(handoff_message)
         await memory.aput(summary_message)
+        await memory.aput(handoff_message)
 
         # If the agent's memory is too large, remove the oldest messages, then update the memory of this agent
         message_count = len(com_mem)

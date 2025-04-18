@@ -1,12 +1,10 @@
-from config import config
-import sys
-import os
 from code_sage.reflex import process_module
-from flask import Blueprint, request, jsonify,current_app
+from fastapi import APIRouter, Request, HTTPException
+from .models import ModuleUploadRequest
 import subprocess
+import sys
 
-
-upload_module_bp = Blueprint('upload_module', __name__)
+upload_module_router = APIRouter()
 
 def is_module_installed(module_name):
     """Checks if a Python module is installed."""
@@ -26,25 +24,33 @@ def install_module(module_name):
         print(f"Error installing module {module_name}: {e}")
         return False 
 
-@upload_module_bp.route('/', methods=['POST'])
-def upload_module():
+@upload_module_router.post(
+    "/",
+    summary="Upload and process a Python module",
+    response_model=dict
+)
+async def upload_module(payload: ModuleUploadRequest, request: Request):
+    """
+    Installs a Python module (if not already installed), processes it to extract entities and relations,
+    and stores the information in a Neo4j graph via the application's COMStore.
+    """
+    module_name = payload.module_name
+    # Install module if missing
+    if not is_module_installed(module_name):
+        success = install_module(module_name)
+        if not success:
+            raise HTTPException(status_code=500, detail=f"Failed to install module: {module_name}")
     try:
-        data = request.get_json()
-        if not data or 'module_name' not in data:
-            return jsonify({'error': 'Module name is required in the request body'}), 400
-        module_name = data['module_name']
-        if not is_module_installed(module_name):
-            # Install the module if it's not installed
-            if not install_module(module_name):
-                return jsonify({'error': f'Failed to install module: {module_name}'}), 500
-            else:
-                print(f"Module {module_name} installed successfully.")
-        entities,relations,other_relations = process_module(module_name)
-        current_app.com_store.upsert_to_neo4j(module_name=module_name,entities=entities,relations=relations,other_relations=other_relations)
-        return jsonify({'message': 'Module uploaded successfully'}), 200
+        entities, relations, other_relations = process_module(module_name)
+        request.app.state.com_store.upsert_to_neo4j(
+            module_name=module_name,
+            entities=entities,
+            relations=relations,
+            other_relations=other_relations
+        )
+        return {"message": "Module uploaded successfully"}
     except Exception as e:
-        print(e.with_traceback())
-        return jsonify({'error': f'Failed to upload module: {e}'}), 500
+        raise HTTPException(status_code=500, detail=str(e))
 
-    
+
 

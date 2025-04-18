@@ -5,7 +5,7 @@ import createCache from "@emotion/cache";
 import { useState } from "react";
 import { ClientStyleContext } from "./styleContext";
 
-const cache = createCache({ key: "mui", prepend: true });
+const cache = createCache({ key: "mui" });
 
 function ClientCacheProvider({ children }: { children: React.ReactNode }) {
   const [, setKey] = useState(0);

@@ -1,6 +1,6 @@
 import type { ActionFunction, LoaderFunction } from "@remix-run/node";
 
-const FLASK_API_URL = "http://127.0.0.1:5000/generate/generate-example";
+const FLASK_API_URL = "http://127.0.0.1:8000/generate/generate-example";
 
 let storedPrompt: string | null = null;
 

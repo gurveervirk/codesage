@@ -1,5 +1,5 @@
 import type { MetaFunction } from "@remix-run/node";
-import { Box, Container, Typography, Button, Grid, Card, CardContent, useTheme } from "@mui/material";
+import { Box, Container, Typography, Button, Card, CardContent, useTheme } from "@mui/material";
 import CodeIcon from "@mui/icons-material/Code";
 import SchemaIcon from "@mui/icons-material/Schema";
 import AutoFixHighIcon from "@mui/icons-material/AutoFixHigh";
@@ -8,6 +8,7 @@ import { Link } from "@remix-run/react";
 
 export const meta: MetaFunction = () => {
   return [
+    { charSet: "utf-8" },
     { title: "CodeSage - Intelligent Code Analysis & Generation" },
     { name: "description", content: "CodeSage: Your AI-powered code analysis and generation platform" },
   ];
@@ -170,35 +171,30 @@ export default function Index() {
         </Box>
 
         {/* Features Section */}
-        <Grid
-          container
-          spacing={4}
+        <Box 
           sx={{
+            display: 'grid',
+            gridTemplateColumns: { xs: '1fr', md: 'repeat(3, 1fr)' },
+            gap: 4,
             mb: { xs: 8, md: 12 }
           }}
         >
-          <Grid item xs={12} md={4}>
-            <FeatureCard
-              title="Code Analysis"
-              description="Get detailed insights into your codebase structure, dependencies, and potential improvements."
-              icon={<CodeIcon sx={{ fontSize: 40 }} />}
-            />
-          </Grid>
-          <Grid item xs={12} md={4}>
-            <FeatureCard
-              title="Knowledge Graph"
-              description="Visualize complex relationships between components in your codebase for better understanding."
-              icon={<SchemaIcon sx={{ fontSize: 40 }} />}
-            />
-          </Grid>
-          <Grid item xs={12} md={4}>
-            <FeatureCard
-              title="AI Generation"
-              description="Generate boilerplate code, unit tests, and documentation with state-of-the-art AI models."
-              icon={<AutoFixHighIcon sx={{ fontSize: 40 }} />}
-            />
-          </Grid>
-        </Grid>
+          <FeatureCard
+            title="Code Analysis"
+            description="Get detailed insights into your codebase structure, dependencies, and potential improvements."
+            icon={<CodeIcon sx={{ fontSize: 40 }} />}
+          />
+          <FeatureCard
+            title="Knowledge Graph"
+            description="Visualize complex relationships between components in your codebase for better understanding."
+            icon={<SchemaIcon sx={{ fontSize: 40 }} />}
+          />
+          <FeatureCard
+            title="AI Generation"
+            description="Generate boilerplate code, unit tests, and documentation with state-of-the-art AI models."
+            icon={<AutoFixHighIcon sx={{ fontSize: 40 }} />}
+          />
+        </Box>
 
         {/* Footer CTA */}
         <Box
