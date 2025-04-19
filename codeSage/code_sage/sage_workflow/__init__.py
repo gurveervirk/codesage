@@ -15,9 +15,8 @@ from llama_index.core import Settings
 from uuid import uuid4
 from ..com_store import COMStore
 from utils.prompts import SEARCH_SYSTEM_PROMPT, CODE_SYSTEM_PROMPT, ROOT_SYSTEM_PROMPT
-from utils.code_gen import generate_code
+from utils.func_tools import generate_code, generate_title, write_task
 from .agents.com_agent import COMAgent
-from utils.title_gen import generate_title
 import json
 import os
 import asyncio
@@ -129,11 +128,18 @@ class SageWorkflow:
         generate_code_tool = FunctionTool.from_defaults(
             fn=generate_code,
             description="""
-            Generate code using the requested entities for the requested functionality(ies).
+            Generate code using the requested entities for the requested functionality(ies). To be called by the CodeAgent, in the end of the flow, setting it's output in the Context, for use by the other agents.
+            """
+        )
+        write_task_tool = FunctionTool.from_defaults(
+            fn=write_task,
+            description="""
+            Write a comprehensive task, in detail, and set it in the Context, for use by the other agents.
+            Use 'code' for setting the task for the CodeAgent and 'search' for setting the task for the SearchAgent.
             """
         )
         tools = {}
-        tools["all_root_tools"] = [retrieve_root_modules_tool, get_next_top_k_root_modules]
+        tools["all_root_tools"] = [retrieve_root_modules_tool, get_next_top_k_root_modules, write_task_tool]
         tools["all_code_tools"] = [get_info_for_entities, get_full_path_names, generate_code_tool]
         tools["all_search_tools"] = [retrieve_children_tool, get_next_top_k_children]
         return tools
@@ -336,8 +342,7 @@ class SageWorkflow:
         # If the context is not None, save it to the context file
         if self.ctx is not None:
             try:
-                # # Get the memories and store them
-                # memories = await self.get_memories()
+                # Get the context and save it to a file
                 context = self.ctx.to_dict()
                 with open(f"contexts/{self.ctx_id}/ctx.json", "w") as f:
                     json.dump(context, f)
@@ -351,6 +356,11 @@ class SageWorkflow:
         self.ctx_id = None
         self.memory = None
         self.chat_history = None
+        self.root_agent, self.agents = self.create_agents()
+        self.agent_workflow = AgentWorkflow(
+            agents=[self.root_agent] + self.agents,
+            root_agent=self.root_agent.name
+        )
 
     async def load_context(self, id: str) -> list[str]:
         """
@@ -364,6 +374,10 @@ class SageWorkflow:
         try:
             if id not in self.ctx_index:
                 raise ValueError(f"Context with id {id} not found.")
+            
+            # Reset the current context, then load the new context
+            await self.reset_context()
+
             context = json.load(open(f"./contexts/{id}/ctx.json", "r"))
             self.chat_history = json.load(open(f"./contexts/{id}/chat_history.json", "r"))
 

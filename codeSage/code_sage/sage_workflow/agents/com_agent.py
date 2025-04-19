@@ -18,11 +18,11 @@ from utils.prompts import (
     SUMMARIZE_CODE_SCRATCHPAD_PROMPT,
     SUMMARIZE_SEARCH_SCRATCHPAD_PROMPT,
 )
+from utils.misc import stringify_scratchpad
 
 class COMAgent(FunctionAgent):
     """Custom COM agent implementation."""
 
-    current_agent_input_key: str = "current_agent_input"
     agent_type: Union[Literal['code'], Literal['search']] = Field(
         description =" The type of the agent. ACCEPTED VALUES: 'code', 'search'",
         default = None
@@ -66,18 +66,15 @@ class COMAgent(FunctionAgent):
         scratchpad: List[ChatMessage] = await ctx.get(self.scratchpad_key, default=[])
         mem_key: str = self.agent_type + "_mem"
         com_mem: List[ChatMessage] = await ctx.get(mem_key, default=[])
-        current_agent_input: ChatMessage = await ctx.get(
-            self.current_agent_input_key, default=None
-        )
+        state = await ctx.get("state")
+        task = state["task"][self.agent_type]
         system_prompt = llm_input[0]
 
-        # If the current agent input is None, set it to the last input in the input list (as that would be the input to this agent)
-        if current_agent_input is None:
-            await ctx.set(self.current_agent_input_key, llm_input[-1])
-            current_agent_input = llm_input[-1]
+        # Create a Chat Message for the task
+        task_message = ChatMessage(role="system", content=task)
 
         # Prepare the input for the LLM, including only the code memory of this agent, the input to this agent, and it's temporary scratchpad
-        current_llm_input = [system_prompt, *com_mem, current_agent_input, *scratchpad]
+        current_llm_input = [system_prompt, *com_mem, task_message, *scratchpad]
 
         ctx.write_event_to_stream(
             AgentInput(input=current_llm_input, current_agent_name=self.name)
@@ -122,35 +119,25 @@ class COMAgent(FunctionAgent):
     ) -> AgentOutput:
         """Finalize the function calling agent.
 
-        Summarizes the current scratchpad in detail and appends to the Code Agent's memory.
+        Summarizes the current scratchpad in detail and appends to the COM Agent's memory.
         """
-        scratchpad: List[ChatMessage] = await ctx.get(self.scratchpad_key, default=[])
         mem_key: str = self.agent_type + "_mem"
         com_mem: List[ChatMessage] = await ctx.get(mem_key, default=[])
-        current_agent_input: str = await ctx.get(
-            self.current_agent_input_key, default=None
-        )
+        state = await ctx.get("state")
+        task = state["task"][self.agent_type]
 
-        # Summarize the scratchpad into a single message using the LLM
-        scratchpad_str = ""
-        for message in scratchpad:
-            message_str = f"{message.role}: "
-            if message.content is not None:
-                message_str += f"{message.content}\n"
-            else:
-                message_str += "No content, presumably tool usage only.\n"
-            scratchpad_str += message_str + "\n"
+        # Get the scratchpad as a string
+        scratchpad_str = await stringify_scratchpad(ctx)
 
         PROMPT = self.code_summarize_prompt if self.agent_type == "code" else self.search_summarize_prompt
         response = await self.llm.acomplete(
-            f"{PROMPT.format(current_agent_input=current_agent_input, scratchpad=scratchpad_str)}"
+            f"{PROMPT.format(current_agent_input=task, scratchpad=scratchpad_str)}"
         )
 
         # Append the summarized message to the memory
         summary_message = ChatMessage(role="assistant", content=response.text)
         handoff_message = ChatMessage(role='tool', content='I have provided a summary of my work. Handing off to Root Agent. Please proceed.')
         com_mem.append(summary_message)
-        com_mem.append(handoff_message)
         await memory.aput(summary_message)
         await memory.aput(handoff_message)
 
@@ -168,8 +155,9 @@ class COMAgent(FunctionAgent):
 
         await ctx.set(mem_key, com_mem)
 
-        # Reset current agent input
-        await ctx.set(self.current_agent_input_key, None)
+        # Reset the task for this agent
+        state["task"][self.agent_type] = None
+        await ctx.set("state", state)
 
         # reset scratchpad
         await ctx.set(self.scratchpad_key, [])

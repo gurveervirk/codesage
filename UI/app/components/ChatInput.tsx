@@ -327,7 +327,8 @@ export default function ChatInput({ onSend, models }: ChatInputProps) {
                     <Zoom in={Boolean(input.trim())}>
                       <IconButton 
                         onClick={handleSend} 
-                        disabled={!input.trim()}
+                        disabled
+                        hidden={true}
                         sx={{
                           bgcolor: input.trim() ? 'primary.main' : 'action.disabledBackground',
                           color: input.trim() ? 'white' : 'text.disabled',
@@ -342,7 +343,7 @@ export default function ChatInput({ onSend, models }: ChatInputProps) {
                           mr: 0.5,
                         }}
                       >
-                        <SendIcon fontSize="small" />
+                        {/* <SendIcon fontSize="small" /> */}
                       </IconButton>
                     </Zoom>
                   </InputAdornment>
