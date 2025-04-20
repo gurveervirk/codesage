@@ -23,10 +23,8 @@ def check_if_not_null(props: List[str], values: List[Any]) -> None:
             raise ValueError(f"Parameter `{prop}` must not be None or empty string")
 
 FULL_TEXT_FULL_NAME_SEARCH_TEMPLATE = """
-Could not find exact match for {entity_name} in the database.
-Used a full-text index search to find the following best matches for the full paths(top 3 max):
-
-{top_10_matches}
+Best matches for the entity {entity_name}:
+{matches}
 """
 
 class COMStore(Neo4jPropertyGraphStore):
@@ -985,34 +983,42 @@ RETURN
         # Execute the query to retrieve the node by name
         retrieved_node = self.structured_query(retrieve_node_by_name_query, {"name": name})
 
-        if not retrieved_node:
-            # If no relevant nodes are found, try querying relationships with this name
-            retrieve_relationship_by_name_query = (
-                """
-                MATCH (n)-[r:EXPOSES]->(m)
-                WHERE r.name = $name
-                RETURN m.name AS name
-                """
-            )
-
-            # Execute the query to retrieve relevant relationships
-            retrieved_node = self.structured_query(retrieve_relationship_by_name_query, {"name": name})
-
         if retrieved_node:
             retrieved_name = retrieved_node[0]["name"]
             return f"Full path name found for the entity {name}: {retrieved_name}"
-        
-        # Clean the name for FTS
-        name = name.replace(".", "*")
-        records = self.query_fulltext_index("general_fts_index", name)[:10]
+
+        # If no relevant nodes are found, process the name for regex search
+        processed_name = name.replace(".", ".*\.")
+        name_till_dotunderscore = processed_name
+        if ".*\._" in name_till_dotunderscore:
+            name_till_dotunderscore = name_till_dotunderscore.split(".*\._")[0] + ".*"
+        name_till_dotunderscore = f'/{name_till_dotunderscore}/'
+        logging.info(f"Processed name for regex search: {processed_name}")
+        logging.info(f"Processed name for regex search till ._: {name_till_dotunderscore}")
+
+        # Prepare a Cypher query to search for the name in the database, using FTS with regex first, then direct match
+        full_text_search_query = (
+            """
+            CALL db.index.fulltext.queryNodes($index_name, $name_till_dotunderscore)
+            YIELD node AS n, score
+            WHERE n.name =~ $name
+            RETURN n.name AS name
+            """
+        )
+
+        records = self.structured_query(full_text_search_query, {
+            "index_name": "general_fts_index",
+            "name_till_dotunderscore": name_till_dotunderscore,
+            "name": processed_name
+        })
 
         if not records:
             return f"No full path name found for the entity: {name}"  
 
-        records_str += "\n\n".join([f"{i + 1}. {record['name']}" for i, record in enumerate(records)])
+        records_str = "\n\n".join([f"{i + 1}. {record['name']}" for i, record in enumerate(records)])
         result = FULL_TEXT_FULL_NAME_SEARCH_TEMPLATE.format(
-            name=name,
-            top_10_matches=records_str
+            entity_name=name,
+            matches=records_str
         )
 
         return result

@@ -74,7 +74,7 @@ async def write_task(ctx: Context, for_: str, task: str) -> str:
         current_state["task"][for_] = task
         await ctx.set("state", current_state)
 
-        return "Task successfully set in the context."
+        return "Task successfully set in the context. Please handoff to the appropriate agent."
     except Exception as e:
         logging.error(f"Error writing task: {e}")
         return "Error writing task."

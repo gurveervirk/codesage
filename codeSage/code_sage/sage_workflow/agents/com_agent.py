@@ -27,6 +27,10 @@ class COMAgent(FunctionAgent):
         description =" The type of the agent. ACCEPTED VALUES: 'code', 'search'",
         default = None
     )
+    memory: list = Field(
+        description = "The memory of the agent, comprised of the summaries of past tasks",
+        default = None
+    )
     code_summarize_prompt: str = Field(
         description = "The prompt to summarize the code scratchpad",
         default = SUMMARIZE_CODE_SCRATCHPAD_PROMPT
@@ -45,12 +49,65 @@ class COMAgent(FunctionAgent):
     )
 
     # Picked from llama_index.core.memory.chat_memory_buffer
-    def _token_count_for_messages(self, messages: List[ChatMessage]) -> int:
+    def _token_count_for_messages(self, messages: list[str]) -> int:
         if len(messages) <= 0:
             return 0
 
-        msg_str = " ".join(str(m.content) for m in messages)
+        msg_str = "\n\n".join(messages)
         return len(self.tokenizer_fn(msg_str))
+    
+    async def _prepare_system_prompt(self, ctx: Context, system_prompt: ChatMessage) -> ChatMessage:
+        """
+        Prepare the system prompt for the agent.
+
+        Args:
+            ctx (Context): The context object containing the scratchpad, and other information.
+            system_prompt (ChatMessage): The system prompt to prepare.
+
+        Returns:
+            ChatMessage: The prepared system prompt.
+        """
+        prepared_sys_prompt_content = system_prompt.content
+
+        if self.memory is not None:
+            prepared_sys_prompt_content += f"\n\n# Summaries of past tasks:\n\n{'\n\n'.join(self.memory)}"
+
+        state = await ctx.get("state")
+        task = state["task"][self.agent_type]
+
+        if task is not None:
+            prepared_sys_prompt_content += f"\n\n## Current task:\n\n{task}"
+
+        prepared_sys_prompt = ChatMessage(
+            role=system_prompt.role,
+            content=prepared_sys_prompt_content,
+        )
+
+        return prepared_sys_prompt
+    
+    def _update_memory(self, text: str) -> None:
+        """
+        Update the memory of the agent.
+
+        Args:
+            text (str): The text to update the memory with.
+        """
+        if self.memory is None:
+            self.memory = []
+
+        self.memory.append(text)
+
+        # If the agent's memory is too large, remove the oldest messages, then update the memory of this agent
+        message_count = len(self.memory)
+        token_count = self._token_count_for_messages(self.memory)
+
+        while token_count > self.max_mem_token_limit and message_count > 1:
+            message_count -= 1
+            self.memory.pop(0)
+            token_count = self._token_count_for_messages(self.memory)
+
+        if token_count > self.max_mem_token_limit or message_count <= 0:
+            self.memory = []
 
     async def take_step(
         self,
@@ -64,17 +121,13 @@ class COMAgent(FunctionAgent):
             raise ValueError("LLM must be a FunctionCallingLLM")
 
         scratchpad: List[ChatMessage] = await ctx.get(self.scratchpad_key, default=[])
-        mem_key: str = self.agent_type + "_mem"
-        com_mem: List[ChatMessage] = await ctx.get(mem_key, default=[])
-        state = await ctx.get("state")
-        task = state["task"][self.agent_type]
         system_prompt = llm_input[0]
 
-        # Create a Chat Message for the task
-        task_message = ChatMessage(role="system", content=task)
+        # Prepare the system prompt with memory and current task
+        system_prompt = await self._prepare_system_prompt(ctx, system_prompt)
 
-        # Prepare the input for the LLM, including only the code memory of this agent, the input to this agent, and it's temporary scratchpad
-        current_llm_input = [system_prompt, *com_mem, task_message, *scratchpad]
+        # Prepare the input for the LLM, including the system prompt with memory, the input to this agent, and it's temporary scratchpad
+        current_llm_input = [system_prompt, *scratchpad]
 
         ctx.write_event_to_stream(
             AgentInput(input=current_llm_input, current_agent_name=self.name)
@@ -121,8 +174,6 @@ class COMAgent(FunctionAgent):
 
         Summarizes the current scratchpad in detail and appends to the COM Agent's memory.
         """
-        mem_key: str = self.agent_type + "_mem"
-        com_mem: List[ChatMessage] = await ctx.get(mem_key, default=[])
         state = await ctx.get("state")
         task = state["task"][self.agent_type]
 
@@ -134,26 +185,14 @@ class COMAgent(FunctionAgent):
             f"{PROMPT.format(current_agent_input=task, scratchpad=scratchpad_str)}"
         )
 
-        # Append the summarized message to the memory
+        # Append the summarized message to the memory for the root agent and this agent
         summary_message = ChatMessage(role="assistant", content=response.text)
-        handoff_message = ChatMessage(role='tool', content='I have provided a summary of my work. Handing off to Root Agent. Please proceed.')
-        com_mem.append(summary_message)
         await memory.aput(summary_message)
+        self._update_memory(response.text)
+
+        # Append a handoff message to the memory for the root agent
+        handoff_message = ChatMessage(role='tool', content='I have provided a summary of my work. Handing off to Root Agent. Please proceed.')
         await memory.aput(handoff_message)
-
-        # If the agent's memory is too large, remove the oldest messages, then update the memory of this agent
-        message_count = len(com_mem)
-        token_count = self._token_count_for_messages(com_mem)
-
-        while token_count > self.max_mem_token_limit and message_count > 1:
-            message_count -= 1
-            com_mem.pop(0)
-            token_count = self._token_count_for_messages(com_mem)
-
-        if token_count > self.max_mem_token_limit or message_count <= 0:
-            com_mem = []
-
-        await ctx.set(mem_key, com_mem)
 
         # Reset the task for this agent
         state["task"][self.agent_type] = None
