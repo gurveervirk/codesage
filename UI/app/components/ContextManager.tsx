@@ -7,14 +7,16 @@ import {
   ListItemButton, 
   IconButton, 
   Typography, 
-  Button, 
   Dialog, 
   DialogTitle, 
   DialogActions,
-  CircularProgress
+  CircularProgress,
+  Button,
+  Paper
 } from '@mui/material';
 import DeleteIcon from '@mui/icons-material/Delete';
 import RefreshIcon from '@mui/icons-material/Refresh';
+import AddIcon from '@mui/icons-material/Add';
 
 interface Context {
   id: string;
@@ -156,22 +158,46 @@ const ContextManager: React.FC<ContextManagerProps> = ({ onContextLoad, onContex
 
   return (
     <Box>
+      {/* New Conversation Button - Separated and prominent */}
+      <Paper
+        elevation={0}
+        sx={{
+          mb: 2,
+          borderRadius: 2,
+          border: '1px solid',
+          borderColor: 'primary.light',
+          overflow: 'hidden',
+          transition: 'all 0.2s ease',
+          '&:hover': {
+            borderColor: 'primary.main',
+            boxShadow: '0 2px 8px rgba(0,0,0,0.08)',
+            bgcolor: 'action.hover',
+          },
+        }}
+      >
+        <Button 
+          fullWidth
+          startIcon={<AddIcon />}
+          onClick={handleResetContext}
+          sx={{
+            py: 1,
+            textTransform: 'none',
+            justifyContent: 'flex-start',
+            fontWeight: 500,
+            color: 'primary.main',
+          }}
+        >
+          New Conversation
+        </Button>
+      </Paper>
+
+      {/* Conversation History Header */}
       <Box display="flex" justifyContent="space-between" alignItems="center" mb={2}>
         <Typography variant="h6">Conversation History</Typography>
-        <IconButton onClick={fetchContexts} title="Refresh contexts">
+        <IconButton onClick={fetchContexts} title="Refresh conversations">
           <RefreshIcon />
         </IconButton>
       </Box>
-      
-      <Button 
-        variant="outlined" 
-        fullWidth 
-        onClick={handleResetContext}
-        disabled={loading}
-        sx={{ mb: 2 }}
-      >
-        New Conversation
-      </Button>
 
       {error && (
         <Typography color="error" variant="body2" mb={2}>

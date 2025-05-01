@@ -107,7 +107,7 @@ export function MessageContainer({ messages, loading }: MessageContainerProps) {
                                 filter: 'drop-shadow(0 4px 6px rgba(0,0,0,0.1))'
                             }}
                         />
-                        <Typography variant="h4" color="primary.main" fontWeight={700} gutterBottom sx={{ mb: 2 }}>
+                        <Typography variant="h4" color="primary.dark" fontWeight={700} gutterBottom sx={{ mb: 2 }}>
                             Welcome to CodeSage
                         </Typography>
                         <Typography variant="body1" color="text.secondary" sx={{ 
@@ -118,50 +118,9 @@ export function MessageContainer({ messages, loading }: MessageContainerProps) {
                             lineHeight: 1.6
                         }}>
                             Your intelligent AI assistant that helps analyze and generate code.
-                            How can I help with your project today?
+                            <br />
+                            How can I help you today?
                         </Typography>
-                        {/* <Box 
-                            sx={{ 
-                                display: 'flex', 
-                                flexWrap: 'wrap', 
-                                gap: 2, 
-                                justifyContent: 'center',
-                                maxWidth: 600,
-                                mt: 1
-                            }}
-                        >
-                            {[
-                                "Analyze my code structure",
-                                "Generate documentation",
-                                "Help debug this error",
-                                "Improve my function"
-                            ].map((suggestion, index) => (
-                                <Box
-                                    key={index}
-                                    sx={{
-                                        py: 1,
-                                        px: 2,
-                                        borderRadius: 2,
-                                        bgcolor: 'action.hover',
-                                        color: 'text.secondary',
-                                        fontSize: '0.9rem',
-                                        border: '1px solid',
-                                        borderColor: 'divider',
-                                        cursor: 'pointer',
-                                        transition: 'all 0.2s ease',
-                                        '&:hover': {
-                                            bgcolor: 'action.selected',
-                                            transform: 'translateY(-2px)',
-                                            boxShadow: '0 4px 8px rgba(0,0,0,0.1)',
-                                            borderColor: 'primary.main',
-                                            color: 'primary.main'
-                                        }
-                                    }}
-                                >
-                                    {suggestion}
-                                </Box>
-                            ))}
-                        </Box> */}
                     </Box>
                 </Fade>
             )}

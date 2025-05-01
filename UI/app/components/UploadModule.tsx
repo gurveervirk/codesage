@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
-import { Button, Modal, Box, FormControl, TextField, CircularProgress } from '@mui/material';
+import { Button, Modal, Box, FormControl, TextField, CircularProgress, Typography, IconButton, Tooltip, Paper, Fade, Backdrop } from '@mui/material';
 import UploadIcon from '@mui/icons-material/Upload';
+import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import { Form, useFetcher } from '@remix-run/react';
 
 interface ApiResponse {
@@ -66,37 +67,118 @@ const UploadModule: React.FC = () => {
     return (
         <div>
             <Button
-                variant="contained"
+                variant="outlined"
                 startIcon={<UploadIcon />}
                 onClick={handleOpen}
                 sx={{ backgroundColor: 'whitesmoke', color: 'black', ":hover": { backgroundColor: 'ghostwhite' } }}
             >
-                Upload Module
+                Ingest Module
             </Button>
-            <Modal open={open} onClose={handleClose}>
-                <Box sx={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', width: 400, bgcolor: 'background.paper', boxShadow: 24, p: 4 }}>
-                    <Form onSubmit={handleSubmit}>
-                        <FormControl fullWidth>
-                            <TextField
-                                name="moduleName"
-                                label="Module name"
-                                placeholder="Enter the name of python module"
-                                slotProps={{ htmlInput: { "aria-label": "module name" } }}
-                            />
-                        </FormControl>
-                        <Button
-                            sx={{ mt: 1 }}
-                            variant="contained"
-                            color="primary"
-                            type="submit"
-                            disabled={loading}
+            <Modal 
+                open={open} 
+                onClose={handleClose}
+                closeAfterTransition
+                slots={{ backdrop: Backdrop }}
+                slotProps={{
+                    backdrop: {
+                        timeout: 500,
+                        sx: { backgroundColor: 'rgba(0, 0, 0, 0.7)' }
+                    }
+                }}
+            >
+                <Fade in={open} timeout={400}>
+                    <Paper 
+                        elevation={5}
+                        sx={{ 
+                            position: 'absolute', 
+                            top: '50%', 
+                            left: '50%', 
+                            transform: 'translate(-50%, -50%)', 
+                            width: 400, 
+                            bgcolor: 'background.paper', 
+                            borderRadius: 3,
+                            p: 0,
+                            outline: 'none',
+                            boxShadow: '0 8px 32px rgba(0,0,0,0.2)',
+                            overflow: 'hidden',
+                            transition: 'transform 0.3s ease-out',
+                            '&:hover': {
+                                transform: 'translate(-50%, -50%) scale(1.01)',
+                            }
+                        }}
+                    >
+                        <Box 
+                            sx={{ 
+                                bgcolor: 'primary.main', 
+                                color: 'white',
+                                p: 2,
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'space-between'
+                            }}
                         >
-                            {loading ? <CircularProgress size={24} /> : 'Process'}
-                        </Button>
-                    </Form>
-                    {successMessage && <p style={{ color: 'green' }}>{successMessage}</p>}
-                    {errorMessage && <p style={{ color: 'red' }}>{errorMessage}</p>}
-                </Box>
+                            <Typography variant="h6" component="h2">
+                                Ingest Python Module
+                            </Typography>
+                            <Tooltip 
+                                title="Enter the exact module name from PyPI that you want to ingest (e.g., 'numpy', 'pandas', 'scikit-learn')"
+                                arrow
+                                placement="top"
+                            >
+                                <IconButton size="small" sx={{ color: 'white' }}>
+                                    <InfoOutlinedIcon />
+                                </IconButton>
+                            </Tooltip>
+                        </Box>
+                        
+                        <Box sx={{ p: 3 }}>
+                            <Form onSubmit={handleSubmit}>
+                                <FormControl fullWidth>
+                                    <TextField
+                                        name="moduleName"
+                                        label="Module name"
+                                        placeholder="Enter the exact PyPI package name"
+                                        variant="outlined"
+                                        fullWidth
+                                        margin="normal"
+                                        slotProps={{ htmlInput: { "aria-label": "module name" } }}
+                                        sx={{ mt: 0 }}
+                                    />
+                                </FormControl>
+                                
+                                <Box sx={{ mt: 3, display: 'flex', justifyContent: 'space-between' }}>
+                                    <Button
+                                        variant="outlined"
+                                        onClick={handleClose}
+                                    >
+                                        Cancel
+                                    </Button>
+                                    <Button
+                                        variant="contained"
+                                        color="primary"
+                                        type="submit"
+                                        disabled={loading}
+                                        startIcon={loading ? <CircularProgress size={20} color="inherit" /> : <UploadIcon />}
+                                    >
+                                        {loading ? 'Processing...' : 'Ingest'}
+                                    </Button>
+                                </Box>
+                            </Form>
+                            
+                            {successMessage && (
+                                <Box sx={{ mt: 2, p: 1.5, bgcolor: 'success.lighter', color: 'success.darker', borderRadius: 1 }}>
+                                    <Typography variant="body2">{successMessage}</Typography>
+                                </Box>
+                            )}
+                            
+                            {errorMessage && (
+                                <Box sx={{ mt: 2, p: 1.5, bgcolor: 'error.lighter', color: 'error.darker', borderRadius: 1 }}>
+                                    <Typography variant="body2">{errorMessage}</Typography>
+                                </Box>
+                            )}
+                        </Box>
+                    </Paper>
+                </Fade>
             </Modal>
         </div>
     );

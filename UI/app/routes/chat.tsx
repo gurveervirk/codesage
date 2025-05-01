@@ -288,27 +288,6 @@ export default function Chat() {
             <Box sx={{ flexGrow: 1 }} />
             
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
-              <Typography 
-                variant="subtitle2"
-                sx={{ 
-                  display: { xs: 'none', sm: 'block' },
-                  fontWeight: 500,
-                  color: 'text.secondary',
-                  fontSize: '0.85rem',
-                  px: 1.5,
-                  py: 0.5,
-                  borderRadius: 10,
-                  bgcolor: 'action.hover',
-                  border: '1px solid',
-                  borderColor: 'divider',
-                }}
-              >
-                {currentContextId 
-                  ? "Current model: " + (models['Current-Model']?.[0]?.name || "Default model") 
-                  : "New conversation"
-                }
-              </Typography>
-              
               <UploadModule />
             </Box>
           </Paper>

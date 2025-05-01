@@ -1,7 +1,6 @@
 import React, { useEffect, useState, useRef } from "react";
 import {
   TextField,
-  Button,
   Paper,
   FormControl,
   InputLabel,
@@ -327,8 +326,7 @@ export default function ChatInput({ onSend, models }: ChatInputProps) {
                     <Zoom in={Boolean(input.trim())}>
                       <IconButton 
                         onClick={handleSend} 
-                        disabled
-                        hidden={true}
+                        disabled={!input.trim()}
                         sx={{
                           bgcolor: input.trim() ? 'primary.main' : 'action.disabledBackground',
                           color: input.trim() ? 'white' : 'text.disabled',
@@ -343,7 +341,7 @@ export default function ChatInput({ onSend, models }: ChatInputProps) {
                           mr: 0.5,
                         }}
                       >
-                        {/* <SendIcon fontSize="small" /> */}
+                        <SendIcon fontSize="small" />
                       </IconButton>
                     </Zoom>
                   </InputAdornment>
@@ -351,34 +349,6 @@ export default function ChatInput({ onSend, models }: ChatInputProps) {
               }}
             />
           </FormControl>
-          
-          {/* Send button - hidden on mobile (moved inside TextField) */}
-          {!isMobile && (
-            <Zoom in={Boolean(input.trim())}>
-              <Button
-                variant="contained"
-                onClick={handleSend}
-                disabled={!input.trim()}
-                sx={{
-                  height: '46px',
-                  minWidth: '100px',
-                  borderRadius: '10px',
-                  fontWeight: 500,
-                  boxShadow: '0 4px 10px rgba(25, 118, 210, 0.25)',
-                  transition: 'all 0.2s ease',
-                  flexShrink: 0,
-                  '&:hover': {
-                    transform: 'translateY(-2px)',
-                    boxShadow: '0 6px 15px rgba(25, 118, 210, 0.35)',
-                  },
-                  opacity: input.trim() ? 1 : 0,
-                }}
-                endIcon={<SendIcon />}
-              >
-                Send
-              </Button>
-            </Zoom>
-          )}
         </Paper>
       </Box>
     </>

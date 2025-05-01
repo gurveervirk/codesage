@@ -21,7 +21,14 @@ const Message: React.FC<MessageProps> = memo(({ msg, index }) => {
   
   // Only set the timestamp on the client after component mounts
   useEffect(() => {
-    setTimestamp(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
+    // Format the current time as HH:MM PM/AM
+    const now = new Date();
+    const formattedTime = now.toLocaleTimeString([], { 
+      hour: '2-digit', 
+      minute: '2-digit',
+      hour12: true 
+    });
+    setTimestamp(formattedTime);
   }, []);
   
   return (
@@ -62,10 +69,14 @@ const Message: React.FC<MessageProps> = memo(({ msg, index }) => {
           sx={{
             position: 'relative',
             p: { xs: 1.5, sm: 2 },
+            pt: { xs: 1.5, sm: 2 },
+            pb: { xs: 2.5, sm: 3 }, // Increased padding at bottom for timestamp
             borderRadius: isUser 
               ? { xs: "18px 4px 18px 18px", sm: "20px 4px 20px 20px" } 
               : { xs: "4px 18px 18px 18px", sm: "4px 20px 20px 20px" },
             maxWidth: { xs: "80%", sm: "70%", md: "65%" },
+            minHeight: '50px', // Add minimum height to ensure space for timestamp
+            minWidth: '100px', // Add minimum width for small messages
             bgcolor: isUser 
               ? theme.palette.mode === 'light'
                 ? 'primary.main'
@@ -115,7 +126,11 @@ const Message: React.FC<MessageProps> = memo(({ msg, index }) => {
             }
           }}
         >
-          <Box sx={{ position: 'relative', zIndex: 1 }}>
+          <Box sx={{ 
+            position: 'relative', 
+            zIndex: 1,
+            minHeight: '25px', // Ensure content has minimum height
+          }}>
             <MarkdownRenderer content={msg.text} isUserMessage={isUser} />
           </Box>
           
@@ -129,11 +144,13 @@ const Message: React.FC<MessageProps> = memo(({ msg, index }) => {
                 right: isUser ? 'auto' : 12,
                 left: isUser ? 12 : 'auto',
                 color: isUser ? 'rgba(255,255,255,0.7)' : 'text.secondary',
-                fontSize: '0.65rem',
-                opacity: 0.8,
-                mt: 1,
-                display: { xs: 'none', sm: 'block' },
-                fontStyle: 'italic'
+                fontSize: '0.7rem',
+                opacity: 0.7,
+                display: 'block',
+                fontStyle: 'italic',
+                lineHeight: 1,
+                whiteSpace: 'nowrap',
+                textShadow: isUser ? '0px 1px 2px rgba(0,0,0,0.2)' : 'none',
               }}
             >
               {timestamp}
