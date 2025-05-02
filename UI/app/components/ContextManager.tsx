@@ -27,9 +27,10 @@ interface Context {
 interface ContextManagerProps {
   onContextLoad: (contextId: string, chatHistory: string[]) => void;
   onContextReset: () => void;
+  currentContextId: string | null; // Add current context ID prop
 }
 
-const ContextManager: React.FC<ContextManagerProps> = ({ onContextLoad, onContextReset }) => {
+const ContextManager: React.FC<ContextManagerProps> = ({ onContextLoad, onContextReset, currentContextId }) => {
   const [contexts, setContexts] = useState<Context[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -101,6 +102,10 @@ const ContextManager: React.FC<ContextManagerProps> = ({ onContextLoad, onContex
   const handleResetContext = async () => {
     setLoading(true);
     try {
+      // First, call the parent's reset function to immediately clear the UI
+      onContextReset();
+      
+      // Then make the API call to reset the context on the server
       const response = await fetch('/api/reset-context', {
         method: 'POST',
         headers: {
@@ -111,8 +116,6 @@ const ContextManager: React.FC<ContextManagerProps> = ({ onContextLoad, onContex
       if (!response.ok) {
         throw new Error('Failed to reset context');
       }
-      
-      onContextReset();
     } catch (err) {
       setError('Error resetting context: ' + (err instanceof Error ? err.message : String(err)));
       console.error('Error resetting context:', err);
@@ -144,10 +147,18 @@ const ContextManager: React.FC<ContextManagerProps> = ({ onContextLoad, onContex
         throw new Error('Failed to delete context');
       }
       
+      // Check if we're deleting the current context
+      const isDeletingCurrentContext = contextToDelete === currentContextId;
+      
       // Remove deleted context from the list
       setContexts(contexts.filter(ctx => ctx.id !== contextToDelete));
       setDeleteDialogOpen(false);
       setContextToDelete(null);
+      
+      // If we're deleting the current context, reset to a new conversation
+      if (isDeletingCurrentContext) {
+        onContextReset();
+      }
     } catch (err) {
       setError('Error deleting context: ' + (err instanceof Error ? err.message : String(err)));
       console.error('Error deleting context:', err);

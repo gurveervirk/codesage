@@ -16,10 +16,17 @@ async def chat_workflow(request: Request, payload: ChatRequest):
     try:
         # Access the workflow instance from app state
         workflow = request.app.state.workflow
-        result = await workflow.chat_with_agent_workflow(payload.prompt)
-        return {"response": result}
+        result_dict = await workflow.chat_with_agent_workflow(payload.prompt)
+        # Check if there was an error during workflow execution
+        if result_dict.get("error"): 
+            raise HTTPException(status_code=500, detail=result_dict["response"])
+        return result_dict # Return the dictionary containing response and ctx_id
+    except HTTPException as http_exc:
+        # Re-raise HTTPException to let FastAPI handle it
+        raise http_exc
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        # Catch any other unexpected errors
+        raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
 
 @generate_router.get(
     "/get-contexts",

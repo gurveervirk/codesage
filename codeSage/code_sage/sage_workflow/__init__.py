@@ -141,7 +141,7 @@ class SageWorkflow:
         tools = {}
         tools["all_root_tools"] = [retrieve_root_modules_tool, get_next_top_k_root_modules, write_task_tool]
         tools["all_code_tools"] = [get_info_for_entities, get_full_path_names, generate_code_tool]
-        tools["all_search_tools"] = [retrieve_children_tool, get_next_top_k_children]
+        tools["all_search_tools"] = [retrieve_children_tool, get_next_top_k_children, get_full_path_names]
         return tools
     
     def create_agents(self):
@@ -216,24 +216,19 @@ class SageWorkflow:
             if self.ctx is None:
                 raise ValueError("Handler context is not set. Cannot update stored context.")
             
+            # ctx_id should already be set by chat_with_agent_workflow for new contexts
             if self.ctx_id is None:
-                # Generate title and update index, using the chat history
-                title = await generate_title(self.chat_history)
-                self.ctx_id = str(uuid4())
-                self.reverse_ctx_index[title] = self.ctx_id
-                self.ctx_index[self.ctx_id] = title
-                with open("./contexts/index.json", "w") as f:
-                    json.dump(self.ctx_index, f)
-                logger.info(f"Title generated: {title}")
+                 raise ValueError("ctx_id is not set. Cannot update stored context.")
 
-            elif self.ctx_index[self.ctx_id] is None:
+            # Check if title needs generation (first message in a new context)
+            if self.ctx_id not in self.ctx_index or self.ctx_index[self.ctx_id] is None:
                 # Generate title and update index
                 title = await generate_title(self.chat_history)
                 self.reverse_ctx_index[title] = self.ctx_id
                 self.ctx_index[self.ctx_id] = title
                 with open("./contexts/index.json", "w") as f:
                     json.dump(self.ctx_index, f)
-                logger.info(f"Title generated: {title}")
+                logger.info(f"Title generated for {self.ctx_id}: {title}")
             
             context = self.ctx.to_dict()
             
@@ -252,18 +247,25 @@ class SageWorkflow:
             logger.info(f"Context updated successfully: {self.ctx_id}")
         except Exception as e:
             logger.error(f"Error updating context: {e}")
-            raise e
+            # Don't re-raise here, just log the error for background task
     
-    async def chat_with_agent_workflow(self, user_msg) -> str:
+    async def chat_with_agent_workflow(self, user_msg) -> dict:
         """
         Handles the chat with the agent workflow.
 
         Args:
             user_msg (str): The message from the user.
         Returns:
-            str: The response from the agent workflow.
+            dict: A dictionary containing the response and the context ID.
+                  e.g., {"response": "Agent response", "ctx_id": "context-uuid"}
         """
         try:
+            # Check if it's a new context and generate ID if needed
+            is_new_context = self.ctx_id is None
+            if is_new_context:
+                self.ctx_id = str(uuid4())
+                logger.info(f"New context created with ID: {self.ctx_id}")
+
             # Create a new memory buffer for the chat, if not already set
             if self.memory is None:
                 self.memory = ChatSummaryMemoryBuffer.from_defaults(
@@ -315,7 +317,8 @@ class SageWorkflow:
 
             if final_response is None:
                 final_response = "No response generated."
-                return final_response
+                # Still return the context ID even if no response
+                return {"response": final_response, "ctx_id": self.ctx_id}
 
             # Set latest ctx to ctx
             self.ctx = handler.ctx
@@ -328,10 +331,12 @@ class SageWorkflow:
             update_coro = self.update_stored_context()
             asyncio.create_task(_run_and_log_errors(asyncio.shield(update_coro), "Context Update"))
 
-            return final_response
+            return {"response": final_response, "ctx_id": self.ctx_id}
         except Exception as e:
             logger.error(f"Error in chat_with_agent_workflow: {e}")
-            return str(e)
+            # Return error message and potentially the generated ctx_id if available
+            error_ctx_id = getattr(self, 'ctx_id', None) # Get ctx_id if it was set
+            return {"response": str(e), "ctx_id": error_ctx_id, "error": True}
         finally:
             pass
 

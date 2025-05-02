@@ -6,7 +6,7 @@ from config import config
 import logging
 
 code_gen_llm = GoogleGenAI(
-    model="models/gemini-2.5-flash-preview-04-17",
+    model="gemini-2.5-flash-preview-04-17",
     api_key=config.GEMINI_API_KEY,
     temperature=0.1,
 )

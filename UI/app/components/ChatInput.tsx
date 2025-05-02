@@ -48,7 +48,20 @@ export default function ChatInput({ onSend, models }: ChatInputProps) {
 
   useEffect(() => {
     if (models && models['Current-Model'] && models['Current-Model'].length > 0) {
-      setSelectedModel(models['Current-Model'][0].id);
+      // Set the selected model from the Current-Model, which contains the full model ID
+      const currentModelFull = models['Current-Model'][0].id;
+      if (currentModelFull) {
+        setSelectedModel(currentModelFull);
+        
+        // Find and set the model name for Current-Model if it's missing
+        const [provider, modelId] = currentModelFull.split("::");
+        if (provider && modelId && models[provider] && Array.isArray(models[provider])) {
+          const foundModel = models[provider].find(m => m.id === modelId);
+          if (foundModel && !models['Current-Model'][0].name) {
+            models['Current-Model'][0].name = foundModel.name;
+          }
+        }
+      }
     }
   }, [models]);
 
@@ -117,12 +130,23 @@ export default function ChatInput({ onSend, models }: ChatInputProps) {
   const getCurrentModelName = () => {
     if (!models || !selectedModel) return "Select Model";
     
+    // First check if it's the current model
+    if (models['Current-Model'] && 
+        models['Current-Model'].length > 0 && 
+        models['Current-Model'][0].id === selectedModel &&
+        models['Current-Model'][0].name) {
+      return models['Current-Model'][0].name;
+    }
+    
+    // Otherwise look up by provider and id
     const [provider, modelId] = selectedModel.split("::");
+    if (!provider || !modelId) return "Select Model";
+    
     const providerModels = models[provider];
-    if (!providerModels) return "Select Model";
+    if (!providerModels || !Array.isArray(providerModels)) return "Select Model";
     
     const model = providerModels.find(m => m.id === modelId);
-    return model ? model.name : "Select Model";
+    return model?.name || "Select Model";
   };
 
   return (
@@ -231,29 +255,33 @@ export default function ChatInput({ onSend, models }: ChatInputProps) {
                           {provider}
                         </ListSubheader>
                       );
-                      models[provider].forEach((model) => {
-                        provider !== 'Current-Model' && acc.push(
-                          <MenuItem 
-                            key={`${provider}::${model.id}`} 
-                            value={`${provider}::${model.id}`}
-                            sx={{
-                              py: 1,
-                              '&:hover': {
-                                bgcolor: 'action.hover',
-                              },
-                              '&.Mui-selected': {
-                                bgcolor: 'primary.lighter',
-                                fontWeight: 500,
+                      
+                      // Check if models[provider] exists and is an array before using forEach
+                      if (models[provider] && Array.isArray(models[provider])) {
+                        models[provider].forEach((model) => {
+                          provider !== 'Current-Model' && acc.push(
+                            <MenuItem 
+                              key={`${provider}::${model.id}`} 
+                              value={`${provider}::${model.id}`}
+                              sx={{
+                                py: 1,
                                 '&:hover': {
+                                  bgcolor: 'action.hover',
+                                },
+                                '&.Mui-selected': {
                                   bgcolor: 'primary.lighter',
+                                  fontWeight: 500,
+                                  '&:hover': {
+                                    bgcolor: 'primary.lighter',
+                                  }
                                 }
-                              }
-                            }}
-                          >
-                            {model.name}
-                          </MenuItem>
-                        );
-                      });
+                              }}
+                            >
+                              {model.name}
+                            </MenuItem>
+                          );
+                        });
+                      }
                       return acc;
                     }, [])}
                   </Select>

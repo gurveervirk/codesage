@@ -7,21 +7,27 @@ import Sidebar from "~/components/Sidebar";
 import UploadModule from "~/components/UploadModule";
 import {MessageContainer, MessageInterface} from "~/components/MessageContainer";
 import ChatInput from "~/components/ChatInput";
-import { useLoaderData } from "@remix-run/react";
+import { useLoaderData, useNavigate } from "@remix-run/react";
 import { loader as available_models_loader } from "~/loaders/available_models";
-export { available_models_loader as loader };
+import { LoaderFunctionArgs, data } from "@remix-run/node";
 import { Model } from "~/components/ChatInput";
 
 // Helper function to generate stable IDs that don't cause hydration mismatches
 let messageCounter = 0;
 const generateStableId = (prefix: string) => `${prefix}-${messageCounter++}`;
 
+// Extend the loader to potentially fetch initial context based on URL param
+export const loader = async ({ params }: LoaderFunctionArgs) => {
+  const models = (await available_models_loader()).data;
+  return data({ models, contextId: params.contextId });
+};
+
 export default function Chat() {
-  const models = useLoaderData<{ [key: string]: Model[] }>();
+  const { models, contextId: initialContextId } = useLoaderData<{ models: { [key: string]: Model[] }, contextId: string | undefined }>();
   const [messages, setMessages] = useState<MessageInterface[]>([]);
   const [loading, setLoading] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [currentContextId, setCurrentContextId] = useState<string | null>(null);
+  const [currentContextId, setCurrentContextId] = useState<string | null>(initialContextId || null);
   const [notification, setNotification] = useState<{
     open: boolean,
     message: string,
@@ -34,14 +40,78 @@ export default function Chat() {
   
   const eventSourceRef = useRef<EventSource | null>(null);
   const theme = useTheme();
+  const navigate = useNavigate();
 
   // Reset message counter on client side after hydration
   useEffect(() => {
     messageCounter = 0;
   }, []);
 
+  // Track if we've already performed a reset action in this session
+  const hasResetRef = useRef(false);
+
+  // Load initial context if provided in URL
+  useEffect(() => {
+    const loadInitialContext = async () => {
+      // Skip loading if we've manually reset, even if URL contains contextId
+      if (hasResetRef.current) {
+        return;
+      }
+      
+      if (initialContextId && messages.length === 0) {
+        setLoading(true);
+        try {
+          const response = await fetch('/api/load-context', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ id: initialContextId }),
+          });
+          
+          if (!response.ok) {
+            throw new Error('Failed to load context');
+          }
+          
+          const data = await response.json();
+          if (data.chat_history && Array.isArray(data.chat_history)) {
+            const formattedHistory: MessageInterface[] = [];
+            
+            for (let i = 0; i < data.chat_history.length; i++) {
+              formattedHistory.push({
+                text: data.chat_history[i],
+                sender: i % 2 === 0 ? "user" : "ai",
+                id: `history-${i}`
+              });
+            }
+            
+            setMessages(formattedHistory);
+            showNotification("Conversation loaded successfully", "success");
+          }
+        } catch (err) {
+          console.error('Error loading initial context:', err);
+          showNotification("Error loading conversation", "error");
+        } finally {
+          setLoading(false);
+        }
+      }
+    };
+
+    loadInitialContext();
+  }, [initialContextId, messages.length]);
+
+  // Update URL when context ID changes
+  useEffect(() => {
+    if (currentContextId) {
+      // Update URL without causing a navigation/reload
+      navigate(`/chat/${currentContextId}`, { replace: true });
+    } else {
+      navigate('/chat', { replace: true });
+    }
+  }, [currentContextId, navigate]);
+
   const handleSendMessage = async (message: string) => {
-    // 1. Add user message to the state immediately with a stable ID
+    // Add user message to the state immediately with a stable ID
     const newMessage: MessageInterface = { 
       text: message, 
       sender: "user", 
@@ -50,12 +120,12 @@ export default function Chat() {
     setMessages((prevMessages) => [...prevMessages, newMessage]);
     setLoading(true);
 
-    // 2. Close existing EventSource if it exists
+    // Close existing EventSource if it exists
     if (eventSourceRef.current) {
       eventSourceRef.current.close();
     }
 
-    // 3. POST to chat-workflow endpoint and handle streaming response
+    // POST to chat-workflow endpoint and handle response
     try {
       const response = await fetch("/api/chat-workflow", {
         method: "POST",
@@ -73,12 +143,24 @@ export default function Chat() {
         return;
       }
 
-      // Handle normal response (non-streaming)
+      // Handle normal response
       const data = await response.json();
+      
+      // Update messages with the AI response
       setMessages(prevMessages => [
         ...prevMessages,
         { text: data.response, sender: "ai", id: generateStableId('ai-msg') }
       ]);
+      
+      // Update context ID if returned from the API
+      if (data.ctx_id) {
+        setCurrentContextId(data.ctx_id);
+        // Only show notification if context ID changed or was newly created
+        if (!currentContextId) {
+          showNotification("New conversation context created", "info");
+        }
+      }
+      
       setLoading(false);
     } catch (error) {
       console.error("Error sending message:", error);
@@ -119,6 +201,7 @@ export default function Chat() {
   const handleContextReset = () => {
     setMessages([]);
     setCurrentContextId(null);
+    hasResetRef.current = true; // Mark that we've manually reset
     showNotification("Started new conversation", "info");
   };
 
@@ -216,6 +299,7 @@ export default function Chat() {
         onClose={() => setSidebarOpen(false)}
         onContextLoad={handleContextLoad}
         onContextReset={handleContextReset}
+        currentContextId={currentContextId}
       />
 
       {/* Chat Content */}
@@ -226,7 +310,6 @@ export default function Chat() {
         bgcolor="transparent"
         color="text.primary"
         sx={{
-          // marginLeft: { xs: 0, sm: sidebarOpen ? "280px" : "0px" },
           transition: "margin 0.25s cubic-bezier(0.4, 0, 0.2, 1)",
           width: { xs: '100%', sm: 'auto' },
           position: 'relative',

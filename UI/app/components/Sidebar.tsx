@@ -15,6 +15,7 @@ interface SidebarProps {
     onClose: () => void;
     onContextLoad?: (contextId: string, chatHistory: any) => void;
     onContextReset?: () => void;
+    currentContextId: string | null; // Add current context ID prop
 }
 
 const StyledDrawer = styled(Drawer)(({ theme }) => ({
@@ -59,7 +60,7 @@ const ScrollableList = styled(List)({
     }
 });
 
-export default function Sidebar({ open, onClose, onContextLoad, onContextReset }: SidebarProps) {
+export default function Sidebar({ open, onClose, onContextLoad, onContextReset, currentContextId }: SidebarProps) {
     const theme = useTheme();
     const isMobile = useMediaQuery(theme.breakpoints.down('sm'));
 
@@ -89,7 +90,7 @@ export default function Sidebar({ open, onClose, onContextLoad, onContextReset }
                             transform: 'scale(1.05)'
                         }
                     }} 
-                    src="CodeSage-Transparent.png" 
+                    src="/CodeSage-Transparent.png" 
                     alt="CodeSage Logo" 
                 />
             </Box>
@@ -98,7 +99,8 @@ export default function Sidebar({ open, onClose, onContextLoad, onContextReset }
             <Box sx={{ px: 2, py: 1 }}>
                 <ContextManager 
                     onContextLoad={onContextLoad || (() => {})} 
-                    onContextReset={onContextReset || (() => {})} 
+                    onContextReset={onContextReset || (() => {})}
+                    currentContextId={currentContextId}
                 />
             </Box>
             
