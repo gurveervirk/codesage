@@ -9,6 +9,7 @@ This module provides utilities to extract entities and relationships from Python
 - Imports
 """
 
+import importlib.metadata
 from typing import Any, Dict, List, Set, Tuple
 import inspect
 import importlib
@@ -17,7 +18,7 @@ import subprocess
 import traceback
 import ast
 import os
-import pkgutil
+import types
 
 class Entity:
     """
@@ -231,6 +232,63 @@ def safe_get_docstring(obj) -> str:
         return inspect.getdoc(obj) or ""
     except (OSError, TypeError):
         return f"# Representation:\n{repr(obj)}"
+    
+def find_submodules_importlib_resources(module_name: str) -> set[str]:
+    """
+    Discovers all submodules of a given package using importlib.resources.
+    (Python 3.9+)
+
+    Args:
+        module_name (str): The name of the package to search for submodules.
+    
+    Returns:
+        set[str]: A set of submodule names found within the package.
+    """
+    results = set()
+    try:
+        package = importlib.import_module(module_name)
+        if not isinstance(package, types.ModuleType) or not hasattr(package, '__path__'):
+            return results
+
+        package_path_traversable = importlib.resources.files(module_name)
+
+        for item_path in package_path_traversable.iterdir():
+            if item_path.is_file() and item_path.name.endswith('.py') and not item_path.name.startswith('__'):
+                module_name_segment = item_path.name[:-3]
+                full_module_name = f"{module_name}.{module_name_segment}"
+                results.add(full_module_name)
+            elif item_path.is_dir() and not item_path.name.startswith('__'):
+                submodule_name_segment = item_path.name
+                full_submodule_name = f"{module_name}.{submodule_name_segment}"
+                # Check if it's a valid package (regular or namespace)
+                spec = importlib.util.find_spec(full_submodule_name)
+                if spec is not None:
+                    results.add(full_submodule_name)
+    except ImportError as e:
+        print(f"Warning: Could not import or process {module_name}: {e}")
+    except Exception as e:
+        print(f"Error processing {module_name}: {e}")
+    return results
+
+def get_top_level_module(package_name: str) -> str:
+    """
+    Get the top-level module of a package.
+
+    Args:
+        package_name (str): The name of the package.
+
+    Returns:
+        str: The top-level module of the package.
+    """
+    mapping = importlib.metadata.packages_distributions()
+    top_level_module = ""
+
+    for top_module, distribution in mapping.items():
+        if package_name in distribution:
+            top_level_module = top_module
+            break
+
+    return top_level_module
 
 def process_member(
     name: str,
@@ -413,32 +471,26 @@ def traverse_recursive(
                     continue
                 other_relations["INHERITS"].add((obj_path, base_path))
 
-    # Get all sub-modules using `pkgutil` and NOT `inspect` and then process them
+    # Get all sub-modules using `find_submodules_importlib_resources` and process them, if the object is a module
     if inspect.ismodule(obj):
-        try:
-          path = [obj.__path__[0]]
-        except:
-          try:
-            path = [obj.__file__]
-          except:
-            path = None
-        if path:
-          submodules = [name for _, name, _ in pkgutil.iter_modules(path)]
-          for submodule_name in submodules:
+        submodules: set = find_submodules_importlib_resources(obj_path)
+        for submodule_path in submodules:
             try:
-              submodule_path = f"{obj.__name__}.{submodule_name}"
-              sub_entities, sub_relations = process_member(
-                  submodule_name,
-                  importlib.import_module(submodule_path),
-                  root_module_path,
-                  entity,
-                  processed_paths,
-                  other_relations
-              )
-              entities.extend(sub_entities)
-              relations.extend(sub_relations)
-            except:
-              continue
+                submodule_name = submodule_path.split(".")[-1]
+                sub_entities, sub_relations = process_member(
+                    submodule_name,
+                    importlib.import_module(submodule_path),
+                    root_module_path,
+                    entity,
+                    processed_paths,
+                    other_relations
+                )
+                entities.extend(sub_entities)
+                relations.extend(sub_relations)
+            except Exception as e:
+                print(f"Error processing submodule {submodule_path}: {e}")
+                print(traceback.format_exc())
+                continue
 
     # Process sub-classes
     for name, member in inspect.getmembers(obj, inspect.isclass):
@@ -497,31 +549,25 @@ def process_module(module_name: str):
     root_entity = Entity(module_name, "ROOT_MODULE", properties)
     entities.append(root_entity)
 
-    # Get all sub-modules using `pkgutil` and NOT `inspect` and then process them
-    try:
-      path = [module_object.__path__[0]]
-    except:
-      try:
-        path = [module_object.__file__]
-      except:
-        path = None
-    if path:
-      submodules = [name for _, name, _ in pkgutil.iter_modules(path)]
-      for submodule_name in submodules:
+    # Get all sub-modules using `find_submodules_importlib_resources` and process them
+    submodules: set = find_submodules_importlib_resources(module_name)
+    for submodule_path in submodules:
         try:
-          submodule_path = f"{module_object.__name__}.{submodule_name}"
-          sub_entities, sub_relations = process_member(
-              submodule_name,
-              importlib.import_module(submodule_path),
-              module_name,
-              root_entity,
-              processed_paths,
-              other_relations
-          )
-          entities.extend(sub_entities)
-          relations.extend(sub_relations)
-        except:
-          continue
+            submodule_name = submodule_path.split(".")[-1]
+            sub_entities, sub_relations = process_member(
+                submodule_name,
+                importlib.import_module(submodule_path),
+                module_name,
+                root_entity,
+                processed_paths,
+                other_relations
+            )
+            entities.extend(sub_entities)
+            relations.extend(sub_relations)
+        except Exception as e:
+            print(f"Error processing submodule {submodule_path}: {e}")
+            print(traceback.format_exc())
+            continue
 
     # Process sub-classes
     for name, member in inspect.getmembers(module_object, inspect.isclass):
@@ -614,3 +660,29 @@ def process_module(module_name: str):
     print(f"Processed {len(entities)} entities and {len(relations)} relations in {module_name}.")
 
     return entities, relations, other_relations
+
+def process_package(package_name: str):
+    """
+    Process the top-level module of a package. If the package is not available, it will try installing it using pip.
+
+    Args:
+        package_name (str): The name of the package.
+    """
+    top_level_module = get_top_level_module(package_name)
+
+    if not top_level_module:
+        print(f"Package '{package_name}' not found. Attempting to install...")
+        try:
+            subprocess.run(["pip", "install", package_name], check=True)
+            print(f"Package '{package_name}' installed successfully.")
+        except subprocess.CalledProcessError as e:
+            print(f"Failed to install package '{package_name}': {e}")
+            return
+    
+    top_level_module = get_top_level_module(package_name)
+    if not top_level_module:
+        print(f"Package '{package_name}' not found after installation.")
+        return
+    
+    print(f"Processing package '{package_name}' with top-level module '{top_level_module}'...")
+    return process_module(top_level_module)
