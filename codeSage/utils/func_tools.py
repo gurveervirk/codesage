@@ -1,8 +1,11 @@
 from llama_index.llms.google_genai import GoogleGenAI
-from utils.prompts import CODE_GEN_PROMPT, TITLE_GEN_PROMPT
+from utils.prompts import CODE_GEN_PROMPT, CODE_REVIEW_PROMPT, TITLE_GEN_PROMPT
 from utils.misc import stringify_scratchpad
+from utils.models import CodeReview
 from llama_index.core.workflow import Context
 from config import config
+from typing import Any
+import json
 import logging
 
 code_gen_llm = GoogleGenAI(
@@ -10,6 +13,8 @@ code_gen_llm = GoogleGenAI(
     api_key=config.GEMINI_API_KEY,
     temperature=0.1,
 )
+
+code_review_llm = code_gen_llm.as_structured_llm(CodeReview)
 
 title_gen_llm = GoogleGenAI(
     model="gemini-2.0-flash-lite",
@@ -34,19 +39,101 @@ async def generate_code(ctx: Context) -> str:
 
         # Get the scratchpad as a string
         scratchpad_str = await stringify_scratchpad(ctx)
-        
-        # Generate code using the Gemini model
-        response = await code_gen_llm.acomplete(
-            CODE_GEN_PROMPT.format(
-                agent_input=task,
-                scratchpad=scratchpad_str
+
+        # Initialize additional_instructions to None
+        additional_instructions = None
+
+        # Loop through code gen and code review until we have a valid response
+        while True:
+            # Generate code using the Gemini model
+            response = await code_gen_llm.acomplete(
+                CODE_GEN_PROMPT.format(
+                    agent_input=task,
+                    scratchpad=scratchpad_str,
+                    additional_instructions=additional_instructions if additional_instructions else "NONE",
+                )
             )
-        )
+            
+            # Extract the text from the response
+            generated_content = response.text if hasattr(response, "text") else str(response)
+
+            logging.info(f"Generated code: {generated_content}")
+
+            # Review the generated content using the LLM
+            prompt = CODE_REVIEW_PROMPT.format(
+                agent_input=task,
+                scratchpad=scratchpad_str,
+                code_snippet=generated_content
+            )
+
+            review_response = await code_review_llm.acomplete(
+                prompt=prompt,
+            )
+
+            logging.info(f"Review response: {review_response.text}")
+
+            # Load the review response as a CodeReview object
+            code_review = CodeReview.model_validate_json(review_response.text)
+            review = code_review.review
+            correctness = code_review.correctness
+            functionality = code_review.functionality
+            best_practices = code_review.best_practices
+            error_handling = code_review.error_handling
+            incorrect_usage_entities = code_review.incorrect_usage_entities
+            missing_info_entities = code_review.missing_info_entities
+
+            # Check the review response
+            if correctness and functionality and best_practices and error_handling and not missing_info_entities and not incorrect_usage_entities:
+                break  # If the code is correct, functional, follows best practices, has error handling, and no missing or incorrect entities, break the loop
+
+            if missing_info_entities:
+                # Format final response with missing entities
+                final_response = {
+                    "review": review,
+                    "missing_info_entities": missing_info_entities,
+                }
+
+                return json.dumps(final_response, indent=2)
+            
+            # If the code is not correct, functional, or has issues, update additional instructions
+            additional_instructions = (
+                f"Review: {review}\n"
+                f"Correctness: {"Satisfactory" if correctness else "Unsatisfactory"}\n"
+                f"Functionality: {"Satisfactory" if functionality else "Unsatisfactory"}\n"
+                f"Best Practices: {"Satisfactory" if best_practices else "Unsatisfactory"}\n"
+                f"Error Handling: {"Satisfactory" if error_handling else "Unsatisfactory"}\n"
+                f"Incorrect Usage Entities: {', '.join(incorrect_usage_entities) if incorrect_usage_entities else 'None'}\n"
+            )
         
-        # Extract the text from the response
-        generated_content = response.text if hasattr(response, "text") else str(response)
+        response = {}
+        # Extract blocks from the generated content
+        if "<code>" in generated_content and "</code>" in generated_content:
+            start = generated_content.index("<code>") + len("<code>")
+            end = generated_content.index("</code>")
+            response["code"] = generated_content[start:end].strip()
+        else:
+            logging.warning("No <code> blocks found in the generated content.")
+
+        if "<reasoning>" in generated_content and "</reasoning>" in generated_content:
+            start = generated_content.index("<reasoning>") + len("<reasoning>")
+            end = generated_content.index("</reasoning>")
+            response["reasoning"] = generated_content[start:end].strip()
+        else:
+            logging.warning("No <reasoning> blocks found in the generated content.")
+
+        if "<entities_with_missing_info>" in generated_content and "</entities_with_missing_info>" in generated_content:
+            start = generated_content.index("<entities_with_missing_info>") + len("<entities_with_missing_info>")
+            end = generated_content.index("</entities_with_missing_info>")
+            response["entities_with_missing_info"] = generated_content[start:end].strip()
         
-        # Return the formatted response
+        else:
+            logging.warning("No <entities_with_missing_info> blocks found in the generated content.")
+
+        # Store the response in the context state
+        state["code_gen"] = response
+        await ctx.set("state", state)
+
+        # Return the generated content
         return generated_content
 
     except Exception as e:
@@ -115,3 +202,4 @@ async def generate_title(chat: list[str]) -> str:
     except Exception as e:
         logging.info(f"Error generating title: {e}")
         return None
+   

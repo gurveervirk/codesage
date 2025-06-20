@@ -13,7 +13,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       });
     }
 
-    const response = await fetch("http://localhost:5000/upload-module", {
+    const response = await fetch("http://localhost:8000/upload-module", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ module_name: moduleName }),

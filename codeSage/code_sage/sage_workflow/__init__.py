@@ -4,7 +4,7 @@ from llama_index.core.agent.workflow import (
     FunctionAgent,
 )
 # TODO: Evaluate ChatMemoryBuffer in the future
-from llama_index.core.memory import ChatSummaryMemoryBuffer
+from llama_index.core.memory import Memory
 from llama_index.core.agent.workflow import (
     AgentOutput,
     ToolCallResult,
@@ -154,22 +154,20 @@ class SageWorkflow:
             can_handoff_to=["CodeAgent", "SearchAgent"]
         )
 
-        code_agent = COMAgent(
+        code_agent = FunctionAgent(
             name="CodeAgent",
             description="CodeAgent: Agent that generates code using requested entities for requested functionalities, after getting all of their important info using tools",
             tools=tools["all_code_tools"],
             system_prompt=CODE_SYSTEM_PROMPT,
             can_handoff_to=["RootAgent"],
-            agent_type="code"
         )
 
-        search_agent = COMAgent(
+        search_agent = FunctionAgent(
             name="SearchAgent",
             description="SearchAgent: Agent that explores and finds relevant code components based on user queries",
             tools=tools["all_search_tools"],
             system_prompt=SEARCH_SYSTEM_PROMPT,
             can_handoff_to=["RootAgent"],
-            agent_type="search"
         )
 
         return root_agent, [code_agent, search_agent]
@@ -268,8 +266,8 @@ class SageWorkflow:
 
             # Create a new memory buffer for the chat, if not already set
             if self.memory is None:
-                self.memory = ChatSummaryMemoryBuffer.from_defaults(
-                    llm=Settings.llm,
+                self.memory = Memory.from_defaults(
+                    token_limit=300000,
                 )
 
             # Add the user message to the chat history

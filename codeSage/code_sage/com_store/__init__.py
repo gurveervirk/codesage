@@ -215,16 +215,18 @@ class COMStore(Neo4jPropertyGraphStore):
         """
         self.database_query(general_fts_query)
 
-    def retrieve_relevant_root_modules(self, query: str, top_k: int) -> str:
+    def retrieve_relevant_root_modules(self, query: str, top_k: int) -> dict[str, Any]:
         """
-        Retrieve all relevant root modules based on the query, using similarity search, and store them.
+        Retrieve all relevant root modules based on the query, using similarity search, and store them for pagination.
 
         Args:
             query (str): The query string.
             top_k (int): The number of results to return. Defaults to 5.
 
         Returns:
-            str: Top k relevant root modules based on the query formatted as a string.
+            dict[str, Any]: A dictionary containing:
+                - formatted_results (str): Top k Relevant root modules based on the query formatted as a string.
+                - raw (List[Dict]): The list of retrieved root modules, upto top_k.
         """
         # Clean input params
         top_k = int(top_k)
@@ -256,11 +258,14 @@ class COMStore(Neo4jPropertyGraphStore):
             [f"{i+1}. **{result['name']}** (similarity score: {result['score']}):{result['summary']}" for i, result in enumerate(self._root_modules[:top_k])]
         )
 
-        return formatted_results
+        return {
+            "formatted_results": formatted_results,
+            "raw": self._root_modules[:top_k],
+        }
     
-    def retrieve_relevant_children_in_subtree(self, query: str, parent_name: str, top_k: int) -> str:
+    def retrieve_relevant_children_in_subtree(self, query: str, parent_name: str, top_k: int) -> dict[str, Any]:
         """
-        Retrieve all relevant IMMEDIATE children in the subtree of the given parent based on the query, using similarity search, and store them.
+        Retrieve all relevant IMMEDIATE children in the subtree of the given parent based on the query, using similarity search, and store them for pagination.
 
         Args:
             query (str): The query string.
@@ -268,7 +273,9 @@ class COMStore(Neo4jPropertyGraphStore):
             top_k (int): The number of results to return. Defaults to 5.
 
         Returns:
-            str: Top k Relevant children in the subtree of the parent based on the query formatted as a string.
+            dict[str, Any]: A dictionary containing:
+                - formatted_results (str): Top k Relevant children in subtree based on the query formatted as a string.
+                - raw (List[Dict]): The list of retrieved children, upto top_k.
         """
         # Clean input params
         top_k = int(top_k)
@@ -308,22 +315,30 @@ class COMStore(Neo4jPropertyGraphStore):
                 [f"{i+1}. **{result['name']}** (similarity score: {result['score']}, relevant labels: {result['labels']}):\n{result['summary']}" for i, result in enumerate(self._children[:top_k])]
             )
             
-            return formatted_results
+            return {
+                "formatted_results": formatted_results,
+                "raw": self._children[:top_k],
+            }
         
         except Exception as e:
             logging.error(f"Error retrieving relevant children in subtree: {e}")
-            return []
+            return {
+                "formatted_results": f"Error retrieving relevant children in subtree: {e}",
+                "raw": []
+            }
 
-    def next_entities(self, from_: str, top_k: int) -> str:
+    def next_entities(self, from_: str, top_k: int) -> dict[str, Any]:
         """
         Retrieve the next top_k entities from the stored list.
 
         Args:
-            from_ (str): "ROOT_MODULE" or "CHILDREN", indicating which list to retrieve from.
+            from\_ (str): "ROOT_MODULE" or "CHILDREN", indicating which list to retrieve from.
             top_k (int): The number of entities to retrieve.
 
         Returns:
-            str: Formatted string of the next top_k entities.
+            dict[str, Any]: A dictionary containing:
+                - formatted_results (str): The next top_k entities formatted as a string.
+                - raw (List[Dict]): The list of retrieved entities, depending on the `from_` parameter.
         """
         top_k = int(top_k)
         if from_ == "ROOT_MODULE":
@@ -358,7 +373,10 @@ class COMStore(Neo4jPropertyGraphStore):
         else:
             raise ValueError("`from` must be either 'ROOT_MODULE' or 'CHILDREN'")
 
-        return formatted_results
+        return {
+            "formatted_results": formatted_results,
+            "raw" : entities,
+        }
 
     def query_vector_index(
         self, index_name: str, query: str | List[float], top_k: int = 10,
@@ -929,7 +947,7 @@ RETURN
         """
         return entity_representation
     
-    def get_entity_info(self, entity_name: str) -> str:
+    def get_entity_info(self, entity_name: str) -> dict:
         """
         Get information about the entity.
 
@@ -937,16 +955,21 @@ RETURN
             entity_name (str): The name of the entity.
 
         Returns:
-            str: Information about the entity.
+            dict: Information about the entity, including its representation with following fields:
+                - repr (str): The representation of the entity.
+                - raw (dict): The raw data retrieved from the database.
         """
         entity_node = self._get_entity_info(entity_name)
         if not entity_node:
             return f"No information found for the entity: {entity_name}"
 
         entity_representation = self._get_retrieved_entity_representation(entity_node[0])
-        return entity_representation
+        return {
+            "repr": entity_representation,
+            "raw": entity_node[0]
+        }
     
-    def get_info_for_entities(self, entity_names: List[str]) -> str:
+    def get_info_for_entities(self, entity_names: List[str]) -> dict:
         """
         Get information about multiple entities.
 
@@ -954,14 +977,22 @@ RETURN
             entity_names (List[str]): List of entity names.
 
         Returns:
-            str: Information about the entities.
+            dict: A dictionary containing:
+                - formatted_results (str): The representation of the entities.
+                - raw (List[Dict]): The raw data retrieved from the database for each entity.
         """
         results = []
+        raw = []
+        # Iterate through the list of entity names and retrieve their information
         for name in entity_names:
             entity_info = self.get_entity_info(name)
-            results.append(entity_info)
+            results.append(entity_info["repr"])
+            raw.append(entity_info["raw"])
 
-        return "\n\n".join(results)
+        return {
+            "formatted_results": "\n\n".join(results),
+            "raw": raw
+        }
     
     def get_full_path_name(self, name: str) -> str:
         """

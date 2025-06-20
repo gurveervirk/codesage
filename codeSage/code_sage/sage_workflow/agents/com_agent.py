@@ -180,15 +180,28 @@ class COMAgent(FunctionAgent):
         # Get the scratchpad as a string
         scratchpad_str = await stringify_scratchpad(ctx)
 
-        PROMPT = self.code_summarize_prompt if self.agent_type == "code" else self.search_summarize_prompt
-        response = await self.llm.acomplete(
-            f"{PROMPT.format(current_agent_input=task, scratchpad=scratchpad_str)}"
-        )
+        if self.agent_type == "code":
+            # Get reasoning and code from state
+            code_gen = state.get("code_gen", {})
+            reasoning = code_gen.get("reasoning", "")
+            code = code_gen.get("code", "")
+            if not reasoning and not code:
+                raise ValueError("No reasoning or code found in state for code agent.")
+            
+            # Format response
+            response = f"## Reasoning:\n\n{reasoning}\n\n## Code:\n\n{code}"
+
+        else:
+            PROMPT = self.search_summarize_prompt
+            response = await self.llm.acomplete(
+                f"{PROMPT.format(current_agent_input=task, scratchpad=scratchpad_str)}"
+            )
+            response = response.text.strip()
 
         # Append the summarized message to the memory for the root agent and this agent
-        summary_message = ChatMessage(role="assistant", content=response.text)
+        summary_message = ChatMessage(role="assistant", content=response)
         await memory.aput(summary_message)
-        self._update_memory(response.text)
+        self._update_memory(response)
 
         # Append a handoff message to the memory for the root agent
         handoff_message = ChatMessage(role='tool', content='I have provided a summary of my work. Handing off to Root Agent. Please proceed.')
