@@ -13,10 +13,14 @@ from llama_index.core.agent.workflow import (
 from llama_index.core.workflow import Context
 from llama_index.core import Settings
 from uuid import uuid4
-from ..com_store import COMStore
-from utils.prompts import SEARCH_SYSTEM_PROMPT, CODE_SYSTEM_PROMPT, ROOT_SYSTEM_PROMPT
-from utils.func_tools import generate_code, generate_title, write_task
-from .agents.com_agent import COMAgent
+from backend.code_sage.com_store import COMStore
+from backend.utils.prompts import (
+    ROOT_SYSTEM_PROMPT,
+    CODE_SYSTEM_PROMPT,
+    SEARCH_SYSTEM_PROMPT,
+)
+from backend.utils.func_tools import generate_code, generate_title, write_task
+from backend.code_sage.sage_workflow.agents.com_agent import COMAgent
 import json
 import os
 import asyncio

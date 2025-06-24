@@ -961,7 +961,10 @@ RETURN
         """
         entity_node = self._get_entity_info(entity_name)
         if not entity_node:
-            return f"No information found for the entity: {entity_name}"
+            return {
+                "repr": f"No entity found with the name: {entity_name}",
+                "raw": None
+            }
 
         entity_representation = self._get_retrieved_entity_representation(entity_node[0])
         return {
@@ -994,35 +997,21 @@ RETURN
             "raw": raw
         }
     
-    def get_full_path_name(self, name: str) -> str:
+    def _fts_full_path_name(self, name: str) -> str:
         """
-        Get the full path name of the entity.
+        Perform a full-text search for the full path name of the entity.
 
         Args:
             name (str): The name of the entity.
 
         Returns:
-            str: The full path name of the entity.
+            str: The full path name of the entity if found, otherwise an empty string.
         """
-        retrieve_node_by_name_query = (
-            """
-            MATCH (n:METHOD|FUNCTION|CLASS|MODULE {name: $name})
-            RETURN n.name AS name
-            """
-        )
-
-        # Execute the query to retrieve the node by name
-        retrieved_node = self.structured_query(retrieve_node_by_name_query, {"name": name})
-
-        if retrieved_node:
-            retrieved_name = retrieved_node[0]["name"]
-            return f"Full path name found for the entity {name}: {retrieved_name}"
-
-        # If no relevant nodes are found, process the name for regex search
         processed_name = name.replace(".", ".*\.")
         name_till_dotunderscore = processed_name
         if ".*\._" in name_till_dotunderscore:
             name_till_dotunderscore = name_till_dotunderscore.split(".*\._")[0] + ".*"
+
         name_till_dotunderscore = f'/{name_till_dotunderscore}/'
         logging.info(f"Processed name for regex search: {processed_name}")
         logging.info(f"Processed name for regex search till ._: {name_till_dotunderscore}")
@@ -1036,25 +1025,89 @@ RETURN
             RETURN n.name AS name
             """
         )
-
         records = self.structured_query(full_text_search_query, {
             "index_name": "general_fts_index",
             "name_till_dotunderscore": name_till_dotunderscore,
             "name": processed_name
         })
+        if records:
+            records_str = "\n\n".join([f"{i + 1}. {record['name']}" for i, record in enumerate(records)])
+            result = FULL_TEXT_FULL_NAME_SEARCH_TEMPLATE.format(
+                entity_name=name,
+                matches=records_str
+            )
+            return result
+        
+        return ""
+    
+    def get_full_path_name(self, name: str) -> dict:
+        """
+        Get the full path name of the entity.
 
-        if not records:
-            return f"No full path name found for the entity: {name}"  
+        Args:
+            name (str): The name of the entity.
 
-        records_str = "\n\n".join([f"{i + 1}. {record['name']}" for i, record in enumerate(records)])
-        result = FULL_TEXT_FULL_NAME_SEARCH_TEMPLATE.format(
-            entity_name=name,
-            matches=records_str
+        Returns:
+            dict: A dictionary containing:
+                - exact_match (str): The full path name of the entity if found
+                - best_matches (list): List of best matches if no exact match is found
+                - no_match (bool): True if no match is found, False otherwise
+        """
+        retrieve_node_by_name_query = (
+            """
+            MATCH (n:METHOD|FUNCTION|CLASS|MODULE {name: $name})
+            RETURN n.name AS name
+            """
         )
 
-        return result
+        # Execute the query to retrieve the node by name
+        retrieved_node = self.structured_query(retrieve_node_by_name_query, {"name": name})
+
+        if retrieved_node:
+            retrieved_name = retrieved_node[0]["name"]
+            return {
+                "exact_match": retrieved_name,
+                "best_matches": [],
+                "no_match": False
+            }
+
+        # If no relevant nodes are found, process the name for regex search
+        logging.info(f"No relevant nodes found for the name: {name}")
+        logging.info(f"Performing full-text search for the full path name of the entity: {name}")
+        records = self._fts_full_path_name(name)
+
+        if records:
+            best_matches = [f"{i + 1}. {record['name']}" for i, record in enumerate(records)]
+            return {
+                "exact_match": "",
+                "best_matches": best_matches,
+                "no_match": False
+            }
+            
+        # Split the name by '.', merge first and last parts, and try to find the full path name
+        logging.info(f"Performing full-text search for the full path name of the entity with shortened name: {name}")
+        name_parts = name.split(".")
+        shortened_name = name_parts[0] + "." + name_parts[-1]
+        records = self._fts_full_path_name(shortened_name)
+
+        if records:
+            best_matches = [f"{i + 1}. {record['name']}" for i, record in enumerate(records)]
+            return {
+                "exact_match": "",
+                "best_matches": best_matches,
+                "no_match": False
+            }
+        
+        # If no relevant nodes are found, return a message indicating that the full path name could not be found
+        logging.warning(f"No full path name found for the entity: {name}")
+
+        return {
+            "exact_match": "",
+            "best_matches": [],
+            "no_match": True
+        }
     
-    def get_full_path_names(self, names: List[str]) -> str:
+    def get_full_path_names(self, names: List[str]) -> dict:
         """
         Get the full path names of multiple entities.
 
@@ -1062,11 +1115,13 @@ RETURN
             names (List[str]): List of entity names.
 
         Returns:
-            str: The full path names of the entities.
+            dict: A dictionary containing mapping from provided names to a dictionary of:
+                - exact_match (str): The full path name of the entity if found
+                - best_matches (list): List of best matches if no exact match is found
+                - no_match (bool): True if no match is found, False otherwise
         """
-        results = []
+        results = {}
         for name in names:
-            full_path_name = self.get_full_path_name(name)
-            results.append(full_path_name)
+            results[name] = self.get_full_path_name(name)
 
-        return "\n\n".join(results)
+        return results

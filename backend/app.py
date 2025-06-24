@@ -5,10 +5,10 @@ from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from routes.upload_module import upload_module_router
 from routes.generate import generate_router
 from routes.llm_models import llm_models_router
-from code_sage.sage_workflow import SageWorkflow
+from backend.code_sage.sage_workflow.mas import SageWorkflow
 # from utils.gemini_with_rate_limits import GeminiWithRateLimits as Gemini
 from llama_index.llms.google_genai import GoogleGenAI
-from code_sage.com_store import COMStore
+from backend.code_sage.com_store import COMStore
 
 app = FastAPI(
     title="CodeSage API",

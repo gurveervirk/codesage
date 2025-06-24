@@ -14,11 +14,11 @@ from llama_index.core.memory import BaseMemory
 from llama_index.core.tools import AsyncBaseTool
 from llama_index.core.workflow import Context
 from llama_index.core.utils import get_tokenizer
-from utils.prompts import (
+from backend.utils.prompts import (
     SUMMARIZE_CODE_SCRATCHPAD_PROMPT,
     SUMMARIZE_SEARCH_SCRATCHPAD_PROMPT,
 )
-from utils.misc import stringify_scratchpad
+from backend.utils.misc import stringify_scratchpad
 
 class COMAgent(FunctionAgent):
     """Custom COM agent implementation."""

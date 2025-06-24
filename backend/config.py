@@ -1,7 +1,8 @@
 import os
 from dotenv import load_dotenv
 
-load_dotenv()  # Load variables from .env if it exists
+BASEDIR = os.path.abspath(os.path.dirname(__file__))
+load_dotenv(os.path.join(BASEDIR, ".env"))
 
 class Config:
     NEO4J_URI = os.environ.get("NEO4J_URI", "")  # Default if not in .env
@@ -12,5 +13,6 @@ class Config:
     "Gemini":[{"id": "gemini-2.0-flash", "name": "Flash 2.0"},{ "id": "gemini-1.5-pro", "name": "Flash 1.5 pro"}],
     "Ollama":[{"id": "mistral:latest", "name": "Mistral"}],
     }
+    
 # Create an instance of the Config class
 config = Config()

@@ -10,4 +10,4 @@ UI/build
 UI/.env
 /venv
 /codesage_overview
-/codeSage/contexts
+/backend/contexts

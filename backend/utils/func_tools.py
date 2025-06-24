@@ -1,9 +1,9 @@
 from llama_index.llms.google_genai import GoogleGenAI
-from utils.prompts import CODE_GEN_PROMPT, CODE_REVIEW_PROMPT, TITLE_GEN_PROMPT
-from utils.misc import stringify_scratchpad
-from utils.models import CodeReview
+from backend.utils.prompts import CODE_GEN_PROMPT, CODE_REVIEW_PROMPT, TITLE_GEN_PROMPT
+from backend.utils.misc import stringify_scratchpad
+from backend.utils.models import CodeReview
 from llama_index.core.workflow import Context
-from config import config
+from backend.config import config
 from typing import Any
 import json
 import logging
