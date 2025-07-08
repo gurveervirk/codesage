@@ -254,8 +254,8 @@ class COMStore(Neo4jPropertyGraphStore):
         self._last_root_modules_query = {"query": query, "top_k": top_k}
 
         # Format the top k results as a string
-        formatted_results = "Relevant Root Modules:\n\n" + "\n\n".join(
-            [f"{i+1}. **{result['name']}** (similarity score: {result['score']}):{result['summary']}" for i, result in enumerate(self._root_modules[:top_k])]
+        formatted_results = "Relevant Root Modules (in no particular order):\n\n" + "\n\n".join(
+            [f"- **{result['name']}**:\n\n{result['summary']}" for i, result in enumerate(self._root_modules[:top_k])]
         )
 
         return {
@@ -311,8 +311,8 @@ class COMStore(Neo4jPropertyGraphStore):
             self._last_children_query = {"query": query, "parent_name": parent_name, "top_k": top_k}
 
             # Format the top k results as a string
-            formatted_results = "Relevant Children in Subtree:\n\n" + "\n\n".join(
-                [f"{i+1}. **{result['name']}** (similarity score: {result['score']}, relevant labels: {result['labels']}):\n{result['summary']}" for i, result in enumerate(self._children[:top_k])]
+            formatted_results = "Relevant Children in Subtree (in no particular order):\n\n" + "\n\n".join(
+                [f"- **{result['name']}** (relevant labels: {result['labels']}):\n\n{result['summary']}" for i, result in enumerate(self._children[:top_k])]
             )
             
             return {
@@ -898,23 +898,41 @@ class COMStore(Neo4jPropertyGraphStore):
         """
         get_entity_info_query = (
             """
-MATCH (end {name: $entity_name})
-OPTIONAL MATCH (end:CLASS)-[:HAS_METHOD]->(init {__name__: "__init__"})
-WHERE "CLASS" IN labels(end)
-RETURN 
-    end.name AS name, 
-    end.__name__ AS __name__, 
-    end.summary AS summary, 
-    CASE 
-        WHEN "CLASS" IN labels(end) AND init IS NOT NULL THEN init.signature
-        ELSE end.signature
-    END AS signature,
-    end.llm_signature AS llm_signature, 
-    end.shortest_call_path AS shortest_call_path,
-    end.doc AS docstring
+            // Try to match the entity by name
+            MATCH (end {name: $entity_name})
+            OPTIONAL MATCH (end:CLASS)-[:HAS_METHOD]->(init {__name__: "__init__"})
+            WHERE "CLASS" IN labels(end)
+            WITH end, init, NULL AS parent_class, NULL AS parent_init
+            RETURN 
+                end.name AS name, 
+                end.__name__ AS __name__, 
+                end.summary AS summary, 
+                CASE 
+                    WHEN "CLASS" IN labels(end) AND init IS NOT NULL THEN init.signature
+                    ELSE end.signature
+                END AS signature,
+                end.llm_signature AS llm_signature, 
+                end.shortest_call_path AS shortest_call_path,
+                end.doc AS docstring,
+                'entity' AS type
+            UNION
+            // If the entity is a method, also get its parent class's __init__ (if any)
+            MATCH (m:METHOD {name: $entity_name})<-[:HAS_METHOD]-(cls:CLASS)
+            OPTIONAL MATCH (cls)-[:HAS_METHOD]->(init:METHOD {__name__: "__init__"})
+            RETURN 
+                init.name AS name, 
+                init.__name__ AS __name__, 
+                init.summary AS summary, 
+                init.signature AS signature,
+                init.llm_signature AS llm_signature, 
+                init.shortest_call_path AS shortest_call_path,
+                init.doc AS docstring,
+                'init' AS type
             """
         )
         result = self.structured_query(get_entity_info_query, {"entity_name": entity_name})
+        # Filter out None results (e.g., if no __init__ exists)
+        result = [r for r in result if r.get("name")]
         return result if result else []
 
     def _get_retrieved_entity_representation(self, retrieved_node: Dict) -> str:
@@ -957,7 +975,7 @@ RETURN
         Returns:
             dict: Information about the entity, including its representation with following fields:
                 - repr (str): The representation of the entity.
-                - raw (dict): The raw data retrieved from the database.
+                - raw (dict | list[dict]): The raw data retrieved from the database.
         """
         entity_node = self._get_entity_info(entity_name)
         if not entity_node:
@@ -965,6 +983,17 @@ RETURN
                 "repr": f"No entity found with the name: {entity_name}",
                 "raw": None
             }
+        
+        # If the list contains multiple entries, it is most likely a class' method and its __init__ method
+        if len(entity_node) > 1:
+            representation = "Method Representation with it's Class' Init Representation:\n" + "\n\n".join([
+                self._get_retrieved_entity_representation(node) for node in entity_node
+            ])
+            return {
+                "repr": representation,
+                "raw": entity_node
+            }
+            
 
         entity_representation = self._get_retrieved_entity_representation(entity_node[0])
         return {
@@ -981,7 +1010,7 @@ RETURN
 
         Returns:
             dict: A dictionary containing:
-                - formatted_results (str): The representation of the entities.
+                - formatted_results (List[str]): The representation of the entities.
                 - raw (List[Dict]): The raw data retrieved from the database for each entity.
         """
         results = []
@@ -993,7 +1022,7 @@ RETURN
             raw.append(entity_info["raw"])
 
         return {
-            "formatted_results": "\n\n".join(results),
+            "formatted_results": results,
             "raw": raw
         }
     
