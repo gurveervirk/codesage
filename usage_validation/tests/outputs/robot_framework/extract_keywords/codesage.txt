@@ -1,0 +1,18 @@
+--- Starting Validation Process ---
+--> Received Signatures:
+{
+  "robot.libdoc.LibraryDocumentation": {
+    "type": "FUNCTION",
+    "signature": "(library_or_resource, name=None, version=None, doc_format=None)"
+  }
+}
+--> Generated stubs and config in: /var/folders/m0/5xqh90jd58l7mj0s86pp_n_h0000gn/T/tmpailivvhl
+--> Running mypy for validation...
+
+--- Validation Results ---
+Found Validation Errors:
+
+Success: no issues found in 1 source file
+
+Success! No validation errors found.
+------------------------

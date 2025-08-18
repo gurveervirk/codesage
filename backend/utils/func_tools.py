@@ -10,7 +10,7 @@ import logging
 
 code_gen_llm = GoogleGenAI(
     model="gemini-2.5-flash-preview-04-17",
-    api_key=config.GEMINI_API_KEY,
+    api_key=config.GOOGLE_GENAI_API_KEY,
     temperature=0.1,
 )
 
@@ -18,7 +18,7 @@ code_review_llm = code_gen_llm.as_structured_llm(CodeReview)
 
 title_gen_llm = GoogleGenAI(
     model="gemini-2.0-flash-lite",
-    api_key=config.GEMINI_API_KEY,
+    api_key=config.GOOGLE_GENAI_API_KEY,
     temperature=0.1,
 )
 

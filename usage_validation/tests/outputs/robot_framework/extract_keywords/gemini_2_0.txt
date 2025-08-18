@@ -1,0 +1,16 @@
+--- Starting Validation Process ---
+--> Received Signatures:
+{
+  "robot.api.get_resource_from_file": null
+}
+--> Generated stubs and config in: /var/folders/m0/5xqh90jd58l7mj0s86pp_n_h0000gn/T/tmpacyqoxle
+--> Running mypy for validation...
+
+--- Validation Results ---
+Found Validation Errors:
+
+Line 1: error: Module "robot.api" has no attribute "get_resource_from_file"  [attr-defined]
+Line 1: error: Module "robot.api" has no attribute "ResourceFile"  [attr-defined]
+Found 2 errors in 1 file (checked 1 source file)
+
+------------------------

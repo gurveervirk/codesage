@@ -1,0 +1,75 @@
+--- Starting Validation Process ---
+--> Received Signatures:
+{
+  "aerosandbox.Wing": {
+    "type": "CLASS",
+    "signature": "(self, name: Optional[str] = None, xsecs: List[ForwardRef('WingXSec')] = None, symmetric: bool = False, color: Union[str, Tuple[float], NoneType] = None, analysis_specific_options: Optional[Dict[type, Dict[str, Any]]] = None, **kwargs)"
+  },
+  "aerosandbox.numpy.max": {
+    "type": "FUNCTION",
+    "signature": "(a, axis=None)"
+  },
+  "aerosandbox.numpy.abs": {
+    "type": "FUNCTION",
+    "signature": "(x)"
+  },
+  "aerosandbox.Airfoil": {
+    "type": "CLASS",
+    "signature": "(self, name: str = 'Untitled', coordinates: Union[NoneType, str, pathlib.Path, numpy.ndarray] = None, **deprecated_keyword_arguments)"
+  },
+  "matplotlib.pyplot.title": null,
+  "matplotlib.pyplot.gca.set_aspect": null,
+  "aerosandbox.Airplane": {
+    "type": "CLASS",
+    "signature": "(self, name: Optional[str] = None, xyz_ref: Union[numpy.ndarray, List] = None, wings: Optional[List[aerosandbox.geometry.wing.Wing]] = None, fuselages: Optional[List[aerosandbox.geometry.fuselage.Fuselage]] = None, propulsors: Optional[List[aerosandbox.geometry.propulsor.Propulsor]] = None, s_ref: Optional[float] = None, c_ref: Optional[float] = None, b_ref: Optional[float] = None, analysis_specific_options: Optional[Dict[type, Dict[str, Any]]] = None)"
+  },
+  "aerosandbox.draw_wireframe": null,
+  "matplotlib.pyplot.gca": null,
+  "aerosandbox.Airplane.draw": {
+    "type": "METHOD",
+    "signature": "(self, backend: str = 'pyvista', thin_wings: bool = False, ax=None, use_preset_view_angle: str = None, set_background_pane_color: Union[str, Tuple[float, float, float]] = None, set_background_pane_alpha: float = None, set_lims: bool = True, set_equal: bool = True, set_axis_visibility: bool = None, show: bool = True, show_kwargs: Dict = None)"
+  },
+  "aerosandbox.draw_quiver": null,
+  "aerosandbox.OperatingPoint": {
+    "type": "CLASS",
+    "signature": "(self, atmosphere: aerosandbox.atmosphere.atmosphere.Atmosphere = Atmosphere (altitude: 0 m (0 ft), method: 'differentiable'), velocity: float = 1.0, alpha: float = 0.0, beta: float = 0.0, p: float = 0.0, q: float = 0.0, r: float = 0.0)"
+  },
+  "matplotlib.pyplot.cm.ScalarMappable": null,
+  "aerosandbox.Airplane.aero_forces_and_moments": null,
+  "matplotlib.pyplot.cm.get_cmap": null,
+  "matplotlib.pyplot.ylabel": null,
+  "aerosandbox.Fuselage": {
+    "type": "CLASS",
+    "signature": "(self, name: Optional[str] = 'Untitled', xsecs: List[ForwardRef('FuselageXSec')] = None, color: Union[str, Tuple[float], NoneType] = None, analysis_specific_options: Optional[Dict[type, Dict[str, Any]]] = None, **kwargs)"
+  },
+  "matplotlib.pyplot.show": null,
+  "matplotlib.pyplot.xlabel": null,
+  "matplotlib.colors.Normalize": null,
+  "matplotlib.pyplot.colorbar": null
+}
+--> Generated stubs and config in: /var/folders/m0/5xqh90jd58l7mj0s86pp_n_h0000gn/T/tmpodzoajk5
+--> Running mypy for validation...
+
+--- Validation Results ---
+Found Validation Errors:
+
+Line 49: error: Unexpected keyword argument "rho" for "OperatingPoint"  [call-arg]
+/var/folders/m0/5xqh90jd58l7mj0s86pp_n_h0000gn/T/tmpodzoajk5/stubs/aerosandbox.pyi:20: note: "OperatingPoint" defined here
+Line 56: error: "Airplane" has no attribute "aero_forces_and_moments"  [attr-defined]
+Line 74: error: Unexpected keyword argument "draw_positive_spanwise_direction" for "draw" of "Airplane"  [call-arg]
+/var/folders/m0/5xqh90jd58l7mj0s86pp_n_h0000gn/T/tmpodzoajk5/stubs/aerosandbox.pyi:14: note: "draw" of "Airplane" defined here
+Line 74: error: Unexpected keyword argument "draw_negative_spanwise_direction" for "draw" of "Airplane"  [call-arg]
+Line 74: error: Unexpected keyword argument "airfoil_shape_kwargs" for "draw" of "Airplane"  [call-arg]
+Line 74: error: Unexpected keyword argument "wing_kwargs" for "draw" of "Airplane"  [call-arg]
+Line 88: error: Module has no attribute "draw_wireframe"  [attr-defined]
+Line 89: error: "Wing" has no attribute "xyz_le"  [attr-defined]
+Line 89: error: "Wing" has no attribute "xyz_te"  [attr-defined]
+Line 90: error: "Wing" has no attribute "mesh_do_edges"  [attr-defined]
+Line 95: error: Module has no attribute "draw_wireframe"  [attr-defined]
+Line 96: error: "Wing" has no attribute "xyz_le"  [attr-defined]
+Line 96: error: "Wing" has no attribute "xyz_te"  [attr-defined]
+Line 97: error: "Wing" has no attribute "mesh_do_edges"  [attr-defined]
+Line 115: error: Module has no attribute "draw_quiver"  [attr-defined]
+Found 15 errors in 1 file (checked 1 source file)
+
+------------------------

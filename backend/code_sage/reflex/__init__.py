@@ -9,8 +9,9 @@ This module provides utilities to extract entities and relationships from Python
 - Imports
 """
 
+from typing import Any, Dict, List, Set, Tuple, Callable, get_type_hints
+from .models import Entity, Relationship
 import importlib.metadata
-from typing import Any, Dict, List, Set, Tuple
 import inspect
 import importlib
 import re
@@ -19,31 +20,6 @@ import traceback
 import ast
 import os
 import types
-
-class Entity:
-    """
-    Module-agnostic entity class.
-    """
-    def __init__(self, name: str, label: str, properties: Dict):
-        self.name = name
-        self.label = label
-        self.properties = properties
-
-    def __repr__(self):
-        return f"{self.label} ({self.name})"
-
-class Relationship:
-    """
-    Module-agnostic relation class.
-    """
-    def __init__(self, from_entity: Entity, to_entity: Entity, label: str, properties: Dict):
-        self.from_entity = from_entity
-        self.to_entity = to_entity
-        self.label = label
-        self.properties = properties
-
-    def __repr__(self):
-        return f"{self.from_entity} --{self.label}--> {self.to_entity}"
 
 def get_import_statements(source_code: str) -> str:
     """
@@ -145,13 +121,25 @@ def get_unused_imports(module_name: str, imported_names: Set[str]) -> Set[str]:
         print(f"Checking unused imports for {module_name} at {module_file_path}...")
 
         # Run flake8 and capture output
-        process = subprocess.run(
-            ["python", "-m", "flake8", "--select", "F401", module_file_path ],
-            capture_output=True,
-            text=True,
-            check=True,
-            shell=True,
-        )
+        # If system OS is Windows, use shell=True
+        process = None
+        if os.name == 'nt':
+            process = subprocess.run(
+                ["python", "-m", "flake8", "--select", "F401", module_file_path],
+                capture_output=True,
+                text=True,
+                check=True,
+                shell=True,
+            )
+        else:
+            # For Unix-like systems, use shell=False
+            process = subprocess.run(
+                ["python", "-m", "flake8", "--select", "F401", module_file_path],
+                capture_output=True,
+                text=True,
+                check=True,
+                shell=False,
+            )
 
         output = process.stdout
         unused_names = list()
@@ -270,6 +258,36 @@ def find_submodules_importlib_resources(module_name: str) -> set[str]:
         print(f"Error processing {module_name}: {e}")
     return results
 
+def get_typed_signature(func: Callable) -> inspect.Signature:
+    """
+    Return an inspect.Signature with annotations resolved like typing.get_type_hints.
+    
+    Handles forward references, PEP 563 postponed annotations, Optional defaults, etc.
+
+    Args:
+        func (Callable): The function to analyze.
+
+    Returns:
+        inspect.Signature: A signature object with resolved annotations.
+    """
+    # First, retrieve evaluated type hints (resolves strings, adds Optional for default None, etc.)
+    hints = get_type_hints(func)
+    
+    # Get raw signature
+    sig = inspect.signature(func)
+    
+    # Build new Parameters with resolved annotations
+    params = []
+    for name, param in sig.parameters.items():
+        annotation = hints.get(name, param.annotation)
+        params.append(param.replace(annotation=annotation))
+    
+    # Determine return annotation
+    return_annotation = hints.get('return', sig.return_annotation)
+    
+    # Construct resolved signature
+    return sig.replace(parameters=params, return_annotation=return_annotation)
+
 def get_top_level_module(package_name: str) -> str:
     """
     Get the top-level module of a package.
@@ -375,7 +393,7 @@ def process_member(
             {
                 "source": source_code,
                 "__name__": obj.__name__,
-                "signature": str(inspect.signature(obj)),
+                "signature": str(get_typed_signature(obj)),
                 "docstring": docstring
             }
         )
@@ -402,7 +420,7 @@ def process_member(
             {
                 "source": source_code,
                 "__name__": obj.__name__,
-                "signature": str(inspect.signature(obj)),
+                "signature": str(get_typed_signature(obj)),
                 "docstring": docstring
             }
         )

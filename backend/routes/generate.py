@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException, Request
-from .models import ChatRequest, ContextRequest
+from backend.routes.models import ChatRequest, ContextRequest
 
 # FastAPI router for generate endpoints
 generate_router = APIRouter()

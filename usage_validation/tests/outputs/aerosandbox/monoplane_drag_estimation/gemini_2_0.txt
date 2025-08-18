@@ -1,0 +1,41 @@
+--- Starting Validation Process ---
+--> Received Signatures:
+{
+  "aerosandbox.Wing": {
+    "type": "CLASS",
+    "signature": "(self, name: Optional[str] = None, xsecs: List[ForwardRef('WingXSec')] = None, symmetric: bool = False, color: Union[str, Tuple[float], NoneType] = None, analysis_specific_options: Optional[Dict[type, Dict[str, Any]]] = None, **kwargs)"
+  },
+  "aerosandbox.Airfoil": {
+    "type": "CLASS",
+    "signature": "(self, name: str = 'Untitled', coordinates: Union[NoneType, str, pathlib.Path, numpy.ndarray] = None, **deprecated_keyword_arguments)"
+  },
+  "aerosandbox.Airplane.vlm_analysis": null,
+  "aerosandbox.Airplane": {
+    "type": "CLASS",
+    "signature": "(self, name: Optional[str] = None, xyz_ref: Union[numpy.ndarray, List] = None, wings: Optional[List[aerosandbox.geometry.wing.Wing]] = None, fuselages: Optional[List[aerosandbox.geometry.fuselage.Fuselage]] = None, propulsors: Optional[List[aerosandbox.geometry.propulsor.Propulsor]] = None, s_ref: Optional[float] = None, c_ref: Optional[float] = None, b_ref: Optional[float] = None, analysis_specific_options: Optional[Dict[type, Dict[str, Any]]] = None)"
+  },
+  "aerosandbox.atmosphere.density": null,
+  "aerosandbox.atmosphere.viscosity": null,
+  "aerosandbox.OperatingPoint": {
+    "type": "CLASS",
+    "signature": "(self, atmosphere: aerosandbox.atmosphere.atmosphere.Atmosphere = Atmosphere (altitude: 0 m (0 ft), method: 'differentiable'), velocity: float = 1.0, alpha: float = 0.0, beta: float = 0.0, p: float = 0.0, q: float = 0.0, r: float = 0.0)"
+  },
+  "aerosandbox.WingXSec": {
+    "type": "CLASS",
+    "signature": "(self, xyz_le: Union[numpy.ndarray, List] = None, chord: float = 1.0, twist: float = 0.0, airfoil: aerosandbox.geometry.airfoil.airfoil.Airfoil = None, control_surfaces: Optional[List[ForwardRef('ControlSurface')]] = None, analysis_specific_options: Optional[Dict[type, Dict[str, Any]]] = None, **deprecated_kwargs)"
+  }
+}
+--> Generated stubs and config in: /var/folders/m0/5xqh90jd58l7mj0s86pp_n_h0000gn/T/tmp123o113t
+--> Running mypy for validation...
+
+--- Validation Results ---
+Found Validation Errors:
+
+Line 16: error: Module has no attribute "atmosphere"  [attr-defined]
+Line 39: error: Unexpected keyword argument "density" for "OperatingPoint"  [call-arg]
+/var/folders/m0/5xqh90jd58l7mj0s86pp_n_h0000gn/T/tmp123o113t/stubs/aerosandbox.pyi:16: note: "OperatingPoint" defined here
+Line 50: error: "Airplane" has no attribute "vlm_analysis"  [attr-defined]
+Line 69: error: Module has no attribute "atmosphere"  [attr-defined]
+Found 4 errors in 1 file (checked 1 source file)
+
+------------------------

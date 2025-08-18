@@ -769,24 +769,39 @@ class COMStore(Neo4jPropertyGraphStore):
         # Set the shortest call paths for all nodes in the module tree (recursively)
         set_shortest_call_paths_query = (
             """
-            MATCH (end:MODULE|FUNCTION|CLASS|METHOD)<-[:HAS_SUBMODULE|HAS_CLASS|HAS_METHOD|HAS_FUNCTION|EXPOSES*]-(root:ROOT_MODULE {name: $module_name})
-            WITH root, collect(end) AS endNodes
-            CALL apoc.path.spanningTree(root, {
-            relationshipFilter: 'HAS_SUBMODULE>|HAS_CLASS>|HAS_METHOD>|HAS_FUNCTION>|EXPOSES>',
-            endNodes: endNodes
-            })
-            YIELD path
-            WITH nodes(path) AS nodesInPath
-            WITH LAST(nodesInPath) AS targetNode, nodesInPath[-2] as parentNode
-            WHERE targetNode.shortest_call_path IS NULL
-            SET targetNode.shortest_call_path =
-            CASE
-                WHEN size(parentNode.name + "." + targetNode.__name__) < size(targetNode.name)
-                THEN parentNode.name + "." + targetNode.__name__
-                ELSE targetNode.name
-            END
-            RETURN count(targetNode) AS numPathsSet
-            """
+// Phase 1: Find all nodes reachable from the root module via structural relationships.
+MATCH (end:MODULE|FUNCTION|CLASS|METHOD)<-[:HAS_SUBMODULE|HAS_CLASS|HAS_METHOD|HAS_FUNCTION|EXPOSES*]-(root:ROOT_MODULE {name: $module_name})
+WITH root, collect(end) AS endNodes
+
+// Phase 2: Use spanningTree to get ordered paths from the root outwards (BFS).
+CALL apoc.path.spanningTree(root, {
+    relationshipFilter: 'HAS_SUBMODULE>|HAS_CLASS>|HAS_METHOD>|HAS_FUNCTION>|EXPOSES>',
+    endNodes: endNodes
+})
+YIELD path
+
+// Phase 3: Deconstruct the path to get the target and its immediate parent.
+WITH nodes(path) AS nodesInPath
+// Ensure the path has at least a parent and a child.
+WHERE size(nodesInPath) > 1
+WITH
+    LAST(nodesInPath) AS targetNode,
+    nodesInPath[-2] AS parentNode
+
+// Phase 4: Only process nodes that do not have a path set yet.
+WHERE targetNode.shortest_call_path IS NULL
+
+// Phase 5: Set the shortest_call_path based on the parent's state.
+// This is the core logic implementing your request.
+SET targetNode.shortest_call_path =
+    // COALESCE returns the first non-null value. This elegantly handles the two cases.
+    // Case 1: If the parent has a path, use it.
+    // Case 2: If the parent's path is null (i.e., it's the root), use its name property.
+    COALESCE(parentNode.shortest_call_path, parentNode.name) + '.' + targetNode.__name__
+
+// Phase 6: Return the count of nodes that were updated.
+RETURN count(targetNode) AS numPathsSet
+"""
         )
         numPathsSet = self.structured_query(set_shortest_call_paths_query, {"module_name": module_name})[0]["numPathsSet"]
         while numPathsSet > 0:
@@ -801,22 +816,53 @@ class COMStore(Neo4jPropertyGraphStore):
         """
         handle_inheritance_query = (
             """
-            MATCH (child:CLASS)
-            WHERE child.NEW_INHERIT_RELS IS NOT NULL
-            WITH child, child.NEW_INHERIT_RELS AS parentNames
-            REMOVE child.NEW_INHERIT_RELS
-            WITH child, parentNames
-            UNWIND parentNames AS parentName
-            MATCH (parent:CLASS {name: parentName})-[:HAS_METHOD]->(member)
-            WHERE NOT EXISTS {
-                MATCH (child)-[:HAS_METHOD]->(childMethod)
-                WHERE childMethod.__name__ = member.__name__ AND childMethod.signature = member.signature
-            }
-            WITH child, collect(DISTINCT member) AS members
-            UNWIND members AS member
-            MERGE (child)-[:HAS_METHOD]->(member)
-            WITH DISTINCT child, collect(member) AS members
-            RETURN child.name AS ChildClass, size(members) AS TotalParentMembersLabeled
+// Phase 1: Find classes marked for an inheritance update.
+MATCH (child:CLASS)
+WHERE child.NEW_INHERIT_RELS IS NOT NULL
+WITH child, child.NEW_INHERIT_RELS AS parentNames
+
+// Clean up the trigger property to prevent re-processing.
+REMOVE child.NEW_INHERIT_RELS
+
+// Phase 2: Iterate through all methods from all parents.
+// It is CRITICAL that `parentNames` is sorted in the correct Method Resolution Order (MRO).
+WITH child, parentNames
+UNWIND parentNames AS parentName
+MATCH (parent:CLASS {name: parentName})-[:HAS_METHOD]->(member)
+
+// Phase 3: Filter the methods based on the correct inheritance and override rules.
+WHERE
+    // Rule 1: NEVER inherit private methods.
+    // This is the simplest and first check.
+    NOT 'PRIVATE' IN labels(member)
+
+    // AND the method must not be overridden according to its type (Dunder vs. Public).
+    AND (
+        // Rule 2: DUNDER methods are overridden by NAME ONLY.
+        // Inherit if it's a Dunder AND the child has no method with the same name.
+        (
+            'DUNDER' IN labels(member) AND
+            NOT EXISTS { MATCH (child)-[:HAS_METHOD]->({__name__: member.__name__}) }
+        )
+        OR
+        // Rule 3: PUBLIC/PROTECTED methods are overridden by NAME AND SIGNATURE.
+        // Inherit if it's NOT a Dunder AND the child has no method with the same name and signature.
+        (
+            NOT 'DUNDER' IN labels(member) AND
+            NOT EXISTS { MATCH (child)-[:HAS_METHOD]->({__name__: member.__name__, signature: member.signature}) }
+        )
+    )
+
+// Phase 4: Collect the valid inheritable methods and create the links.
+// The DISTINCT is important to handle cases where multiple parents might offer the same valid method.
+// Due to MRO, we will later refine this to only take the first one found.
+WITH child, collect(DISTINCT member) AS members
+UNWIND members AS member
+MERGE (child)-[:HAS_METHOD]->(member)
+
+// Phase 5: Report the results.
+WITH DISTINCT child, collect(member) AS members
+RETURN child.name AS ChildClass, size(members) AS TotalParentMembersLabeled
             """
         )
         self.structured_query(handle_inheritance_query)
@@ -1154,3 +1200,111 @@ class COMStore(Neo4jPropertyGraphStore):
             results[name] = self.get_full_path_name(name)
 
         return results
+    
+    def get_signatures(self, entity_names: List[str]) -> dict:
+        """
+        Get signatures for multiple entities.
+
+        Args:
+            entity_names (List[str]): List of entity names.
+
+        Returns:
+            dict: A dictionary containing mapping from provided names to their signatures.
+        """
+        # Prepare a Cypher query to retrieve signatures for the entities
+        query = (
+"""
+// Start with the list of names to search for and create a row for each
+UNWIND $entity_names AS entity_name
+
+// Phase 1: Try to find a direct match for the entity by its own properties
+OPTIONAL MATCH (e1:METHOD|FUNCTION|CLASS)
+WHERE e1.name = entity_name OR e1.shortest_call_path = entity_name
+WITH entity_name, collect(e1)[0] AS direct_match
+
+// Phase 2: If no direct match was found, try the fallback search via the EXPOSES relationship
+OPTIONAL MATCH ()-[r:EXPOSES]->(e2:METHOD|FUNCTION|CLASS)
+WHERE direct_match IS NULL AND r.name = entity_name
+WITH entity_name, direct_match, collect(e2)[0] AS exposed_match
+
+// Combine the results from both phases. COALESCE gives us the first non-null entity found.
+WITH entity_name, COALESCE(direct_match, exposed_match) AS found_entity
+
+// Phase 3: If still no match, try parsing as Class.method
+// This block will only execute if found_entity from phases 1 & 2 is NULL.
+CALL apoc.when(
+  found_entity IS NULL AND entity_name CONTAINS '.',
+  // If TRUE, execute this subquery to find the method via its class
+  '
+    WITH entity_name
+
+// 1. Collect all positions of the last dot
+WITH entity_name,
+     apoc.text.indexesOf(entity_name, ".") AS ids
+
+// 2. Determine the last index (if none found, default to -1)
+WITH entity_name, ids,
+     CASE
+       WHEN size(ids) = 0 THEN -1
+       ELSE ids[size(ids) - 1]
+     END AS lastDot
+
+// 3. Split into class_path and method_name based on that
+WITH entity_name, lastDot,
+     substring(entity_name, 0, lastDot) AS class_path,
+     substring(entity_name, lastDot + 1) AS method_name
+
+// 4. Try to find the class node by direct or exposed match
+OPTIONAL MATCH (c1:CLASS)
+WHERE c1.name = class_path OR c1.shortest_call_path = class_path
+WITH entity_name, class_path, method_name, collect(c1)[0] AS class_direct_match
+
+OPTIONAL MATCH ()-[r:EXPOSES]->(c2:CLASS)
+WHERE class_direct_match IS NULL AND r.name = class_path
+WITH entity_name, method_name, class_direct_match, collect(c2)[0] AS class_exposed_match
+
+WITH entity_name, method_name,
+     COALESCE(class_direct_match, class_exposed_match) AS found_class
+
+// 5. Finally, find the method under that class
+OPTIONAL MATCH (found_class)-[:HAS_METHOD]->(method:METHOD {__name__: method_name})
+RETURN method AS method_match;
+  ',
+  // If FALSE, return null
+  'RETURN NULL AS method_match',
+  // Parameters for the subquery
+  {entity_name: entity_name}
+) YIELD value
+
+// Combine results from all phases.
+WITH entity_name, COALESCE(found_entity, value.method_match) AS final_entity
+
+// Phase 4: Get the signature, with special handling for CLASS nodes.
+// If the final_entity is a CLASS, we OPTIONALLY look for its `__init__` method.
+OPTIONAL MATCH (final_entity)-[:HAS_METHOD]->(init:METHOD {__name__: "__init__"})
+WHERE "CLASS" IN labels(final_entity)
+
+// Final Projection: Build the result map using a CASE statement for conditional logic.
+RETURN apoc.map.fromPairs(
+  collect([
+    entity_name,
+    CASE
+      WHEN final_entity IS NULL THEN NULL
+      ELSE {
+        signature: CASE
+          // If a class was found, use the __init__ method's signature.
+          // If the class has no __init__, `init.signature` will correctly be null.
+          WHEN "CLASS" IN labels(final_entity) THEN init.signature
+          // For METHOD, FUNCTION, use the entity's own signature.
+          ELSE final_entity.signature
+        END,
+        type: [label IN labels(final_entity) WHERE label IN ["CLASS", "FUNCTION", "METHOD"]][0]
+      }
+    END
+  ])
+) AS signatures
+"""
+        )
+
+        signatures = self.structured_query(query, {"entity_names": entity_names})[0]["signatures"]
+        return signatures if signatures else {}

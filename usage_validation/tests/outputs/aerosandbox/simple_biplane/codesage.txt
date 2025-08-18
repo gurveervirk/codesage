@@ -1,0 +1,30 @@
+--- Starting Validation Process ---
+--> Received Signatures:
+{
+  "aerosandbox.geometry.Airfoil": {
+    "type": "CLASS",
+    "signature": "(self, name: str = 'Untitled', coordinates: Union[NoneType, str, pathlib.Path, numpy.ndarray] = None, **deprecated_keyword_arguments)"
+  },
+  "aerosandbox.geometry.Airplane": {
+    "type": "CLASS",
+    "signature": "(self, name: Optional[str] = None, xyz_ref: Union[numpy.ndarray, List] = None, wings: Optional[List[aerosandbox.geometry.wing.Wing]] = None, fuselages: Optional[List[aerosandbox.geometry.fuselage.Fuselage]] = None, propulsors: Optional[List[aerosandbox.geometry.propulsor.Propulsor]] = None, s_ref: Optional[float] = None, c_ref: Optional[float] = None, b_ref: Optional[float] = None, analysis_specific_options: Optional[Dict[type, Dict[str, Any]]] = None)"
+  },
+  "aerosandbox.geometry.WingXSec": {
+    "type": "CLASS",
+    "signature": "(self, xyz_le: Union[numpy.ndarray, List] = None, chord: float = 1.0, twist: float = 0.0, airfoil: aerosandbox.geometry.airfoil.airfoil.Airfoil = None, control_surfaces: Optional[List[ForwardRef('ControlSurface')]] = None, analysis_specific_options: Optional[Dict[type, Dict[str, Any]]] = None, **deprecated_kwargs)"
+  },
+  "aerosandbox.geometry.Wing": {
+    "type": "CLASS",
+    "signature": "(self, name: Optional[str] = None, xsecs: List[ForwardRef('WingXSec')] = None, symmetric: bool = False, color: Union[str, Tuple[float], NoneType] = None, analysis_specific_options: Optional[Dict[type, Dict[str, Any]]] = None, **kwargs)"
+  }
+}
+--> Generated stubs and config in: /var/folders/m0/5xqh90jd58l7mj0s86pp_n_h0000gn/T/tmp42h_gkmi
+--> Running mypy for validation...
+
+--- Validation Results ---
+Found Validation Errors:
+
+Success: no issues found in 1 source file
+
+Success! No validation errors found.
+------------------------

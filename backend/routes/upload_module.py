@@ -1,6 +1,6 @@
-from code_sage.reflex import process_module
+from backend.code_sage.reflex import process_module
 from fastapi import APIRouter, Request, HTTPException
-from .models import ModuleUploadRequest
+from backend.routes.models import ModuleUploadRequest
 import subprocess
 import sys
 

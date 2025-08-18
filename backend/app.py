@@ -1,12 +1,11 @@
 from fastapi import FastAPI
-from config import config
+from backend.config import config
 from llama_index.core.settings import Settings
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
-from routes.upload_module import upload_module_router
-from routes.generate import generate_router
-from routes.llm_models import llm_models_router
+from backend.routes.upload_module import upload_module_router
+from backend.routes.generate import generate_router
+from backend.routes.llm_models import llm_models_router
 from backend.code_sage.sage_workflow.mas import SageWorkflow
-# from utils.gemini_with_rate_limits import GeminiWithRateLimits as Gemini
 from llama_index.llms.google_genai import GoogleGenAI
 from backend.code_sage.com_store import COMStore
 
@@ -28,7 +27,7 @@ async def initialize_llamaindex():
         Settings.embed_model = embed_model
         # Initialize LLM
         Settings.llm = GoogleGenAI(
-            api_key=config.GEMINI_API_KEY,
+            api_key=config.GOOGLE_GENAI_API_KEY,
             temperature=1.0,
             # rate_limit=15,
             # period=60

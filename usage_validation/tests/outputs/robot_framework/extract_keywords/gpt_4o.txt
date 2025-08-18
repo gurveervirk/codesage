@@ -1,0 +1,15 @@
+--- Starting Validation Process ---
+--> Received Signatures:
+{
+  "robot.api.get_model": null
+}
+--> Generated stubs and config in: /var/folders/m0/5xqh90jd58l7mj0s86pp_n_h0000gn/T/tmphqi9ul25
+--> Running mypy for validation...
+
+--- Validation Results ---
+Found Validation Errors:
+
+Success: no issues found in 1 source file
+
+Success! No validation errors found.
+------------------------

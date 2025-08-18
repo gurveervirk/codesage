@@ -84,21 +84,21 @@ max_retries = 1  # Maximum number of retries for LLM calls
 DEFAULT_LLM: LLM = GoogleGenAI(
     model=default_model_name,
     temperature=default_model_temperature,
-    api_key=config.GEMINI_API_KEY,
+    api_key=config.GOOGLE_GENAI_API_KEY,
     max_retries=max_retries,
 )
 
 LITE_LLM: LLM = GoogleGenAI(
     model=lite_model_name,
     temperature=lite_model_temperature,
-    api_key=config.GEMINI_API_KEY,
+    api_key=config.GOOGLE_GENAI_API_KEY,
     max_retries=max_retries,
 )
 
 ADVANCED_LLM: LLM = GoogleGenAI(
     model=advanced_model_name,
     temperature=advanced_model_temperature,
-    api_key=config.GEMINI_API_KEY,
+    api_key=config.GOOGLE_GENAI_API_KEY,
     max_retries=max_retries,
 )
 

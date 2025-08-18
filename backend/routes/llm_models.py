@@ -1,6 +1,6 @@
-from config import config
+from backend.config import config
 from fastapi import APIRouter, HTTPException, Request
-from .models import ChangeModelRequest
+from backend.routes.models import ChangeModelRequest
 from llama_index.core.settings import Settings
 from llama_index.llms.ollama import Ollama
 from llama_index.llms.google_genai import GoogleGenAI
@@ -39,7 +39,7 @@ async def change_models(request: Request, payload: ChangeModelRequest):
         model_id = payload.id
         if provider == "Gemini":
             Settings.llm = GoogleGenAI(
-                api_key=config.GEMINI_API_KEY,
+                api_key=config.GOOGLE_GENAI_API_KEY,
                 temperature=1.0,
                 # rate_limit=15,
                 # period=60,

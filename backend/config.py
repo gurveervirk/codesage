@@ -6,7 +6,7 @@ load_dotenv(os.path.join(BASEDIR, ".env"))
 
 class Config:
     NEO4J_URI = os.environ.get("NEO4J_URI", "")  # Default if not in .env
-    GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+    GOOGLE_GENAI_API_KEY = os.environ.get("GOOGLE_GENAI_API_KEY", "")
     NEO4J_PASSWORD = os.environ.get("NEO4J_PASSWORD", "")  # Use a strong, random secret key.  DO NOT hardcode in production
     NEO4J_USER = os.environ.get("NEO4J_USER", "neo4j")
     AVAILABLE_MODELS = {

@@ -1,0 +1,60 @@
+--- Starting Validation Process ---
+--> Received Signatures:
+{
+  "aerosandbox.Wing": {
+    "type": "CLASS",
+    "signature": "(self, name: Optional[str] = None, xsecs: List[ForwardRef('WingXSec')] = None, symmetric: bool = False, color: Union[str, Tuple[float], NoneType] = None, analysis_specific_options: Optional[Dict[type, Dict[str, Any]]] = None, **kwargs)"
+  },
+  "aerosandbox.aerodynamics.aero_3D.VortexLatticeMethod.run": {
+    "type": "METHOD",
+    "signature": "(self) -> Dict[str, Any]"
+  },
+  "aerosandbox.Airfoil": {
+    "type": "CLASS",
+    "signature": "(self, name: str = 'Untitled', coordinates: Union[NoneType, str, pathlib.Path, numpy.ndarray] = None, **deprecated_keyword_arguments)"
+  },
+  "aerosandbox.Wing.mean_aerodynamic_chord": {
+    "type": "METHOD",
+    "signature": "(self) -> float"
+  },
+  "aerosandbox.Wing.span": {
+    "type": "METHOD",
+    "signature": "(self, type: str = 'yz', include_centerline_distance=False, _sectional: bool = False) -> Union[float, List[float]]"
+  },
+  "aerosandbox.aerodynamics.aero_3D.VortexLatticeMethod": {
+    "type": "CLASS",
+    "signature": "(self, airplane: aerosandbox.geometry.airplane.Airplane, op_point: aerosandbox.performance.operating_point.OperatingPoint, xyz_ref: List[float] = None, run_symmetric_if_possible: bool = False, verbose: bool = False, spanwise_resolution: int = 10, spanwise_spacing_function: Callable[[float, float, float], numpy.ndarray] = <function cosspace at 0x0000013F0B3B6160>, chordwise_resolution: int = 10, chordwise_spacing_function: Callable[[float, float, float], numpy.ndarray] = <function cosspace at 0x0000013F0B3B6160>, vortex_core_radius: float = 1e-08, align_trailing_vortices_with_wind: bool = False)"
+  },
+  "aerosandbox.Airplane": {
+    "type": "CLASS",
+    "signature": "(self, name: Optional[str] = None, xyz_ref: Union[numpy.ndarray, List] = None, wings: Optional[List[aerosandbox.geometry.wing.Wing]] = None, fuselages: Optional[List[aerosandbox.geometry.fuselage.Fuselage]] = None, propulsors: Optional[List[aerosandbox.geometry.propulsor.Propulsor]] = None, s_ref: Optional[float] = None, c_ref: Optional[float] = None, b_ref: Optional[float] = None, analysis_specific_options: Optional[Dict[type, Dict[str, Any]]] = None)"
+  },
+  "aerosandbox.OperatingPoint": {
+    "type": "CLASS",
+    "signature": "(self, atmosphere: aerosandbox.atmosphere.atmosphere.Atmosphere = Atmosphere (altitude: 0 m (0 ft), method: 'differentiable'), velocity: float = 1.0, alpha: float = 0.0, beta: float = 0.0, p: float = 0.0, q: float = 0.0, r: float = 0.0)"
+  },
+  "aerosandbox.WingXSec": {
+    "type": "CLASS",
+    "signature": "(self, xyz_le: Union[numpy.ndarray, List] = None, chord: float = 1.0, twist: float = 0.0, airfoil: aerosandbox.geometry.airfoil.airfoil.Airfoil = None, control_surfaces: Optional[List[ForwardRef('ControlSurface')]] = None, analysis_specific_options: Optional[Dict[type, Dict[str, Any]]] = None, **deprecated_kwargs)"
+  },
+  "aerosandbox.Wing.area": {
+    "type": "METHOD",
+    "signature": "(self, type: str = 'planform', include_centerline_distance=False, _sectional: bool = False) -> Union[float, List[float]]"
+  }
+}
+--> Generated stubs and config in: /var/folders/m0/5xqh90jd58l7mj0s86pp_n_h0000gn/T/tmp65epb_k2
+--> Running mypy for validation...
+
+--- Validation Results ---
+Found Validation Errors:
+
+Line 24: error: Unexpected keyword argument "reference_area" for "Airplane"  [call-arg]
+/var/folders/m0/5xqh90jd58l7mj0s86pp_n_h0000gn/T/tmp65epb_k2/stubs/aerosandbox.pyi:13: note: "Airplane" defined here
+Line 24: error: Unexpected keyword argument "reference_span" for "Airplane"  [call-arg]
+Line 24: error: Unexpected keyword argument "reference_chord" for "Airplane"  [call-arg]
+Line 32: error: Unexpected keyword argument "altitude" for "OperatingPoint"  [call-arg]
+/var/folders/m0/5xqh90jd58l7mj0s86pp_n_h0000gn/T/tmp65epb_k2/stubs/aerosandbox.pyi:16: note: "OperatingPoint" defined here
+Line 40: error: Module has no attribute "aerodynamics"  [attr-defined]
+Found 5 errors in 1 file (checked 1 source file)
+
+------------------------

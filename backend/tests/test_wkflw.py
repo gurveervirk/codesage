@@ -36,7 +36,7 @@ def mock_dependencies():
          patch('backend.code_sage.sage_workflow.wkflw.config') as mock_config, \
          patch('backend.code_sage.sage_workflow.wkflw.FunctionAgent') as mock_function_agent:
         
-        mock_config.GEMINI_API_KEY = "test_key"
+        mock_config.GOOGLE_GENAI_API_KEY = "test_key"
         mock_config.NEO4J_URI = "bolt://localhost:7687"
         mock_config.NEO4J_USER = "neo4j"
         mock_config.NEO4J_PASSWORD = "password"
