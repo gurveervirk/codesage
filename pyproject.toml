@@ -131,6 +131,7 @@ dependencies = [
     "pygments==2.19.1",
     "pyparsing==3.2.3",
     "pypdf==5.4.0",
+    "pyright>=1.1.405",
     "pytest==8.4.1",
     "pytest-asyncio==1.0.0",
     "python-dateutil==2.9.0.post0",

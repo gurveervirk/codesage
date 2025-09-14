@@ -1,13 +1,21 @@
-from typing import Dict
+from typing import Dict, List
 
 class Entity:
     """
     Module-agnostic entity class.
     """
-    def __init__(self, name: str, label: str, properties: Dict):
+    def __init__(self, name: str, labels: List[str], properties: Dict):
         self.name = name
-        self.label = label
+        # Primary label should be first (e.g., ROOT_MODULE, MODULE, CLASS, METHOD, FUNCTION)
+        self.labels = labels
         self.properties = properties
+
+    @property
+    def label(self) -> str:
+        """
+        Backwards-compatible primary label accessor. Returns the first label if available.
+        """
+        return self.labels[0] if self.labels else ""
 
     def __repr__(self):
         return f"{self.label} ({self.name})"
