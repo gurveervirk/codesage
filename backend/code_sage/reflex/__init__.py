@@ -10,7 +10,8 @@ This module provides utilities to extract entities and relationships from Python
 """
 
 from .models import Entity, Relationship
-from typing import Any, Dict, List, Set, Tuple, Callable, Optional, get_type_hints
+from typing import Any, Dict, List, Set, Tuple, Callable, Optional, get_type_hints, Literal, get_overloads
+from pathlib import Path
 import importlib.metadata
 import inspect
 import importlib
@@ -22,8 +23,11 @@ import traceback
 import ast
 import os
 import types
-from pathlib import Path
 import json
+import builtins
+import typing
+import logging
+import uuid
 
 # --------------------
 # Helpers
@@ -266,7 +270,7 @@ def get_unused_imports(module_name: str, imported_names: Set[str]) -> Set[str]:
         # Get the full file path of the module
         module = importlib.import_module(module_name)
         module_file_path = module.__file__
-        print(f"Checking unused imports for {module_name} at {module_file_path}...")
+        logging.debug(f"Checking unused imports for {module_name} at {module_file_path}...")
 
         # Run flake8 and capture output
         # If system OS is Windows, use shell=True
@@ -323,8 +327,8 @@ def get_unused_imports(module_name: str, imported_names: Set[str]) -> Set[str]:
 
         return unused_imports
     except Exception as e:
-        print(f"Error getting unused imports for {module_name}: {e}")
-        print(traceback.format_exc())
+        logging.error(f"Error getting unused imports for {module_name}: {e}")
+        logging.error(traceback.format_exc())
         return set()
 
 def get_fully_qualified_name(cls):
@@ -406,519 +410,622 @@ def find_submodules_importlib_resources(module_name: str) -> set[str]:
                     except Exception:
                         pass
     except ImportError as e:
-        print(f"Warning: Could not import or process {module_name}: {e}")
+        logging.warning(f"Warning: Could not import or process {module_name}: {e}")
     except Exception as e:
-        print(f"Error processing {module_name}: {e}")
+        logging.error(f"Error processing {module_name}: {e}")
     return results
 
-def get_typed_signature(func: Callable) -> inspect.Signature:
+module_cache: Dict[str, Any] = {}
+def parse_imports_and_assignments(source: str, module: Any) -> Tuple[Dict[str, Any], Dict[str, str]]:
     """
-    Return an inspect.Signature with annotations resolved like typing.get_type_hints.
+    Parses the source code to extract import statements and assignments, especially those inside blocks.
+    Uses `ast` to safely parse the code without executing it.
+    Uses `inspect` to assign values to the imported names and assigned variables.
+    Most importantly, this only captures those assignments that define types, not function calls or other similar constructs.
+    Handles both absolute and relative imports.
+    """
+    # Check module cache
+    mod_name = getattr(module, "__name__", None)
+    if mod_name and mod_name in module_cache:
+        cached_ns, cached_runtime_ns = module_cache[mod_name]
+        return cached_ns, cached_runtime_ns
+
+    tree = ast.parse(source)
+    namespace: Dict[str, Any] = {}
+    runtime_ns: Dict[str, str] = {}
+
+    # Try importing the module to get its runtime context
+    try:
+        if module is not None and hasattr(module, "__dict__"):
+            namespace.update(module.__dict__)
+    except Exception:
+        pass
+
+    def is_type_like(node: ast.AST) -> bool:
+        """Heuristically determine if an AST node represents a type expression or a TypeVar assignment."""
+        if isinstance(node, (ast.Name, ast.Attribute)):
+            return True
+        if isinstance(node, ast.Subscript):
+            return is_type_like(node.value) and is_type_like(node.slice) if hasattr(node, "slice") else True
+        if isinstance(node, (ast.Tuple, ast.List)):
+            return all(is_type_like(elt) for elt in node.elts)
+        if isinstance(node, ast.Dict):
+            return all(is_type_like(k) and is_type_like(v) for k, v in zip(node.keys, node.values) if k is not None and v is not None)
+        if isinstance(node, (ast.Constant, ast.Constant)):  # for Optional[None], Literal values ignored here
+            return True
+        if isinstance(node, ast.Index):  # py<3.9
+            return is_type_like(node.value)
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):  # PEP 604 union types
+            return is_type_like(node.left) and is_type_like(node.right)
+        # NEW: Accept ast.Call if it is a TypeVar call
+        if isinstance(node, ast.Call):
+            func = node.func
+            if isinstance(func, ast.Name) and func.id == "TypeVar":
+                return True
+            if isinstance(func, ast.Attribute) and func.attr == "TypeVar":
+                return True
+        return False
+
+    def resolve_relative_import(module, level, from_module):
+        if not hasattr(module, "__name__"):
+            return None
+        base = module.__name__.split(".")
+        if "__init__" in base:
+            base.remove("__init__")
+        if level > 0:
+            base = base[:-(level)] if level <= len(base) else []
+        if from_module:
+            base.append(from_module)
+        return ".".join([b for b in base if b])
+
+    def is_typeshed_module(name: Optional[str]) -> bool:
+        if not name:
+            return False
+        parts = name.split(".")
+        return bool(parts) and parts[-1] == "_typeshed"
+
+    def resolve_typevar_to_bound(obj: Any) -> Any:
+        """If obj is a TypeVar, resolve to its bound, constraints, or Any. Otherwise return obj."""
+        try:
+            if isinstance(obj, typing.TypeVar):
+                tv = obj
+                if tv.__bound__ is not None:
+                    logging.info(f"TypeVar {tv} resolved to bound {tv.__bound__}")
+                    return tv.__bound__
+                if tv.__constraints__:
+                    if len(tv.__constraints__) == 1:
+                        logging.info(f"TypeVar {tv} resolved to single constraint {tv.__constraints__[0]}")
+                        return tv.__constraints__[0]
+                    try:
+                        union_t = typing.Union[tuple(tv.__constraints__)]  # type: ignore[index]
+                    except Exception:
+                        union_t = typing.Any
+                    logging.info(f"TypeVar {tv} resolved to Union{tv.__constraints__} -> {union_t}")
+                    return union_t
+                logging.info(f"TypeVar {tv} has no bound/constraints; defaulting to Any")
+                return typing.Any
+        except Exception:
+            pass
+        return obj
     
-    Handles forward references, PEP 563 postponed annotations, Optional defaults, etc.
+    class ClassDefVisitor(ast.NodeVisitor):
+        def visit_ClassDef(self, node: ast.ClassDef):
+            # Pick only those classes that are supposed to be parsed by Type Checkers and Linters (TYPE_CHECKING | MYPY)
+            # We consider classes that do NOT exist at runtime on the module (e.g., defined under TYPE_CHECKING)
+            try:
+                mod_name = getattr(module, "__name__", "")
+                existing = getattr(module, node.name, None) if module is not None else None
+                if existing is None:
+                    logging.info(f"Class {node.name} not found in module {mod_name}; assuming TYPE_CHECKING-only class")
+                    full_name = f"{mod_name}.{node.name}" if mod_name else node.name
+                    runtime_ns[node.name] = full_name
+                    namespace[node.name] = full_name  # Placeholder to acknowledge presence
+                    if mod_name:
+                        namespace[mod_name] = module  # Ensure module is also in namespace
+            except Exception:
+                pass
+            self.generic_visit(node)
 
-    Args:
-        func (Callable): The function to analyze.
+    class ImportVisitor(ast.NodeVisitor):
+        def visit_Import(self, node: ast.Import):
+            for alias in node.names:
+                is_runtime_name = False
+                name = alias.asname or alias.name.split(".")[-1]
+                # Attempt to import and bind the actual object (module)
+                try:
+                    imported = importlib.import_module(alias.name)
+                except Exception:
+                    logging.warning(f"Failed to import module: {alias.name}")
+                    imported = name
+                    is_runtime_name = True
+                
+                if is_runtime_name:
+                    runtime_ns[name] = imported
+                    namespace[name] = imported  # Placeholder to acknowledge presence
+                else:
+                    namespace[name] = imported
+            self.generic_visit(node)
 
-    Returns:
-        inspect.Signature: A signature object with resolved annotations.
-    """
-    # First, retrieve evaluated type hints with appropriate namespaces to resolve strings and forward refs.
+        def visit_ImportFrom(self, node: ast.ImportFrom):
+            module_name = node.module or ""
+            level = getattr(node, "level", 0) or 0
+            abs_mod_name = module_name
+            if level > 0:
+                abs_mod_name = resolve_relative_import(module, level, module_name)
+            # Special-case: any attempt to import from _typeshed -> map each imported symbol to "_typeshed.<name>"
+            if is_typeshed_module(abs_mod_name or module_name):
+                for alias in node.names:
+                    if alias.name == "*":
+                        # We cannot expand star import from _typeshed; skip but note
+                        logging.info("Ignoring star import from _typeshed; cannot enumerate names")
+                        continue
+                    as_name = alias.asname or alias.name
+                    mapped = f"_typeshed.{alias.name}"
+                    runtime_ns[as_name] = mapped
+                    namespace[as_name] = mapped
+                    logging.info(f"Mapped from-import of _typeshed: {alias.name} as {as_name} -> '{mapped}'")
+                self.generic_visit(node)
+                return
+            for alias in node.names:
+                as_name = alias.asname or alias.name
+                bound = None
+                is_runtime_name = False
+                mod = None
+                # Attempt to import and bind the actual object (attribute from module)
+                if abs_mod_name:
+                    try:
+                        mod = importlib.import_module(abs_mod_name)
+                        bound = getattr(mod, alias.name, None)
+                        if bound is None:
+                            logging.warning(f"Name {alias.name} not found in module {abs_mod_name}. Binding to string placeholder.")
+                            # Assign bound to mod.alias.name, as str, to indicate presence
+                            is_runtime_name = True
+                            bound = f"{mod.__name__}.{alias.name}"
+                    except Exception:
+                        logging.warning(f"Failed to import from module: {abs_mod_name}, name: {alias.name}")
+                        bound = None
+                else:
+                    # relative or unknown - leave as None
+                    logging.info(f"Relative or unknown import: from {module_name} import {alias.name}")
+                    bound = None
+                
+                if is_runtime_name:
+                    runtime_ns[as_name] = bound
+                    namespace[as_name] = bound  # Placeholder to acknowledge presence
+                    if mod is not None:
+                        namespace[mod.__name__] = mod  # Ensure module is also in namespace
+                else:
+                    namespace[as_name] = bound
+            self.generic_visit(node)
+
+    class AssignVisitor(ast.NodeVisitor):
+        def __init__(self):
+            super().__init__()
+            self._fn_depth = 0  # track if we are inside a function/method definition
+
+        # Track entering/leaving function/method scopes
+        def visit_FunctionDef(self, node: ast.FunctionDef):
+            self._fn_depth += 1
+            self.generic_visit(node)
+            self._fn_depth -= 1
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef):
+            self._fn_depth += 1
+            self.generic_visit(node)
+            self._fn_depth -= 1
+
+        def visit_Assign(self, node: ast.Assign):
+            # Only capture simple name targets and type-like RHS (including TypeVar)
+            if is_type_like(node.value):
+                safe_ns: Dict[str, Any] = {
+                    "typing": typing,
+                    "builtins": builtins,
+                }
+                # Provide a placeholder for _typeshed to help eval guarded code gracefully
+                safe_ns.setdefault("_typeshed", "_typeshed")
+                safe_ns.update(namespace)
+                try:
+                    rhs = ast.unparse(node.value)  # py>=3.9
+                except Exception:
+                    logging.warning(f"Failed to unparse assignment RHS at line {node.lineno}")
+                    rhs = None
+                value_obj: Any = None
+                if rhs is not None:
+                    try:
+                        value_obj = eval(rhs, safe_ns, {})
+                    except Exception as e:
+                        logging.debug(f"Failed to eval assignment RHS: {rhs} at line {node.lineno} with error: {e}")
+                        value_obj = None
+                # If this is a TypeVar object, resolve to its bound/constraints
+                value_obj = resolve_typevar_to_bound(value_obj)
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        namespace[target.id] = value_obj
+                        if isinstance(value_obj, typing.TypeVar):
+                            logging.info(f"Assigned TypeVar {target.id} as {value_obj}")
+                        else:
+                            logging.debug(f"Assigned {target.id} = {value_obj}")
+            else:
+                # Special case: TypeVar assignment (ast.Call to TypeVar)
+                if isinstance(node.value, ast.Call):
+                    func = node.value.func
+                    is_typevar = False
+                    if isinstance(func, ast.Name) and func.id == "TypeVar":
+                        is_typevar = True
+                    if isinstance(func, ast.Attribute) and func.attr == "TypeVar":
+                        is_typevar = True
+                    if is_typevar:
+                        safe_ns: Dict[str, Any] = {
+                            "typing": typing,
+                            "builtins": builtins,
+                        }
+                        safe_ns.setdefault("_typeshed", "_typeshed")
+                        safe_ns.update(namespace)
+                        try:
+                            rhs = ast.unparse(node.value)
+                        except Exception:
+                            rhs = None
+                        value_obj: Any = None
+                        if rhs is not None:
+                            try:
+                                value_obj = eval(rhs, safe_ns, {})
+                            except Exception:
+                                value_obj = None
+                        # Resolve TypeVar to its bound/constraints before storing
+                        value_obj = resolve_typevar_to_bound(value_obj)
+                        for target in node.targets:
+                            if isinstance(target, ast.Name):
+                                namespace[target.id] = value_obj
+                                logging.info(f"Resolved TypeVar assignment: {target.id} -> {value_obj}")
+                logging.debug(f"Ignoring non-type-like assignment at line {node.lineno}")
+            self.generic_visit(node)
+
+        def visit_AnnAssign(self, node: ast.AnnAssign):
+            target = node.target
+            if isinstance(target, ast.Name):
+                value_obj: Any = None
+                if node.value and is_type_like(node.value):
+                    try:
+                        rhs = ast.unparse(node.value)
+                    except Exception:
+                        rhs = None
+                    if rhs is not None:
+                        try:
+                            safe_ns = {"typing": typing, "builtins": builtins}
+                            safe_ns.setdefault("_typeshed", "_typeshed")
+                            safe_ns.update(namespace)
+                            value_obj = eval(rhs, safe_ns, {})
+                        except Exception:
+                            value_obj = None
+                # Resolve if the evaluated value is a TypeVar
+                value_obj = resolve_typevar_to_bound(value_obj)
+                namespace[target.id] = value_obj
+                if isinstance(value_obj, typing.TypeVar):
+                    logging.info(f"Annotated assign TypeVar {target.id} as {value_obj}")
+            logging.debug(f"Ignoring non-name annotated assignment at line {node.lineno}")
+            self.generic_visit(node)
+
+        def visit_AugAssign(self, node: ast.AugAssign):
+            target = node.target
+            if isinstance(target, ast.Name):
+                namespace[target.id] = None
+            self.generic_visit(node)
+
+    class FunctionSignatureStrResolver(ast.NodeVisitor):
+        """
+        Resolve forward-ref/string annotations used in function and method signatures by
+        ensuring base modules/names referenced in the annotation strings are imported/bound
+        into the namespace. This avoids generic dotted-name resolution elsewhere.
+        """
+        def __init__(self, module: Any):
+            self.module = module
+
+        def _ensure_import(self, base_name: str) -> None:
+            if not base_name:
+                return
+            if base_name in ("typing", "builtins"):
+                return
+            if base_name in namespace:
+                return
+            try:
+                imported = importlib.import_module(base_name)
+                namespace[base_name] = imported
+            except Exception:
+                # As a conservative fallback, bind to its string name as a placeholder
+                runtime_ns[base_name] = base_name
+                namespace[base_name] = base_name
+
+        def _process_annotation_str(self, ann_str: str) -> None:
+            try:
+                expr = ast.parse(ann_str, mode="eval")
+            except Exception:
+                return
+
+            base_names: set[str] = set()
+
+            def collect_bases(node: ast.AST) -> None:
+                if isinstance(node, ast.Attribute):
+                    cur = node
+                    while isinstance(cur, ast.Attribute):
+                        cur = cur.value
+                    if isinstance(cur, ast.Name):
+                        base_names.add(cur.id)
+                elif isinstance(node, ast.Name):
+                    base_names.add(node.id)
+                elif isinstance(node, ast.Subscript):
+                    collect_bases(node.value)
+                    sl = getattr(node, "slice", None)
+                    if sl is None:
+                        return
+                    def walk_slice(s: ast.AST) -> None:
+                        if isinstance(s, ast.Name):
+                            base_names.add(s.id)
+                        elif isinstance(s, ast.Attribute):
+                            cur2 = s
+                            while isinstance(cur2, ast.Attribute):
+                                cur2 = cur2.value
+                            if isinstance(cur2, ast.Name):
+                                base_names.add(cur2.id)
+                        elif isinstance(s, ast.Tuple):
+                            for e in s.elts:
+                                walk_slice(e)
+                        elif isinstance(s, ast.Subscript):
+                            collect_bases(s)
+                        elif hasattr(ast, "Index") and isinstance(s, ast.Index):  # py<3.9
+                            walk_slice(s.value)
+                    walk_slice(sl)
+                elif isinstance(node, ast.Call):
+                    collect_bases(node.func)
+                    for a in getattr(node, "args", []) or []:
+                        collect_bases(a)
+                    for kw in getattr(node, "keywords", []) or []:
+                        collect_bases(getattr(kw, "value", None) or ast.Constant(value=None))
+                if node is not None:
+                    for child in ast.iter_child_nodes(node):
+                        collect_bases(child)
+
+            collect_bases(expr.body)
+            for base in list(base_names):
+                self._ensure_import(base)
+
+        def _process_annotation(self, ann: ast.AST) -> None:
+            s: Optional[str] = None
+            if isinstance(ann, ast.Constant) and isinstance(ann.value, str):
+                s = ann.value
+            elif hasattr(ast, "Str") and isinstance(ann, ast.Str):  # py<3.8
+                s = ann.s  # type: ignore[attr-defined]
+            if s:
+                self._process_annotation_str(s)
+
+        def _process_args(self, args: ast.arguments) -> None:
+            for arg in getattr(args, "posonlyargs", []) or []:
+                if getattr(arg, "annotation", None) is not None:
+                    self._process_annotation(arg.annotation)
+            for arg in getattr(args, "args", []) or []:
+                if getattr(arg, "annotation", None) is not None:
+                    self._process_annotation(arg.annotation)
+            if getattr(args, "vararg", None) is not None and getattr(args.vararg, "annotation", None) is not None:
+                self._process_annotation(args.vararg.annotation)
+            for arg in getattr(args, "kwonlyargs", []) or []:
+                if getattr(arg, "annotation", None) is not None:
+                    self._process_annotation(arg.annotation)
+            if getattr(args, "kwarg", None) is not None and getattr(args.kwarg, "annotation", None) is not None:
+                self._process_annotation(args.kwarg.annotation)
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            if getattr(node, "returns", None) is not None:
+                self._process_annotation(node.returns)
+            self._process_args(getattr(node, "args", ast.arguments()))
+            self.generic_visit(node)
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            self.visit_FunctionDef(node)
+
+    ClassDefVisitor().visit(tree)
+    ImportVisitor().visit(tree)
+    AssignVisitor().visit(tree)
+    # Resolve forward-ref/string annotations in function/method signatures
+    FunctionSignatureStrResolver(module).visit(tree)
+
+    # Cache module results
+    if mod_name:
+        module_cache[mod_name] = (namespace, runtime_ns)
+    return namespace, runtime_ns
+
+def get_globals(func: Callable) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Retrieve the global namespace for a function, including its module and function globals."""
     globalns: Dict[str, Any] = {}
-    localns: Dict[str, Any] = {}
+    runtime_ns: Dict[str, str] = {}
     try:
         mod = inspect.getmodule(func)
+        logging.info(f"Inspecting module: {getattr(mod, '__name__', 'unknown')}")
         if mod is not None:
-            globalns = getattr(mod, "__dict__", {})
+            globalns = dict(getattr(mod, "__dict__", {}))
+
+            # Use `ast` to parse the owning module's source code, to get imports and assignments that may have been missed out
+            try:
+                source = inspect.getsource(mod)
+                parsed_ns, runtime_ns = parse_imports_and_assignments(source, mod)
+                # Merge parsed types/imports into globals without re-evaluating
+                for name, val in parsed_ns.items():
+                    if name not in globalns and val is not None:
+                        globalns[name] = val
+            except Exception as e:
+                logging.warning(f"Error parsing imports and assignments: {e}")
+                pass
         # For functions, __globals__ is also useful
         if hasattr(func, "__globals__") and isinstance(func.__globals__, dict):
-            # Prefer function globals but merge with module dict to be safe
             merged = dict(globalns)
             merged.update(func.__globals__)
             globalns = merged
-        owner_cls = _owner_class_of_callable(func)
-        if owner_cls is not None:
-            localns = dict(vars(owner_cls))
     except Exception:
         pass
 
-    # Attempt to enrich globalns/localns with names imported/assigned under `if TYPE_CHECKING` in the owner module
-    try:
-        mod = inspect.getmodule(func)
-        if mod is not None:
-            src = safe_get_source(mod)
-            # Track visited modules to avoid infinite recursion
-            _tc_visited: Set[str] = set()
+    # Convert stuff from runtime_ns to Literal placeholders in globals
+    for name in runtime_ns.keys():
+        globalns[name] = Literal[runtime_ns[name]] # Placeholder to acknowledge presence
 
-            def _contains_type_checking(node: ast.AST) -> bool:
-                found = False
-                for n in ast.walk(node):
-                    if isinstance(n, ast.Name) and n.id == "TYPE_CHECKING":
-                        return True
-                    if isinstance(n, ast.Attribute) and getattr(n, "attr", None) == "TYPE_CHECKING":
-                        return True
-                return found
+    return globalns, runtime_ns
 
-            def _resolve_relative(module_name: str | None, level: int, current_module: str) -> str:
-                if not level:
-                    return module_name or ""
-                parts = current_module.split(".")
-                # drop last element (module itself)
-                if parts:
-                    parts = parts[:-1]
-                base_len = len(parts)
-                up = min(level - 1, base_len)
-                base = parts[: base_len - up]
-                if module_name:
-                    base.append(module_name)
-                return ".".join([p for p in base if p])
 
-            def _hydrate_name_from_module_source(target_module: Any, target_name: str) -> Optional[Any]:
-                """Evaluate simple assignments to target_name inside TYPE_CHECKING blocks of target_module.
-                Returns the value if successfully evaluated, else None.
-                """
-                try:
-                    mod_src = safe_get_source(target_module)
-                    if not mod_src or mod_src.startswith("# Representation:"):
-                        return None
-                    tree = ast.parse(mod_src)
-                except Exception:
-                    return None
+def get_typed_signature(func, include_overloads: bool = True):
+    """
+    Build a readable, type-resolved signature string for a callable.
+    If typing overloads exist for the callable, include each overload's resolved signature
+    followed by the implementation signature.
+    """
 
-                # Build eval environment
-                env: Dict[str, Any] = {}
-                try:
-                    env.update(getattr(target_module, "__dict__", {}) or {})
-                except Exception:
-                    pass
-                try:
-                    import typing as _t
-                    env.setdefault("typing", _t)
-                    for _n in ("Any", "Callable", "Generator", "Tuple", "List", "Dict", "Set", "Union"):
-                        if hasattr(_t, _n):
-                            env.setdefault(_n, getattr(_t, _n))
-                except Exception:
-                    pass
-                try:
-                    import typing_extensions as _tx
-                    env.setdefault("typing_extensions", _tx)
-                    for _n in ("Annotated", "Literal", "TypeAlias", "TypeGuard", "Required", "NotRequired"):
-                        if hasattr(_tx, _n):
-                            env.setdefault(_n, getattr(_tx, _n))
-                except Exception:
-                    pass
+    def _compute_single_signature(fn: Callable) -> str:
+        sig = inspect.signature(fn)
+        logging.info(f"Inspecting signature for function: {fn.__name__}{sig}")
 
-                def walk(node: ast.AST, in_tc: bool = False) -> Optional[Any]:
-                    if isinstance(node, ast.If):
-                        branch_tc = in_tc or _contains_type_checking(node.test)
-                        for b in node.body:
-                            res = walk(b, branch_tc)
-                            if res is not None:
-                                return res
-                        for e in node.orelse:
-                            res = walk(e, in_tc)
-                            if res is not None:
-                                return res
-                        return None
-                    if in_tc and isinstance(node, ast.Assign):
-                        # Only handle simple Name targets
-                        names = [t.id for t in node.targets if isinstance(t, ast.Name)]
-                        if target_name in names:
-                            try:
-                                code = ast.unparse(node.value)  # type: ignore[attr-defined]
-                            except Exception:
-                                return None
-                            try:
-                                val = eval(compile(ast.parse(code, mode="eval"), filename=getattr(target_module, "__file__", "<ast>"), mode="eval"), env, env)  # type: ignore[arg-type]
-                                return val
-                            except Exception:
-                                return None
-                    for child in ast.iter_child_nodes(node):
-                        res = walk(child, in_tc)
-                        if res is not None:
-                            return res
-                    return None
+        typed_params: list[inspect.Parameter] = []
 
-                try:
-                    return walk(tree, in_tc=False)
-                except Exception:
-                    return None
+        # Get globals, locals and runtime namespace for type hint resolution
+        globalns: Dict[str, Any] = {}
+        localns: Dict[str, Any] = {}
+        runtime_ns: Dict[str, str] = {}
 
-            def _inject_type_checking_imports(source: str, module_name: str) -> None:
-                try:
-                    tree = ast.parse(source)
-                except Exception:
-                    return
-                # Walk the AST and collect imports within TYPE_CHECKING blocks
-                def walk(node: ast.AST, in_tc: bool = False):
-                    # Local eval env seeded from current module plus typing extras
-                    def build_env() -> Dict[str, Any]:
-                        env: Dict[str, Any] = {}
-                        try:
-                            env.update(getattr(mod, "__dict__", {}) or {})
-                        except Exception:
-                            pass
-                        # allow names already injected
-                        try:
-                            env.update(globalns)
-                        except Exception:
-                            pass
-                        try:
-                            import typing as _t
-                            env.setdefault("typing", _t)
-                            # common names
-                            for _n in (
-                                "Any","Callable","Generator","Tuple","List","Dict","Set","Union","TypeVar",
-                                "Optional","Mapping","MutableMapping","Sequence","Iterable","Iterator","Type","ClassVar"
-                            ):
-                                if hasattr(_t, _n):
-                                    env.setdefault(_n, getattr(_t, _n))
-                        except Exception:
-                            pass
-                        try:
-                            import typing_extensions as _tx
-                            env.setdefault("typing_extensions", _tx)
-                            for _n in ("Annotated", "Literal", "TypeAlias", "TypeGuard", "Required", "NotRequired"):
-                                if hasattr(_tx, _n):
-                                    env.setdefault(_n, getattr(_tx, _n))
-                        except Exception:
-                            pass
-                        return env
-                    # If node is an If and condition mentions TYPE_CHECKING, mark branch
-                    if isinstance(node, ast.If):
-                        branch_tc = in_tc or _contains_type_checking(node.test)
-                        for b in node.body:
-                            walk(b, branch_tc)
-                        # we intentionally do not include orelse when TYPE_CHECKING is True in test
-                        for e in node.orelse:
-                            walk(e, in_tc)
-                        return
-                    # Within TYPE_CHECKING: import and from-import
-                    if in_tc and isinstance(node, ast.Import):
-                        for alias in node.names:
-                            mod_name = alias.name
-                            try:
-                                # ensure submodule is loaded
-                                sub = importlib.import_module(mod_name)
-                                bind_name = alias.asname
-                                if bind_name:
-                                    globalns.setdefault(bind_name, sub)
-                                else:
-                                    # bind top-level package name
-                                    top = mod_name.split(".")[0]
-                                    top_mod = importlib.import_module(top)
-                                    globalns.setdefault(top, top_mod)
-                            except Exception:
-                                pass
-                    if in_tc and isinstance(node, ast.ImportFrom):
-                        module = node.module or ""
-                        level = getattr(node, "level", 0) or 0
-                        full_mod = _resolve_relative(module, level, module_name)
-                        try:
-                            imported_mod = importlib.import_module(full_mod) if full_mod else importlib.import_module(module_name)
-                        except Exception:
-                            imported_mod = None
-                        for alias in node.names:
-                            try:
-                                if imported_mod is None:
-                                    continue
-                                # Try to get attribute directly
-                                try:
-                                    obj = getattr(imported_mod, alias.name)
-                                except AttributeError:
-                                    # Recurse into the imported module's TYPE_CHECKING imports once
-                                    imported_name = getattr(imported_mod, "__name__", "")
-                                    if imported_name and imported_name not in _tc_visited:
-                                        _tc_visited.add(imported_name)
-                                        _inject_type_checking_imports(safe_get_source(imported_mod), imported_name)
-                                    # Try again
-                                    if hasattr(imported_mod, alias.name):
-                                        obj = getattr(imported_mod, alias.name)
-                                    else:
-                                        # Last resort: evaluate guarded assignment in that module
-                                        val = _hydrate_name_from_module_source(imported_mod, alias.name)
-                                        if val is None:
-                                            raise AttributeError(alias.name)
-                                        obj = val
-                                globalns.setdefault(alias.asname or alias.name, obj)
-                            except Exception:
-                                pass
-                    # Within TYPE_CHECKING: handle guarded assignments like `Model = TypeVar(...)`
-                    if in_tc and isinstance(node, (ast.Assign, ast.AnnAssign)):
-                        try:
-                            # Only simple Name targets are supported
-                            targets: List[str] = []
-                            if isinstance(node, ast.Assign):
-                                targets = [t.id for t in node.targets if isinstance(t, ast.Name)]
-                                value_node = node.value
-                            else:
-                                if isinstance(node.target, ast.Name):
-                                    targets = [node.target.id]
-                                value_node = node.value
-                            if targets and value_node is not None:
-                                try:
-                                    code = ast.unparse(value_node)  # type: ignore[attr-defined]
-                                except Exception:
-                                    # Log where this failure happens, including the module and target names
-                                    # print(f"Warning: Could not unparse AST node for assignment to {targets} in module {getattr(mod, '__name__', '')}")
-                                    code = None
-                                if code:
-                                    env = build_env()
-                                    try:
-                                        val = eval(compile(ast.parse(code, mode="eval"), filename=getattr(mod, "__file__", "<ast>"), mode="eval"), env, env)  # type: ignore[arg-type]
-                                        for tname in targets:
-                                            globalns.setdefault(tname, val)
-                                    except Exception:
-                                        # print(f"Warning: Could not evaluate AST node for assignment to {targets} in module {getattr(mod, '__name__', '')}")
-                                        pass
-                        except Exception:
-                            pass
-                    # Recurse
-                    for child in ast.iter_child_nodes(node):
-                        walk(child, in_tc)
-
-                walk(tree, in_tc=False)
-
-            # Inject guarded imports at module scope
-            if src and not src.startswith("# Representation:"):
-                _inject_type_checking_imports(src, getattr(mod, "__name__", ""))
-
-            # Also scan owner class for TYPE_CHECKING guarded items
-            try:
-                if owner_cls is not None:
-                    cls_src = safe_get_source(owner_cls)
-                    if cls_src and not cls_src.startswith("# Representation:"):
-                        _inject_type_checking_imports(cls_src, getattr(mod, "__name__", ""))
-            except Exception:
-                pass
-
-            # Also scan the function body for TYPE_CHECKING guarded items
-            try:
-                fn_src = safe_get_source(func)
-                if fn_src and not fn_src.startswith("# Representation:"):
-                    _inject_type_checking_imports(fn_src, getattr(mod, "__name__", ""))
-            except Exception:
-                pass
-
-            # Seed common typing/typing_extensions names often used only under TYPE_CHECKING
-            try:
-                import typing as _typing
-                common_names = [
-                    "Literal", "Annotated", "TypeAlias", "TypeGuard", "Required", "NotRequired",
-                    "Final", "ClassVar", "Self", "ParamSpec", "TypeVar", "Concatenate", "Unpack",
-                    "Never", "NoReturn", "Protocol", "TypedDict", "Optional", "Mapping", "MutableMapping",
-                    "Sequence", "Iterable", "Iterator", "Type",
-                ]
-                for _n in common_names:
-                    if _n not in globalns and hasattr(_typing, _n):
-                        globalns[_n] = getattr(_typing, _n)
-            except Exception:
-                pass
-            try:
-                import typing_extensions as _tx
-                for _n in ("Literal", "Annotated", "TypeAlias", "TypeGuard", "Required", "NotRequired",
-                           "Final", "ClassVar", "Self", "ParamSpec", "Concatenate", "Unpack", "Never"):
-                    if _n not in globalns and hasattr(_tx, _n):
-                        globalns[_n] = getattr(_tx, _n)
-            except Exception:
-                pass
-    except Exception:
-        pass
-
-    # Additionally, hydrate runtime imports and simple assignments used inside the module/function/class bodies
-    # (non-TYPE_CHECKING) by traversing all control-flow blocks (if/elif/else, try/except/else/finally, loops).
-    def _inject_runtime_imports_from_source(source: str, target_ns: Dict[str, Any], module_name: str) -> None:
-        if not source or source.startswith("# Representation:"):
-            return
         try:
-            tree = ast.parse(source)
-        except Exception:
-            return
+            mod = inspect.getmodule(fn)
+            if mod is not None:
+                globalns = dict(getattr(mod, "__dict__", {}))
+                logging.info("Successfully retrieved module globals.")
 
-        def resolve_rel(module: Optional[str], level: int) -> str:
-            if not level:
-                return module or ""
-            parts = module_name.split(".")
-            if parts:
-                parts = parts[:-1]
-            up = max(0, level - 1)
-            base = parts[: len(parts) - up]
-            if module:
-                base.append(module)
-            return ".".join([p for p in base if p])
-
-        def bind_import(alias: ast.alias) -> None:
-            try:
-                m = importlib.import_module(alias.name)
-                bind = alias.asname or alias.name.split(".")[0]
-                # Don't clobber existing values from real module globals
-                target_ns.setdefault(bind, m)
-            except Exception:
-                pass
-
-        def bind_from_import(module_name_full: str, alias: ast.alias) -> None:
-            try:
-                m = importlib.import_module(module_name_full)
-            except Exception:
-                return
-            try:
-                if alias.name == "*":
-                    names = getattr(m, "__all__", None)
-                    if names is None:
-                        names = [n for n in dir(m) if not n.startswith("_")]
-                    for n in names:
-                        try:
-                            target_ns.setdefault(n, getattr(m, n))
-                        except Exception:
-                            continue
-                    return
-                obj = getattr(m, alias.name)
-                target_ns.setdefault(alias.asname or alias.name, obj)
-            except Exception:
-                pass
-
-        def eval_assign(value_node: Optional[ast.AST], targets: List[str]) -> None:
-            if not targets or value_node is None:
-                return
-            try:
-                code = ast.unparse(value_node)  # type: ignore[attr-defined]
-            except Exception:
-                code = None
-            if not code:
-                return
-            env = dict(target_ns)
-            try:
-                val = eval(compile(ast.parse(code, mode="eval"), filename="<ast>", mode="eval"), env, env)  # type: ignore[arg-type]
-                for tname in targets:
-                    target_ns.setdefault(tname, val)
-            except Exception:
-                # best-effort only
-                pass
-
-        def visit_stmt(node: ast.AST) -> None:
-            try:
-                if isinstance(node, ast.Import):
-                    for a in node.names:
-                        bind_import(a)
-                    return
-                if isinstance(node, ast.ImportFrom):
-                    level = getattr(node, "level", 0) or 0
-                    full_mod = resolve_rel(node.module or "", level)
-                    for a in node.names:
-                        bind_from_import(full_mod, a)
-                    return
-                if isinstance(node, (ast.Assign, ast.AnnAssign)):
-                    if isinstance(node, ast.Assign):
-                        targets = [t.id for t in node.targets if isinstance(t, ast.Name)]
-                        value_node = node.value
-                    else:
-                        targets = [node.target.id] if isinstance(node.target, ast.Name) else []
-                        value_node = node.value
-                    eval_assign(value_node, targets)
-                    return
-                if isinstance(node, ast.If):
-                    # Traverse both branches to collect names defined conditionally
-                    for b in node.body:
-                        visit_stmt(b)
-                    for e in node.orelse:
-                        visit_stmt(e)
-                    return
-                if isinstance(node, ast.Try):
-                    # Process try first, then except/else/finally without clobbering existing
-                    for b in node.body:
-                        visit_stmt(b)
-                    for h in getattr(node, "handlers", []) or []:
-                        for b in getattr(h, "body", []) or []:
-                            visit_stmt(b)
-                    for e in node.orelse:
-                        visit_stmt(e)
-                    for f in node.finalbody:
-                        visit_stmt(f)
-                    return
-                if isinstance(node, (ast.For, ast.AsyncFor, ast.While, ast.With, ast.AsyncWith)):
-                    for b in node.body:
-                        visit_stmt(b)
-                    for e in node.orelse:
-                        visit_stmt(e)
-                    return
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):  # nested scopes
-                    # We don't need to bind the def itself (module globals already have the runtime object),
-                    # but we traverse inside to collect conditional imports/assignments used by annotations.
-                    for b in node.body:
-                        visit_stmt(b)
-                    return
-                # Recurse into generic children to catch statements within containers
-                for child in ast.iter_child_nodes(node):
-                    # Avoid double-walking expressions; we only care about statements
-                    if isinstance(child, ast.AST):
-                        visit_stmt(child)
-            except Exception:
-                return
-
-        # Begin traversal from the module/function/class body
-        if hasattr(tree, "body") and isinstance(tree.body, list):
-            for stmt in tree.body:
-                visit_stmt(stmt)
-
-    try:
-        mod = inspect.getmodule(func)
-        # Module-level: inject runtime imports and simple assignments
-        if mod is not None:
-            src_mod = safe_get_source(mod)
-            _inject_runtime_imports_from_source(src_mod, globalns, getattr(mod, "__name__", ""))
-
-        src_fn = safe_get_source(func)
-        _inject_runtime_imports_from_source(src_fn, globalns, getattr(mod, "__name__", ""))
-        owner_cls = _owner_class_of_callable(func)
-        if owner_cls is not None:
-            src_cls = safe_get_source(owner_cls)
-            # class-scope imports usually act like module-level for resolution; place into both
-            _inject_runtime_imports_from_source(src_cls, globalns, getattr(mod, "__name__", ""))
-            # and also into localns so class-only symbols are visible
-            _inject_runtime_imports_from_source(src_cls, localns, getattr(mod, "__name__", ""))
-    except Exception:
-        pass
-
-    # Resolve type hints robustly with layered fallbacks
-    hints: Dict[str, Any]
-    try:
-        # Python 3.13 supports include_extras; pass if available
-        try:
-            hints = get_type_hints(func, globalns=globalns or None, localns=localns or None, include_extras=True)  # type: ignore[call-arg]
-        except TypeError:
-            hints = get_type_hints(func, globalns=globalns or None, localns=localns or None)
-    except Exception:
-        try:
-            # Fallback without custom namespaces
-            try:
-                hints = get_type_hints(func, include_extras=True)  # type: ignore[call-arg]
-            except TypeError:
-                hints = get_type_hints(func)
-        except Exception:
-            # Final fallback via typing_extensions if available
-            try:
-                from typing_extensions import get_type_hints as tx_get_type_hints  # type: ignore
+                # Use `ast` to parse the owning module's source code, to get imports and assignments that may have been missed out
                 try:
-                    hints = tx_get_type_hints(func, globalns=globalns or None, localns=localns or None)  # type: ignore[call-arg]
+                    source = inspect.getsource(mod)
+                    parsed_ns, runtime_ns = parse_imports_and_assignments(source, mod)
+                    logging.info("Received parsed namespace keys: %s", list(parsed_ns.keys()))
+                    for name, val in parsed_ns.items():
+                        if name not in globalns and val is not None:
+                            globalns[name] = val
+                except Exception as e:
+                    logging.warning(f"Error parsing imports and assignments: {e}")
+                    pass
+                logging.info("Successfully parsed imports and assignments from source.")
+            else:
+                logging.warning("Could not retrieve module; using empty globals.")
+
+            # For functions, __globals__ is also useful
+            if hasattr(fn, "__globals__") and isinstance(fn.__globals__, dict):
+                # Prefer function globals but merge with module dict to be safe
+                merged = dict(globalns)
+                merged.update(fn.__globals__)
+                globalns = merged
+                logging.info("Successfully merged function globals.")
+            # Attempt to get the owner class for methods to access class-level annotations
+            owner_cls = _owner_class_of_callable(fn)
+            if owner_cls is not None:
+                localns = dict(vars(owner_cls))
+        except Exception as e:
+            logging.warning(f"Error occurred while retrieving type hints: {e}")
+
+        # Ensure the root package of the function's module is available in globals (e.g., 'pydantic')
+        try:
+            mod_name = getattr(inspect.getmodule(fn), "__name__", "")
+            root_mod = mod_name.split(".") [0] if mod_name else ""
+            if root_mod and root_mod not in globalns:
+                try:
+                    globalns[root_mod] = importlib.import_module(root_mod)
+                except Exception as e:
+                    logging.warning(f"Failed to import root module: {root_mod}, error: {e}")
+                    pass
+        except Exception as e:
+            logging.warning(f"Error occurred while ensuring root module is available: {e}")
+            pass
+
+        retries = 0
+        while retries < 10:
+            try:
+                type_hints = get_type_hints(fn, globalns=globalns, localns=localns)
+                break
+            except AttributeError as e:
+                # Simplified recovery: do not try to discover/import; just attach a Literal placeholder for the missing attribute
+                missing_attr = getattr(e, 'name', None)
+                base_obj = getattr(e, 'obj', None)
+                if missing_attr is None or base_obj is None:
+                    # If we can't identify target object and attribute, propagate the error
+                    raise
+                try:
+                    base_name = getattr(base_obj, '__name__', base_obj.__class__.__name__)
                 except Exception:
-                    hints = {}
+                    base_name = '<unknown>'
+                missing_name = f"{base_name}.{missing_attr}"
+                placeholder = typing.Literal[missing_name]
+                try:
+                    setattr(base_obj, missing_attr, placeholder)
+                    globalns[missing_name] = placeholder
+                    localns[missing_name] = placeholder
+                    runtime_ns[missing_name] = missing_name
+                    logging.info(f"Injected placeholder for missing attribute: {base_name}.{missing_attr} -> Literal['{base_name}.{missing_attr}']")
+                except Exception:
+                    # If we cannot set attribute on the object, re-raise as per requirements
+                    raise
+            except NameError as e:
+                # Skip getting type hints if Name Error is thrown
+                logging.info(f'Skipping getting type hints due to NameError: {e}')
+                return str(sig)  # Fallback to raw signature
             except Exception:
-                hints = {}
-    
-    # Get raw signature
-    sig = inspect.signature(func)
-    
-    # Build new Parameters with resolved annotations
-    params: List[inspect.Parameter] = []
-    for _pname, param in sig.parameters.items():
-        annotation = hints.get(_pname, param.annotation)
-        params.append(param.replace(annotation=annotation))
-    
-    # Determine return annotation
-    return_annotation = hints.get('return', sig.return_annotation)
-    
-    # Construct resolved signature
-    return sig.replace(parameters=params, return_annotation=return_annotation)
+                # Propagate other exceptions
+                raise
+            retries += 1
+
+        for name, param in sig.parameters.items():
+            annotation = type_hints.get(name, param.annotation)
+            typed_params.append(param.replace(annotation=annotation))
+
+        return_type = type_hints.get("return", sig.return_annotation)
+
+        typed_signature = str(sig.replace(parameters=typed_params, return_annotation=return_type))
+
+        # If we have a runtime namespace, we can use it for more accurate type hint resolution. Simply replace the `Literal` placeholders with their actual runtime values.
+        if runtime_ns:
+            # Replace any str type hints with their runtime resolved values if available
+            while True:
+                at_least_one_resolved = False
+                # As runtime_ns maps names to str representations, we can only resolve direct matches
+                for _, str_repr in runtime_ns.items():
+                    if f"typing.Literal['{str_repr}']" in typed_signature:
+                        typed_signature = typed_signature.replace(f"typing.Literal['{str_repr}']", str_repr)
+                        at_least_one_resolved = True
+                    elif f'typing.Literal["{str_repr}"]' in typed_signature:
+                        typed_signature = typed_signature.replace(f'typing.Literal["{str_repr}"]', str_repr)
+                        at_least_one_resolved = True
+                    elif f'Literal["{str_repr}"]' in typed_signature:
+                        typed_signature = typed_signature.replace(f'Literal["{str_repr}"]', str_repr)
+                        at_least_one_resolved = True
+                    elif f"Literal['{str_repr}']" in typed_signature:
+                        typed_signature = typed_signature.replace(f"Literal['{str_repr}']", str_repr)
+                        at_least_one_resolved = True
+                if not at_least_one_resolved:
+                    break
+
+        return typed_signature
+
+    # If overloads exist, compute signatures for each overload and include implementation
+    try:
+        overloads = get_overloads(func) or []
+    except Exception:
+        overloads = []
+
+    if include_overloads and overloads:
+        parts: List[str] = []
+        for ov in overloads:
+            try:
+                parts.append(_compute_single_signature(ov))
+            except Exception as e:
+                logging.warning(f"Failed to compute overload signature: {e}")
+        # Always include the implementation signature last
+        try:
+            parts.append(_compute_single_signature(func))
+        except Exception as e:
+            logging.warning(f"Failed to compute implementation signature: {e}")
+        # Join with a separator for readability
+        return " | ".join(parts)
+
+    # No overloads; just compute the single signature
+    return _compute_single_signature(func)
 
 def get_top_level_module(package_name: str) -> str:
     """
@@ -1025,18 +1132,30 @@ def process_member(
         source_code = safe_get_source(obj)
         docstring = safe_get_docstring(obj)
         extra_labels, decorators = _function_method_labels(obj, name, parent_obj=parent_obj)
-        labels = ["FUNCTION"] + extra_labels
+        # Overload detection
+        overloads: List[Callable] = []
+        try:
+            overloads = get_overloads(obj) or []
+        except Exception:
+            overloads = []
+        labels = ["FUNCTION"] + (extra_labels or [])
+        if overloads:
+            labels.append("OVERLOADED")
         if _is_dunder(obj.__name__):
             labels.append("DUNDER")
         if version:
             labels.append(f"version:{version}")
+        # Collect signature variants
+        raw_sig = str(inspect.signature(obj))
+        resolved_sig = str(get_typed_signature(obj, include_overloads=False))
         function_entity = Entity(
             obj_path,
             labels,
             {
                 "source": source_code,
                 "__name__": obj.__name__,
-                "signature": str(get_typed_signature(obj)),
+                "signature": raw_sig,
+                "resolved_signature": resolved_sig,
                 "docstring": docstring,
                 "decorators": decorators,
             }
@@ -1044,6 +1163,41 @@ def process_member(
         entities.append(function_entity)
         if parent_entity:
             relations.append(Relationship(parent_entity, function_entity, "HAS_FUNCTION", {}))
+        # Create individual overload entities
+        if overloads:
+            for idx, ov in enumerate(overloads, start=1):
+                try:
+                    ov_src = safe_get_source(ov)
+                except Exception:
+                    ov_src = ""
+                ov_doc = safe_get_docstring(ov)
+                ov_extra_labels, ov_decorators = _function_method_labels(ov, name, parent_obj=parent_obj)
+                ov_labels = ["FUNCTION", "OVERLOAD"] + (ov_extra_labels or [])
+                if _is_dunder(obj.__name__):
+                    ov_labels.append("DUNDER")
+                if version:
+                    ov_labels.append(f"version:{version}")
+                ov_sig_raw = str(inspect.signature(ov)) if hasattr(ov, "__call__") or inspect.isfunction(ov) else "<unavailable>"
+                try:
+                    ov_sig_res = str(get_typed_signature(ov, include_overloads=False))
+                except Exception:
+                    ov_sig_res = ov_sig_raw
+                ov_entity = Entity(
+                    obj_path,
+                    ov_labels,
+                    {
+                        "source": ov_src,
+                        "__name__": getattr(ov, "__name__", name),
+                        "signature": ov_sig_raw,
+                        "resolved_signature": ov_sig_res,
+                        "docstring": ov_doc,
+                        "decorators": ov_decorators,
+                    },
+                )
+                entities.append(ov_entity)
+                if parent_entity:
+                    relations.append(Relationship(parent_entity, ov_entity, "HAS_FUNCTION", {}))
+                relations.append(Relationship(function_entity, ov_entity, "HAS_OVERLOAD", {}))
 
     elif parent_entity.label == "CLASS" and (inspect.ismethod(obj) or inspect.isfunction(obj)):
         obj_path = get_fully_qualified_name(obj)
@@ -1059,18 +1213,30 @@ def process_member(
         source_code = safe_get_source(obj)
         docstring = safe_get_docstring(obj)
         extra_labels, decorators = _function_method_labels(obj, name, parent_obj=parent_obj)
-        labels = ["METHOD"] + extra_labels
+        # Overload detection
+        overloads: List[Callable] = []
+        try:
+            overloads = get_overloads(obj) or []
+        except Exception:
+            overloads = []
+        labels = ["METHOD"] + (extra_labels or [])
+        if overloads:
+            labels.append("OVERLOADED")
         if _is_dunder(obj.__name__):
             labels.append("DUNDER")
         if version:
             labels.append(f"version:{version}")
+        # Collect signature variants
+        raw_sig = str(inspect.signature(obj))
+        resolved_sig = str(get_typed_signature(obj, include_overloads=False))
         method_entity = Entity(
             obj_path,
             labels,
             {
                 "source": source_code,
                 "__name__": obj.__name__,
-                "signature": str(get_typed_signature(obj)),
+                "signature": raw_sig,
+                "resolved_signature": resolved_sig,
                 "docstring": docstring,
                 "decorators": decorators,
             }
@@ -1078,6 +1244,41 @@ def process_member(
         entities.append(method_entity)
         if parent_entity:
             relations.append(Relationship(parent_entity, method_entity, "HAS_METHOD", {}))
+        # Create individual overload entities for methods
+        if overloads:
+            for idx, ov in enumerate(overloads, start=1):
+                try:
+                    ov_src = safe_get_source(ov)
+                except Exception:
+                    ov_src = ""
+                ov_doc = safe_get_docstring(ov)
+                ov_extra_labels, ov_decorators = _function_method_labels(ov, name, parent_obj=parent_obj)
+                ov_labels = ["METHOD", "OVERLOAD"] + (ov_extra_labels or [])
+                if _is_dunder(obj.__name__):
+                    ov_labels.append("DUNDER")
+                if version:
+                    ov_labels.append(f"version:{version}")
+                ov_sig_raw = str(inspect.signature(ov)) if hasattr(ov, "__call__") or inspect.isfunction(ov) else "<unavailable>"
+                try:
+                    ov_sig_res = str(get_typed_signature(ov, include_overloads=False))
+                except Exception:
+                    ov_sig_res = ov_sig_raw
+                ov_entity = Entity(
+                    obj_path,
+                    ov_labels,
+                    {
+                        "source": ov_src,
+                        "__name__": getattr(ov, "__name__", name),
+                        "signature": ov_sig_raw,
+                        "resolved_signature": ov_sig_res,
+                        "docstring": ov_doc,
+                        "decorators": ov_decorators,
+                    },
+                )
+                entities.append(ov_entity)
+                if parent_entity:
+                    relations.append(Relationship(parent_entity, ov_entity, "HAS_METHOD", {}))
+                relations.append(Relationship(method_entity, ov_entity, "HAS_OVERLOAD", {}))
 
     return entities, relations
 
@@ -1175,12 +1376,12 @@ def traverse_recursive(
                 missing = getattr(e, 'name', '') or ''
                 if missing and not missing.startswith(root_module_path):
                     continue
-                print(f"Error processing submodule {submodule_path}: {e}")
-                print(traceback.format_exc())
+                logging.error(f"Error processing submodule {submodule_path}: {e}")
+                logging.error(traceback.format_exc())
                 continue
             except Exception as e:
-                print(f"Error processing submodule {submodule_path}: {e}")
-                print(traceback.format_exc())
+                logging.error(f"Error processing submodule {submodule_path}: {e}")
+                logging.error(traceback.format_exc())
                 continue
 
     # Process sub-classes
@@ -1269,12 +1470,12 @@ def process_module(module_name: str, version: Optional[str] = None):
             if missing and not missing.startswith(module_object.__name__):
                 # External optional dependency; silently skip
                 continue
-            print(f"Error processing submodule {submodule_path}: {e}")
-            print(traceback.format_exc())
+            logging.error(f"Error processing submodule {submodule_path}: {e}")
+            logging.error(traceback.format_exc())
             continue
         except Exception as e:
-            print(f"Error processing submodule {submodule_path}: {e}")
-            print(traceback.format_exc())
+            logging.error(f"Error processing submodule {submodule_path}: {e}")
+            logging.error(traceback.format_exc())
             continue
 
     # Process sub-classes
@@ -1346,18 +1547,18 @@ def process_module(module_name: str, version: Optional[str] = None):
         cleaned_exposed_relations.add((from_entity, to_entity))
 
     # Deduplicate entities and relations (Entity isn't hashable; use name)
-    ent_by_name: Dict[str, Entity] = {}
-    for e in entities:
-        ent_by_name[e.name] = e
-    dedup_rel: List[Relationship] = []
-    rel_keys: Set[Tuple[str, str, str]] = set()
-    for r in relations:
-        key = (r.from_entity.name, r.label, r.to_entity.name)
-        if key not in rel_keys:
-            rel_keys.add(key)
-            dedup_rel.append(r)
-    entities = list(ent_by_name.values())
-    relations = dedup_rel
+    # ent_by_name: Dict[str, Entity] = {}
+    # for e in entities:
+    #     ent_by_name[e.name] = e
+    # dedup_rel: List[Relationship] = []
+    # rel_keys: Set[Tuple[str, str, str]] = set()
+    # for r in relations:
+    #     key = (r.from_entity.name, r.label, r.to_entity.name)
+    #     if key not in rel_keys:
+    #         rel_keys.add(key)
+    #         dedup_rel.append(r)
+    # entities = list(ent_by_name.values())
+    # relations = dedup_rel
 
     # Clean up Alias Imports
     for entity in entities:
@@ -1375,7 +1576,7 @@ def process_module(module_name: str, version: Optional[str] = None):
     other_relations["IMPORTS"] = list(cleaned_imports_relations)
     other_relations["INHERITS"] = list(other_relations["INHERITS"])
 
-    print(f"Processed {len(entities)} entities and {len(relations)} relations in {module_object.__name__}.")
+    logging.info(f"Processed {len(entities)} entities and {len(relations)} relations in {module_object.__name__}.")
 
     return entities, relations, other_relations
 
@@ -1391,20 +1592,20 @@ def process_package(package_name: str, version: Optional[str] = None):
     top_level_module = get_top_level_module(pkg_name)
 
     if not top_level_module:
-        print(f"Package '{pkg_name}' not found. Attempting to install...")
+        logging.info(f"Package '{pkg_name}' not found. Attempting to install...")
         try:
             subprocess.run(["pip", "install", pkg_name], check=True)
-            print(f"Package '{pkg_name}' installed successfully.")
+            logging.info(f"Package '{pkg_name}' installed successfully.")
         except subprocess.CalledProcessError as e:
-            print(f"Failed to install package '{pkg_name}': {e}")
+            logging.error(f"Failed to install package '{pkg_name}': {e}")
             return
     
     top_level_module = get_top_level_module(pkg_name)
     if not top_level_module:
-        print(f"Package '{pkg_name}' not found after installation.")
+        logging.error(f"Package '{pkg_name}' not found after installation.")
         return
     
-    print(f"Processing package '{pkg_name}' with top-level module '{top_level_module}'...")
+    logging.info(f"Processing package '{pkg_name}' with top-level module '{top_level_module}'...")
     return process_module(top_level_module, version=version)
 
 def visualize_to_html(entities: List[Entity], relations: List[Relationship], out_file: Optional[str] = None) -> str:

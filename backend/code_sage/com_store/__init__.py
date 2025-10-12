@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from ..reflex import Entity, Relationship
 import logging
 import neo4j
+import hashlib
 
 logging.basicConfig(level=logging.INFO)
 BASE_ENTITY_LABEL = "__Entity__"
@@ -563,30 +564,127 @@ class COMStore(Neo4jPropertyGraphStore):
             relations (List[Relationship]): List of relationships to upsert.
             other_relations (Dict[str, List[Tuple]]): Dictionary containing other relations.
         """
-        # Convert Entity to EntityNode and Relationship to Relation
-        entity_nodes = []
-        entities_to_entity_nodes = {}
+        # Convert Entity to EntityNode and Relationship to Relation with versioning + overload support
+        entity_nodes: List[EntityNode] = []
+        # Map by Python object identity to support multiple entities with the same name (overloads, versions)
+        entities_to_entity_nodes: Dict[int, EntityNode] = {}
+        # Capture extra labels and version info to apply post-upsert
+        post_rows: List[Dict[str, Any]] = []
+
+        def _extract_version(labels: List[str]) -> Optional[str]:
+            for l in labels or []:
+                if isinstance(l, str) and l.startswith("version:"):
+                    return l.split("version:", 1)[1] or None
+            return None
+
+        def _content_hash(props: Dict[str, Any]) -> str:
+            # Use source + signature + resolved_signature + decorators as a stable content signature
+            src = str(props.get("source", ""))
+            sig = str(props.get("signature", ""))
+            rsig = str(props.get("resolved_signature", ""))
+            dec = ",".join(props.get("decorators", []) or [])
+            h = hashlib.sha256()
+            h.update(src.encode("utf-8", errors="ignore"))
+            h.update(b"|::|")
+            h.update(sig.encode("utf-8", errors="ignore"))
+            h.update(b"|::|")
+            h.update(rsig.encode("utf-8", errors="ignore"))
+            h.update(b"|::|")
+            h.update(dec.encode("utf-8", errors="ignore"))
+            return h.hexdigest()
+
+        def _build_id(e: Entity, content_hash: str) -> str:
+            # Stable ID based on path and content. This ensures: same content across versions -> same node.
+            # Different content (new version with changes) -> new node.
+            # Keep it compact for readability.
+            return f"{e.name}|{content_hash[:12]}"
+
+        def _extra_labels(labels: List[str]) -> List[str]:
+            # All labels except the primary one and version:* entries become extra Neo4j labels
+            if not labels:
+                return []
+            primary = labels[0]
+            extras: List[str] = []
+            for l in labels[1:]:
+                if isinstance(l, str) and not l.startswith("version:") and l != primary:
+                    # Neo4j labels cannot contain colon; our extras do not, so safe.
+                    extras.append(l)
+            return list(dict.fromkeys(extras))  # de-dupe
 
         for entity in entities:
+            version = _extract_version(getattr(entity, "labels", []) or [])
+            c_hash = _content_hash(entity.properties or {})
+            node_id = _build_id(entity, c_hash)
+
+            # Attach helpful versioning properties on the node
+            properties = dict(entity.properties or {})
+            properties["content_hash"] = c_hash
+            if version:
+                # latest observed version for this ingestion
+                properties["version"] = version
+
             entity_node = EntityNode(
+                id=node_id,
                 label=entity.label,
                 name=entity.name,
-                properties=entity.properties
+                properties=properties,
             )
             entity_nodes.append(entity_node)
-            entities_to_entity_nodes[entity.name] = entity_node
+            entities_to_entity_nodes[id(entity)] = entity_node
 
-        relations = [
-            Relation(
-                label=r.label,
-                source_id=entities_to_entity_nodes[r.from_entity.name].id,
-                target_id=entities_to_entity_nodes[r.to_entity.name].id,
-                properties=r.properties
-            ) for r in relations
-        ]
+            post_rows.append({
+                "id": node_id,
+                "version": version,
+                "content_hash": c_hash,
+                "extra_labels": _extra_labels(getattr(entity, "labels", []) or []),
+            })
 
+        # Convert incoming relationships using object-identity mapping
+        rels: List[Relation] = []
+        for r in relations:
+            src_node = entities_to_entity_nodes.get(id(r.from_entity))
+            tgt_node = entities_to_entity_nodes.get(id(r.to_entity))
+            if not src_node or not tgt_node:
+                # Skip relationships whose endpoints were filtered out for any reason
+                continue
+            rels.append(
+                Relation(
+                    label=r.label,
+                    source_id=src_node.id,
+                    target_id=tgt_node.id,
+                    properties=r.properties,
+                )
+            )
+
+        # Upsert nodes and relationships (MERGE semantics in underlying store)
         self.upsert_nodes(entity_nodes)
-        self.upsert_relations(relations)
+        self.upsert_relations(rels)
+
+        # Post-process: add versions and extra labels safely on the merged nodes
+        if post_rows:
+            # Update versions set, version (last seen), and ensure content_hash is stored
+            update_versions_query = """
+            UNWIND $rows AS row
+            MATCH (n {id: row.id})
+            FOREACH (v IN CASE WHEN row.version IS NOT NULL THEN [row.version] ELSE [] END |
+                SET n.versions = apoc.coll.toSet(coalesce(n.versions, []) + v)
+                SET n.version = v
+            )
+            SET n.content_hash = row.content_hash
+            RETURN count(n) AS updated
+            """
+            self.structured_query(update_versions_query, {"rows": post_rows})
+
+            # Apply extra labels like OVERLOAD, OVERLOADED, PRIVATE, etc.
+            add_labels_query = """
+            UNWIND $rows AS row
+            WITH row WHERE size(row.extra_labels) > 0
+            MATCH (n {id: row.id})
+            CALL apoc.create.addLabels(n, row.extra_labels)
+            YIELD node
+            RETURN count(node) AS labeled
+            """
+            self.structured_query(add_labels_query, {"rows": post_rows})
 
         # Embed the nodes if specified
         if embed_nodes:
@@ -603,49 +701,6 @@ class COMStore(Neo4jPropertyGraphStore):
 
         # Set the shortest call paths for all nodes in the module
         self._set_shortest_call_paths(module_name)
-
-        # Add special labels to entities starting with '_'
-        self._add_special_labels(module_name)
-
-    def _add_special_labels(self, module_name: str):
-        """
-        Add internal labels to entities starting with '_' in the specified module's subtree.
-
-        Args:
-            module_name (str): The name of the module.
-        """
-        # Create cypher queries to add special labels to entities starting with '_'
-        add_dunder_labels_query = (
-            """
-            MATCH (root:ROOT_MODULE {name: $module_name})-[:HAS_SUBMODULE|HAS_CLASS|HAS_METHOD|HAS_FUNCTION|EXPOSES*]->(children:FUNCTION|METHOD)
-            WHERE children.__name__ STARTS WITH '__' AND children.__name__ ENDS WITH '__'
-            CALL apoc.create.addLabels(children, ['DUNDER'])
-            YIELD node
-            RETURN count(node) AS numNodesLabeled
-            """
-        )
-        add_private_labels_query = (
-            """
-            MATCH (root:ROOT_MODULE {name: $module_name})-[:HAS_SUBMODULE|HAS_CLASS|HAS_METHOD|HAS_FUNCTION|EXPOSES*]->(children)
-            WHERE children.__name__ STARTS WITH '__' AND NOT children.__name__ ENDS WITH '__'
-            CALL apoc.create.addLabels(children, ['PRIVATE'])
-            YIELD node
-            RETURN count(node) AS numNodesLabeled
-            """
-        )
-        add_internal_labels_query = (
-            """
-            MATCH (root:ROOT_MODULE {name: $module_name})-[:HAS_SUBMODULE|HAS_CLASS|HAS_METHOD|HAS_FUNCTION|EXPOSES*]->(children)
-            WHERE NOT children.__name__ STARTS WITH '__' AND (children.__name__ STARTS WITH '_' OR children.shortest_call_path CONTAINS '._')
-            CALL apoc.create.addLabels(children, ['INTERNAL'])
-            YIELD node
-            RETURN count(node) AS numNodesLabeled
-            """
-        )
-
-        self.structured_query(add_dunder_labels_query, {"module_name": module_name})
-        self.structured_query(add_private_labels_query, {"module_name": module_name})
-        self.structured_query(add_internal_labels_query, {"module_name": module_name})
 
     def _add_other_relations_as_properties(self, other_relations: Dict[str, List[Tuple]]):
         """
