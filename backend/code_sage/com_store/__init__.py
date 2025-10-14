@@ -12,10 +12,69 @@ from ..reflex import Entity, Relationship
 import logging
 import neo4j
 import hashlib
+import xml.etree.ElementTree as ET
+from xml.dom import minidom
 
 logging.basicConfig(level=logging.INFO)
 BASE_ENTITY_LABEL = "__Entity__"
 BASE_NODE_LABEL = "__Node__"
+
+def _escape_xml(text: str) -> str:
+    """Escape special XML characters in text."""
+    if text is None:
+        return ""
+    text = str(text)
+    text = text.replace("&", "&amp;")
+    text = text.replace("<", "&lt;")
+    text = text.replace(">", "&gt;")
+    text = text.replace('"', "&quot;")
+    text = text.replace("'", "&apos;")
+    return text
+
+def _dict_to_xml_string(data: Dict[str, Any], root_tag: str = "response") -> str:
+    """
+    Convert a dictionary to a formatted XML string.
+    
+    Args:
+        data: Dictionary to convert
+        root_tag: Root element tag name
+        
+    Returns:
+        Formatted XML string
+    """
+    def _add_element(parent: ET.Element, key: str, value: Any) -> None:
+        """Recursively add elements to the XML tree."""
+        if value is None:
+            elem = ET.SubElement(parent, key)
+            elem.text = ""
+        elif isinstance(value, dict):
+            elem = ET.SubElement(parent, key)
+            for k, v in value.items():
+                _add_element(elem, k, v)
+        elif isinstance(value, list):
+            elem = ET.SubElement(parent, key)
+            for item in value:
+                if isinstance(item, dict):
+                    item_elem = ET.SubElement(elem, "item")
+                    for k, v in item.items():
+                        _add_element(item_elem, k, v)
+                else:
+                    item_elem = ET.SubElement(elem, "item")
+                    item_elem.text = _escape_xml(item)
+        else:
+            elem = ET.SubElement(parent, key)
+            elem.text = _escape_xml(value)
+    
+    root = ET.Element(root_tag)
+    for key, value in data.items():
+        _add_element(root, key, value)
+    
+    # Convert to string with pretty formatting
+    xml_str = ET.tostring(root, encoding='unicode')
+    
+    # Parse and pretty print
+    dom = minidom.parseString(xml_str)
+    return dom.toprettyxml(indent="  ")
 
 def check_if_not_null(props: List[str], values: List[Any]) -> None:
     """Check if variable is not null and raise error accordingly."""
@@ -216,7 +275,7 @@ class COMStore(Neo4jPropertyGraphStore):
         """
         self.database_query(general_fts_query)
 
-    def retrieve_relevant_root_modules(self, query: str, top_k: int) -> dict[str, Any]:
+    def retrieve_relevant_root_modules(self, query: str, top_k: int) -> str:
         """
         Retrieve all relevant root modules based on the query, using similarity search, and store them for pagination.
 
@@ -225,9 +284,13 @@ class COMStore(Neo4jPropertyGraphStore):
             top_k (int): The number of results to return. Defaults to 5.
 
         Returns:
-            dict[str, Any]: A dictionary containing:
-                - formatted_results (str): Top k Relevant root modules based on the query formatted as a string.
-                - raw (List[Dict]): The list of retrieved root modules, upto top_k.
+            str: XML-formatted string containing:
+                - results: Top k relevant root modules based on the query, each with:
+                    - name (str): Module name
+                    - score (float): Similarity score
+                    - summary (str): Module summary
+                - query_info: Information about the query
+                - system_message (str): Informational message
         """
         # Clean input params
         top_k = int(top_k)
@@ -254,17 +317,18 @@ class COMStore(Neo4jPropertyGraphStore):
         self._root_modules_index = top_k
         self._last_root_modules_query = {"query": query, "top_k": top_k}
 
-        # Format the top k results as a string
-        formatted_results = "Relevant Root Modules (in no particular order):\n\n" + "\n\n".join(
-            [f"- **{result['name']}**:\n\n{result['summary']}" for i, result in enumerate(self._root_modules[:top_k])]
-        )
-
-        return {
-            "formatted_results": formatted_results,
-            "raw": self._root_modules[:top_k],
+        data = {
+            "results": self._root_modules[:top_k],
+            "query_info": {
+                "query": query,
+                "top_k": top_k,
+                "total_found": len(results)
+            },
+            "system_message": f"Retrieved top {top_k} relevant root modules from {len(results)} total matches."
         }
+        return _dict_to_xml_string(data, "retrieve_relevant_root_modules_response")
     
-    def retrieve_relevant_children_in_subtree(self, query: str, parent_name: str, top_k: int) -> dict[str, Any]:
+    def retrieve_relevant_children_in_subtree(self, query: str, parent_name: str, top_k: int) -> str:
         """
         Retrieve all relevant IMMEDIATE children in the subtree of the given parent based on the query, using similarity search, and store them for pagination.
 
@@ -274,9 +338,14 @@ class COMStore(Neo4jPropertyGraphStore):
             top_k (int): The number of results to return. Defaults to 5.
 
         Returns:
-            dict[str, Any]: A dictionary containing:
-                - formatted_results (str): Top k Relevant children in subtree based on the query formatted as a string.
-                - raw (List[Dict]): The list of retrieved children, upto top_k.
+            str: XML-formatted string containing:
+                - results: Top k relevant children in subtree, each with:
+                    - name (str): Child name
+                    - score (float): Similarity score
+                    - labels (list): Entity labels
+                    - summary (str): Child summary
+                - query_info: Information about the query
+                - system_message (str): Informational message
         """
         # Clean input params
         top_k = int(top_k)
@@ -310,25 +379,34 @@ class COMStore(Neo4jPropertyGraphStore):
             self._children = records
             self._children_index = top_k
             self._last_children_query = {"query": query, "parent_name": parent_name, "top_k": top_k}
-
-            # Format the top k results as a string
-            formatted_results = "Relevant Children in Subtree (in no particular order):\n\n" + "\n\n".join(
-                [f"- **{result['name']}** (relevant labels: {result['labels']}):\n\n{result['summary']}" for i, result in enumerate(self._children[:top_k])]
-            )
             
-            return {
-                "formatted_results": formatted_results,
-                "raw": self._children[:top_k],
+            data = {
+                "results": self._children[:top_k],
+                "query_info": {
+                    "query": query,
+                    "parent_name": parent_name,
+                    "top_k": top_k,
+                    "total_found": len(records)
+                },
+                "system_message": f"Retrieved top {top_k} relevant children from {len(records)} total matches under '{parent_name}'."
             }
+            return _dict_to_xml_string(data, "retrieve_relevant_children_response")
         
         except Exception as e:
             logging.error(f"Error retrieving relevant children in subtree: {e}")
-            return {
-                "formatted_results": f"Error retrieving relevant children in subtree: {e}",
-                "raw": []
+            data = {
+                "results": [],
+                "query_info": {
+                    "query": query,
+                    "parent_name": parent_name,
+                    "top_k": top_k,
+                    "total_found": 0
+                },
+                "system_message": f"Error retrieving relevant children in subtree: {str(e)}"
             }
+            return _dict_to_xml_string(data, "retrieve_relevant_children_response")
 
-    def next_entities(self, from_: str, top_k: int) -> dict[str, Any]:
+    def next_entities(self, from_: str, top_k: int) -> str:
         """
         Retrieve the next top_k entities from the stored list.
 
@@ -337,47 +415,87 @@ class COMStore(Neo4jPropertyGraphStore):
             top_k (int): The number of entities to retrieve.
 
         Returns:
-            dict[str, Any]: A dictionary containing:
-                - formatted_results (str): The next top_k entities formatted as a string.
-                - raw (List[Dict]): The list of retrieved entities, depending on the `from_` parameter.
+            str: XML-formatted string containing:
+                - results: The next top_k entities
+                - pagination_info: Information about pagination status
+                - system_message (str): Informational message
         """
         top_k = int(top_k)
         if from_ == "ROOT_MODULE":
             if self._root_modules == None or self._root_modules_index == -1:
-                return "NO ROOT MODULES HAVE BEEN QUERIED FOR. PROCEED WITH QUERYING `retrieve_relevant_root_modules`."
+                data = {
+                    "results": [],
+                    "pagination_info": {
+                        "source": "ROOT_MODULE",
+                        "has_more": False,
+                        "all_retrieved": True
+                    },
+                    "system_message": "NO ROOT MODULES HAVE BEEN QUERIED FOR. PROCEED WITH QUERYING `retrieve_relevant_root_modules`."
+                }
+                return _dict_to_xml_string(data, "next_entities_response")
+            
             start_index = self._root_modules_index
             end_index = min(start_index + top_k, len(self._root_modules))
             entities = self._root_modules[start_index:end_index]
             self._root_modules_index = end_index
-            formatted_results = "Next Relevant Root Modules:\n\n" + "\n\n".join(
-                [f"{i+1}. **{result['name']}** (similarity score: {result['score']}):{result['summary']}" for i, result in enumerate(entities)]
-            )
-            if end_index == len(self._root_modules):
-                formatted_results += "\n\nALL RELEVANT ROOT MODULES RETRIEVED. PROCEED WITH ANOTHER QUERY USING `retrieve_relevant_root_modules`."
+            all_retrieved = end_index == len(self._root_modules)
+            
+            if all_retrieved:
                 self._root_modules = None
                 self._root_modules_index = -1
+            
+            data = {
+                "results": entities,
+                "pagination_info": {
+                    "source": "ROOT_MODULE",
+                    "start_index": start_index,
+                    "end_index": end_index,
+                    "has_more": not all_retrieved,
+                    "all_retrieved": all_retrieved
+                },
+                "system_message": f"Retrieved entities {start_index+1} to {end_index}." + 
+                                 (" ALL RELEVANT ROOT MODULES RETRIEVED." if all_retrieved else f" {len(self._root_modules) - end_index} more available.")
+            }
+            return _dict_to_xml_string(data, "next_entities_response")
 
         elif from_ == "CHILDREN":
             if self._children == None or self._children_index == -1:
-                return "NO CHILDREN HAVE BEEN QUERIED FOR. PROCEED WITH QUERYING `retrieve_relevant_children_in_subtree`."
+                data = {
+                    "results": [],
+                    "pagination_info": {
+                        "source": "CHILDREN",
+                        "has_more": False,
+                        "all_retrieved": True
+                    },
+                    "system_message": "NO CHILDREN HAVE BEEN QUERIED FOR. PROCEED WITH QUERYING `retrieve_relevant_children_in_subtree`."
+                }
+                return _dict_to_xml_string(data, "next_entities_response")
+            
             start_index = self._children_index
             end_index = min(start_index + top_k, len(self._children))
             entities = self._children[start_index:end_index]
             self._children_index = end_index
-            formatted_results = "Next Relevant Children in Subtree:\n\n" + "\n\n".join(
-                [f"{i+1}. **{result['name']}** (similarity score: {result['score']}, relevant labels: {result['labels']}):\n{result['summary']}" for i, result in enumerate(entities)]
-            )
-            if end_index == len(self._root_modules):
-                formatted_results += "\n\nALL RELEVANT CHILDREN RETRIEVED. PROCEED WITH ANOTHER QUERY USING `retrieve_relevant_children_in_subtree`."
+            all_retrieved = end_index == len(self._children)
+            
+            if all_retrieved:
                 self._children = None
                 self._children_index = -1
+            
+            data = {
+                "results": entities,
+                "pagination_info": {
+                    "source": "CHILDREN",
+                    "start_index": start_index,
+                    "end_index": end_index,
+                    "has_more": not all_retrieved,
+                    "all_retrieved": all_retrieved
+                },
+                "system_message": f"Retrieved entities {start_index+1} to {end_index}." + 
+                                 (" ALL RELEVANT CHILDREN RETRIEVED." if all_retrieved else f" {len(self._children) - end_index} more available.")
+            }
+            return _dict_to_xml_string(data, "next_entities_response")
         else:
             raise ValueError("`from` must be either 'ROOT_MODULE' or 'CHILDREN'")
-
-        return {
-            "formatted_results": formatted_results,
-            "raw" : entities,
-        }
 
     def query_vector_index(
         self, index_name: str, query: str | List[float], top_k: int = 10,
@@ -1066,7 +1184,7 @@ RETURN child.name AS ChildClass, size(members) AS TotalParentMembersLabeled
         """
         return entity_representation
     
-    def get_entity_info(self, entity_name: str) -> dict:
+    def get_entity_info(self, entity_name: str) -> str:
         """
         Get information about the entity.
 
@@ -1074,35 +1192,27 @@ RETURN child.name AS ChildClass, size(members) AS TotalParentMembersLabeled
             entity_name (str): The name of the entity.
 
         Returns:
-            dict: Information about the entity, including its representation with following fields:
-                - repr (str): The representation of the entity.
-                - raw (dict | list[dict]): The raw data retrieved from the database.
+            str: XML-formatted string containing:
+                - entity_data: Detailed information about the entity
+                - system_message (str): Informational message
         """
         entity_node = self._get_entity_info(entity_name)
         if not entity_node:
-            return {
-                "repr": f"No entity found with the name: {entity_name}",
-                "raw": None
+            data = {
+                "entity_data": [],
+                "system_message": f"No entity found with the name: {entity_name}"
             }
+            return _dict_to_xml_string(data, "get_entity_info_response")
         
         # If the list contains multiple entries, it is most likely a class' method and its __init__ method
-        if len(entity_node) > 1:
-            representation = "Method Representation with it's Class' Init Representation:\n" + "\n\n".join([
-                self._get_retrieved_entity_representation(node) for node in entity_node
-            ])
-            return {
-                "repr": representation,
-                "raw": entity_node
-            }
-            
-
-        entity_representation = self._get_retrieved_entity_representation(entity_node[0])
-        return {
-            "repr": entity_representation,
-            "raw": entity_node[0]
+        data = {
+            "entity_data": entity_node,
+            "system_message": f"Found {len(entity_node)} entity record(s) for '{entity_name}'." + 
+                             (" (Includes method and its class __init__)" if len(entity_node) > 1 else "")
         }
+        return _dict_to_xml_string(data, "get_entity_info_response")
     
-    def get_info_for_entities(self, entity_names: List[str]) -> dict:
+    def get_info_for_entities(self, entity_names: List[str]) -> str:
         """
         Get information about multiple entities.
 
@@ -1110,22 +1220,25 @@ RETURN child.name AS ChildClass, size(members) AS TotalParentMembersLabeled
             entity_names (List[str]): List of entity names.
 
         Returns:
-            dict: A dictionary containing:
-                - formatted_results (List[str]): The representation of the entities.
-                - raw (List[Dict]): The raw data retrieved from the database for each entity.
+            str: XML-formatted string containing:
+                - entities: Information for each entity
+                - system_message (str): Informational message
         """
-        results = []
-        raw = []
+        entities_data = []
         # Iterate through the list of entity names and retrieve their information
         for name in entity_names:
-            entity_info = self.get_entity_info(name)
-            results.append(entity_info["repr"])
-            raw.append(entity_info["raw"])
+            entity_info_list = self._get_entity_info(name)
+            entities_data.append({
+                "entity_name": name,
+                "records": entity_info_list if entity_info_list else [],
+                "found": len(entity_info_list) > 0 if entity_info_list else False
+            })
 
-        return {
-            "formatted_results": results,
-            "raw": raw
+        data = {
+            "entities": entities_data,
+            "system_message": f"Retrieved information for {len(entity_names)} entity name(s)."
         }
+        return _dict_to_xml_string(data, "get_info_for_entities_response")
     
     def _fts_full_path_name(self, name: str) -> str:
         """
@@ -1170,7 +1283,7 @@ RETURN child.name AS ChildClass, size(members) AS TotalParentMembersLabeled
         
         return ""
     
-    def get_full_path_name(self, name: str) -> dict:
+    def get_full_path_name(self, name: str) -> str:
         """
         Get the full path name of the entity.
 
@@ -1178,10 +1291,10 @@ RETURN child.name AS ChildClass, size(members) AS TotalParentMembersLabeled
             name (str): The name of the entity.
 
         Returns:
-            dict: A dictionary containing:
+            str: XML-formatted string containing:
                 - exact_match (str): The full path name of the entity if found
-                - best_matches (list): List of best matches if no exact match is found
-                - no_match (bool): True if no match is found, False otherwise
+                - best_matches: List of best matches if no exact match is found
+                - system_message (str): Informational message
         """
         retrieve_node_by_name_query = (
             """
@@ -1195,49 +1308,54 @@ RETURN child.name AS ChildClass, size(members) AS TotalParentMembersLabeled
 
         if retrieved_node:
             retrieved_name = retrieved_node[0]["name"]
-            return {
+            data = {
                 "exact_match": retrieved_name,
                 "best_matches": [],
-                "no_match": False
+                "system_message": f"Exact match found for '{name}'."
             }
+            return _dict_to_xml_string(data, "get_full_path_name_response")
 
         # If no relevant nodes are found, process the name for regex search
         logging.info(f"No relevant nodes found for the name: {name}")
         logging.info(f"Performing full-text search for the full path name of the entity: {name}")
-        records = self._fts_full_path_name(name)
+        records_str = self._fts_full_path_name(name)
 
-        if records:
-            best_matches = [f"{i + 1}. {record['name']}" for i, record in enumerate(records)]
-            return {
+        if records_str:
+            # Extract matches from the formatted string
+            matches = [line.strip() for line in records_str.split('\n\n') if line.strip() and not line.startswith('Best matches')]
+            data = {
                 "exact_match": "",
-                "best_matches": best_matches,
-                "no_match": False
+                "best_matches": matches,
+                "system_message": f"Found {len(matches)} potential matches for '{name}'."
             }
+            return _dict_to_xml_string(data, "get_full_path_name_response")
             
         # Split the name by '.', merge first and last parts, and try to find the full path name
         logging.info(f"Performing full-text search for the full path name of the entity with shortened name: {name}")
         name_parts = name.split(".")
         shortened_name = name_parts[0] + "." + name_parts[-1]
-        records = self._fts_full_path_name(shortened_name)
+        records_str = self._fts_full_path_name(shortened_name)
 
-        if records:
-            best_matches = [f"{i + 1}. {record['name']}" for i, record in enumerate(records)]
-            return {
+        if records_str:
+            matches = [line.strip() for line in records_str.split('\n\n') if line.strip() and not line.startswith('Best matches')]
+            data = {
                 "exact_match": "",
-                "best_matches": best_matches,
-                "no_match": False
+                "best_matches": matches,
+                "system_message": f"Found {len(matches)} potential matches using shortened name '{shortened_name}'."
             }
+            return _dict_to_xml_string(data, "get_full_path_name_response")
         
         # If no relevant nodes are found, return a message indicating that the full path name could not be found
         logging.warning(f"No full path name found for the entity: {name}")
 
-        return {
+        data = {
             "exact_match": "",
             "best_matches": [],
-            "no_match": True
+            "system_message": f"No full path name found for entity: '{name}'"
         }
+        return _dict_to_xml_string(data, "get_full_path_name_response")
     
-    def get_full_path_names(self, names: List[str]) -> dict:
+    def get_full_path_names(self, names: List[str]) -> str:
         """
         Get the full path names of multiple entities.
 
@@ -1245,18 +1363,53 @@ RETURN child.name AS ChildClass, size(members) AS TotalParentMembersLabeled
             names (List[str]): List of entity names.
 
         Returns:
-            dict: A dictionary containing mapping from provided names to a dictionary of:
-                - exact_match (str): The full path name of the entity if found
-                - best_matches (list): List of best matches if no exact match is found
-                - no_match (bool): True if no match is found, False otherwise
+            str: XML-formatted string containing full path name results for each entity
         """
-        results = {}
+        results = []
         for name in names:
-            results[name] = self.get_full_path_name(name)
+            # We need to parse the individual XML response to extract data
+            # For simplicity, let's make direct database calls here
+            retrieve_node_by_name_query = (
+                """
+                MATCH (n:METHOD|FUNCTION|CLASS|MODULE {name: $name})
+                RETURN n.name AS name
+                """
+            )
+            retrieved_node = self.structured_query(retrieve_node_by_name_query, {"name": name})
+            
+            if retrieved_node:
+                results.append({
+                    "query_name": name,
+                    "exact_match": retrieved_node[0]["name"],
+                    "best_matches": [],
+                    "found": True
+                })
+            else:
+                # Try FTS
+                records_str = self._fts_full_path_name(name)
+                if records_str:
+                    matches = [line.strip() for line in records_str.split('\n\n') if line.strip() and not line.startswith('Best matches')]
+                    results.append({
+                        "query_name": name,
+                        "exact_match": "",
+                        "best_matches": matches,
+                        "found": True
+                    })
+                else:
+                    results.append({
+                        "query_name": name,
+                        "exact_match": "",
+                        "best_matches": [],
+                        "found": False
+                    })
 
-        return results
+        data = {
+            "results": results,
+            "system_message": f"Processed {len(names)} entity name(s)."
+        }
+        return _dict_to_xml_string(data, "get_full_path_names_response")
     
-    def get_signatures(self, entity_names: List[str]) -> dict:
+    def get_signatures(self, entity_names: List[str]) -> str:
         """
         Get signatures for multiple entities.
 
@@ -1264,7 +1417,7 @@ RETURN child.name AS ChildClass, size(members) AS TotalParentMembersLabeled
             entity_names (List[str]): List of entity names.
 
         Returns:
-            dict: A dictionary containing mapping from provided names to their signatures.
+            str: XML-formatted string containing signature and type for each entity
         """
         # Prepare a Cypher query to retrieve signatures for the entities
         query = (
@@ -1361,5 +1514,391 @@ RETURN apoc.map.fromPairs(
 """
         )
 
-        signatures = self.structured_query(query, {"entity_names": entity_names})[0]["signatures"]
-        return signatures if signatures else {}
+        signatures_result = self.structured_query(query, {"entity_names": entity_names})[0]["signatures"]
+        
+        # Convert the result to a list format for XML
+        signatures = []
+        for entity_name in entity_names:
+            entity_data = signatures_result.get(entity_name) if signatures_result else None
+            if entity_data:
+                signatures.append({
+                    "entity_name": entity_name,
+                    "signature": entity_data.get("signature", ""),
+                    "type": entity_data.get("type", ""),
+                    "found": True
+                })
+            else:
+                signatures.append({
+                    "entity_name": entity_name,
+                    "signature": "",
+                    "type": "",
+                    "found": False
+                })
+        
+        data = {
+            "signatures": signatures,
+            "system_message": f"Retrieved signatures for {len(entity_names)} entity/entities."
+        }
+        return _dict_to_xml_string(data, "get_signatures_response")
+
+    def list_libraries(self) -> str:
+        """
+        Get a list of all ROOT_MODULE entities (libraries) in the knowledge graph.
+        
+        Returns:
+            str: XML-formatted string containing:
+                - libraries: A list of library objects, each containing:
+                    - name (str): The name of the library/root module
+                    - summary (str): Summary description of the library
+                    - source (str): Source file path
+                - system_message (str): Informational message about the results
+        """
+        query = """
+        MATCH (lib:ROOT_MODULE)
+        RETURN lib.name AS name, 
+               lib.summary AS summary, 
+               lib.source AS source
+        ORDER BY lib.name
+        """
+        
+        try:
+            results = self.structured_query(query)
+            
+            data = {
+                "libraries": results,
+                "system_message": f"Found {len(results)} indexed libraries in the knowledge graph."
+            }
+            return _dict_to_xml_string(data, "list_libraries_response")
+        except Exception as e:
+            logging.error(f"Error listing libraries: {e}")
+            data = {
+                "libraries": [],
+                "system_message": f"Error retrieving libraries: {str(e)}"
+            }
+            return _dict_to_xml_string(data, "list_libraries_response")
+
+    def search_definitions(
+        self,
+        parent_entity_name: str,
+        search_terms: List[str],
+        page: int = 1,
+        page_size: int = 10
+    ) -> str:
+        """
+        Search for code definitions (functions, classes, methods) within a provided entity.
+        Supports exact matches, partial matches, and pagination.
+        
+        Args:
+            parent_entity_name (str): Name of the parent entity to search within
+            search_terms (List[str]): List of definition names to search for
+            page (int): Page number starting from 1. Default is 1.
+            page_size (int): Number of results per page. Default is 10.
+        
+        Returns:
+            str: XML-formatted string containing:
+                - definitions: Array of matching code definitions, each containing:
+                    - name (str): The name of the definition
+                    - fqn (str): Fully qualified name of the definition
+                    - definition_type (str): Type of definition (e.g., "FUNCTION", "CLASS", "METHOD")
+                    - context (str): Code signature (for CLASS, shows __init__ signature if available)
+                - next_page (int | None): Next page number if more results are available
+                - current_page (int): Current page number
+                - total_results (int): Total number of matching results
+                - system_message (str): Informational message about the search results
+        """
+        # Calculate skip value for pagination
+        skip = (page - 1) * page_size
+        
+        # Build the search pattern for case-insensitive partial matching
+        search_pattern = "|".join([f"(?i).*{term}.*" for term in search_terms])
+        
+        query = """
+        // Find the parent entity
+        MATCH (parent {name: $parent_entity_name})
+        
+        // Find all children recursively
+        MATCH (parent)-[:HAS_SUBMODULE|HAS_CLASS|HAS_METHOD|HAS_FUNCTION|EXPOSES*]->(child)
+        WHERE child.__name__ =~ $search_pattern
+        
+        // Get total count
+        WITH collect(child) AS all_children
+        WITH all_children, size(all_children) AS total_count
+        
+        // Unwind for pagination
+        UNWIND all_children AS child
+        
+        // For CLASS entities, optionally get their __init__ method signature
+        OPTIONAL MATCH (child)-[:HAS_METHOD]->(init:METHOD {__name__: "__init__"})
+        WHERE "CLASS" IN labels(child)
+        
+        // Apply pagination
+        WITH child, init, total_count
+        ORDER BY child.name
+        SKIP $skip
+        LIMIT $page_size
+        
+        // Return results with metadata
+        RETURN 
+            child.name AS name,
+            child.shortest_call_path AS fqn,
+            [label IN labels(child) WHERE label IN ['FUNCTION', 'CLASS', 'METHOD', 'MODULE']][0] AS definition_type,
+            CASE
+                // For CLASS, use __init__ signature if available
+                WHEN "CLASS" IN labels(child) AND init IS NOT NULL THEN init.signature
+                // For others, use their own signature
+                WHEN child.signature IS NOT NULL THEN child.signature
+                ELSE child.__name__
+            END AS context,
+            total_count
+        """
+        
+        query_params = {
+            "parent_entity_name": parent_entity_name,
+            "search_pattern": search_pattern,
+            "skip": skip,
+            "page_size": page_size
+        }
+        
+        try:
+            results = self.structured_query(query, query_params)
+            
+            if not results:
+                data = {
+                    "definitions": [],
+                    "next_page": None,
+                    "current_page": page,
+                    "total_results": 0,
+                    "system_message": f"No definitions found matching search terms within '{parent_entity_name}'. "
+                                     f"Verify that the parent entity name is correct and that definitions exist."
+                }
+                return _dict_to_xml_string(data, "search_definitions_response")
+            
+            total_results = results[0].get("total_count", 0) if results else 0
+            definitions = []
+            
+            for result in results:
+                definitions.append({
+                    "name": result["name"],
+                    "fqn": result["fqn"],
+                    "definition_type": result["definition_type"],
+                    "context": result["context"]
+                })
+            
+            # Calculate if there's a next page
+            total_pages = (total_results + page_size - 1) // page_size
+            next_page = page + 1 if page < total_pages else None
+            
+            system_message = f"Found {total_results} definition(s) matching search terms within '{parent_entity_name}'. "
+            system_message += f"Showing page {page} of {total_pages}."
+            if next_page:
+                system_message += f" Use page={next_page} to see more results."
+            
+            data = {
+                "definitions": definitions,
+                "next_page": next_page,
+                "current_page": page,
+                "total_results": total_results,
+                "system_message": system_message
+            }
+            return _dict_to_xml_string(data, "search_definitions_response")
+            
+        except Exception as e:
+            logging.error(f"Error searching definitions: {e}")
+            data = {
+                "definitions": [],
+                "next_page": None,
+                "current_page": page,
+                "total_results": 0,
+                "system_message": f"Error searching definitions: {str(e)}"
+            }
+            return _dict_to_xml_string(data, "search_definitions_response")
+
+    def library_map(
+        self,
+        library_name: str,
+        depth: int = 2,
+        show_structure: bool = True,
+        show_definitions: bool = True,
+        page: int = 1,
+        page_size: int = 50
+    ) -> str:
+        """
+        Generate a compact, API-style map of a library segment showing structure and definitions.
+        
+        Args:
+            library_name (str): Name of the ROOT_MODULE (library) to map
+            relative_paths (List[str], optional): Specific paths within the library to focus on.
+                                                  If None, maps entire library.
+            depth (int): Directory/entity traversal depth. 0 = full depth, 1-3 = limited depth. Default is 2.
+            show_structure (bool): Include the structure tree. Default is True.
+            show_definitions (bool): Include definitions. Default is True.
+            page (int): Page number for pagination. Default is 1.
+            page_size (int): Max definitions per page. Default is 50.
+        
+        Returns:
+            str: XML-formatted string containing:
+                - library_name (str): Name of the library
+                - depth (int): Depth used for traversal (0 = full)
+                - structure (str): ASCII tree representation of the library structure
+                - definitions: List of definitions found, each containing:
+                    - path (str): Path to the entity
+                    - name (str): Name of the entity
+                    - type (str): Type of definition
+                    - location (str): Line range
+                    - signature (str): Function/method signature
+                    - summary (str): Brief description
+                - next_page (int | None): Next page number if more results are available
+                - total_definitions (int): Total number of definitions found
+                - system_message (str): Informational message about the results
+        """
+        # Handle depth: 0 means full depth, otherwise clamp between 1 and 3
+        if depth == 0:
+            # Use a very large number to represent "unlimited" depth
+            actual_depth = 999
+            depth_display = 0
+        else:
+            actual_depth = max(1, min(3, depth))
+            depth_display = actual_depth
+        skip = (page - 1) * page_size
+        
+        structure_tree = ""
+        definitions = []
+        total_definitions = 0
+        
+        try:
+            # Build structure tree if requested
+            if show_structure:
+                structure_query = """
+                MATCH path = (lib:ROOT_MODULE {{name: $library_name}})-[:HAS_SUBMODULE|HAS_CLASS|HAS_METHOD|HAS_FUNCTION*0..{depth}]->(entity)
+                WITH entity, length(path) AS depth_level, path
+                WHERE depth_level <= $depth
+                ORDER BY depth_level, entity.__name__
+                RETURN 
+                    entity.__name__ AS name,
+                    [label IN labels(entity) WHERE label IN ['MODULE', 'CLASS', 'FUNCTION', 'METHOD']][0] AS type,
+                    depth_level,
+                    [node in nodes(path) | node.__name__] AS path_segments
+                """
+                
+                structure_results = self.structured_query(
+                    structure_query.format(depth=actual_depth),
+                    {"library_name": library_name, "depth": actual_depth}
+                )
+                
+                # Build ASCII tree
+                tree_lines = [library_name + "/"]
+                prev_path = []
+                
+                for result in structure_results:
+                    if result["depth_level"] == 0:
+                        continue
+                        
+                    segments = result["path_segments"][1:]  # Skip root
+                    indent = "  " * (len(segments) - 1)
+                    is_last = False  # Simplified - could be enhanced with sibling detection
+                    prefix = "└── " if is_last else "├── "
+                    
+                    entity_type_marker = {
+                        "MODULE": "📦",
+                        "CLASS": "🔷",
+                        "FUNCTION": "⚡",
+                        "METHOD": "⚙️"
+                    }.get(result["type"], "")
+                    
+                    tree_lines.append(f"{indent}{prefix}{entity_type_marker} {result['name']}")
+                
+                structure_tree = "\n".join(tree_lines)
+            
+            # Fetch definitions if requested
+            if show_definitions:
+                definitions_query = """
+                MATCH path = (lib:ROOT_MODULE {{name: $library_name}})-[:HAS_SUBMODULE|HAS_CLASS|HAS_METHOD|HAS_FUNCTION*0..{depth}]->(entity)
+                WHERE length(path) <= $depth
+                AND length(path) > 0
+                WITH entity, 
+                     [node in nodes(path) | node.__name__] AS path_segments,
+                     length(path) AS depth_level
+                ORDER BY path_segments, entity.__name__
+                
+                WITH collect(entity) AS all_entities, count(entity) AS total_count
+                UNWIND all_entities AS entity
+                
+                WITH entity, total_count
+                SKIP $skip
+                LIMIT $page_size
+                
+                RETURN 
+                    entity.name AS full_name,
+                    entity.__name__ AS name,
+                    entity.shortest_call_path AS path,
+                    [label IN labels(entity) WHERE label IN ['MODULE', 'CLASS', 'FUNCTION', 'METHOD']][0] AS type,
+                    CASE 
+                        WHEN entity.start_line IS NOT NULL AND entity.end_line IS NOT NULL 
+                        THEN 'L' + toString(entity.start_line) + '-' + toString(entity.end_line)
+                        ELSE ''
+                    END AS location,
+                    entity.signature AS signature,
+                    entity.summary AS summary,
+                    total_count
+                """
+                
+                definitions_results = self.structured_query(
+                    definitions_query.format(depth=actual_depth),
+                    {
+                        "library_name": library_name,
+                        "depth": actual_depth,
+                        "skip": skip,
+                        "page_size": page_size
+                    }
+                )
+                
+                if definitions_results:
+                    total_definitions = definitions_results[0].get("total_count", 0)
+                    
+                    for result in definitions_results:
+                        definitions.append({
+                            "path": result["path"],
+                            "name": result["name"],
+                            "type": result["type"],
+                            "location": result["location"],
+                            "signature": result.get("signature", ""),
+                            "summary": result.get("summary", "")
+                        })
+            
+            # Calculate pagination
+            total_pages = (total_definitions + page_size - 1) // page_size if page_size > 0 else 1
+            next_page = page + 1 if page < total_pages else None
+            
+            depth_msg = "full depth" if depth_display == 0 else f"depth={depth_display}"
+            system_message = f"Library map for '{library_name}' at {depth_msg}. "
+            if show_definitions:
+                system_message += f"Found {total_definitions} definitions. "
+                system_message += f"Showing page {page} of {total_pages}."
+                if next_page:
+                    system_message += f" Use page={next_page} to see more."
+            
+            data = {
+                "library_name": library_name,
+                "depth": depth_display,
+                "structure": structure_tree if show_structure else "",
+                "definitions": definitions,
+                "next_page": next_page,
+                "current_page": page,
+                "total_definitions": total_definitions,
+                "system_message": system_message
+            }
+            return _dict_to_xml_string(data, "library_map_response")
+            
+        except Exception as e:
+            logging.error(f"Error generating library map: {e}")
+            data = {
+                "library_name": library_name,
+                "depth": depth_display,
+                "structure": "",
+                "definitions": [],
+                "next_page": None,
+                "current_page": page,
+                "total_definitions": 0,
+                "system_message": f"Error generating library map: {str(e)}"
+            }
+            return _dict_to_xml_string(data, "library_map_response")

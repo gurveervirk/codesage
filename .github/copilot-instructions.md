@@ -54,3 +54,10 @@ This guide helps AI coding agents work productively in the CodeSage monorepo. It
 ---
 
 If any section is unclear or missing, please provide feedback so this guide can be improved for future AI agents.
+
+
+# IMPORTANT INSTRUCTIONS
+- Please do only what is asked no more no less.
+- After every change/addition, reply in brief explaining what was done and ask if changes/additions to tests are needed.
+- If you are unsure about something, ask for clarification before proceeding.
+- Do not create extra Markdown files to explain your changes.
