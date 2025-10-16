@@ -8,7 +8,7 @@ from llama_index.core.graph_stores.types import (
 )
 from llama_index.core import Settings
 from typing import Any, Dict, List, Optional, Tuple
-from ..reflex import Entity, Relationship
+from ..libex import Entity, Relationship
 import logging
 import neo4j
 import hashlib

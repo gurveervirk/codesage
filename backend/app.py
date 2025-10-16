@@ -5,9 +5,9 @@ from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from backend.routes.upload_module import upload_module_router
 from backend.routes.generate import generate_router
 from backend.routes.llm_models import llm_models_router
-from backend.code_sage.sage_workflow.mas import SageWorkflow
+from backend.lib_sage.sage_workflow.mas import SageWorkflow
 from llama_index.llms.google_genai import GoogleGenAI
-from backend.code_sage.com_store import COMStore
+from backend.lib_sage.com_store import COMStore
 
 app = FastAPI(
     title="CodeSage API",

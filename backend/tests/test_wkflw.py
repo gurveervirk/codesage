@@ -11,8 +11,8 @@ from llama_index.core.llms import ChatMessage, CompletionResponse
 from llama_index.core.memory import Memory
 
 # Adjust the import path based on your project structure
-from backend.code_sage.sage_workflow.wkflw import MainWkflw
-from backend.code_sage.sage_workflow.events import (
+from backend.lib_sage.sage_workflow.wkflw import MainWkflw
+from backend.lib_sage.sage_workflow.events import (
     OrchestrationEvent,
     RootModuleSearchEvent,
     CodeEntitySearchEvent,

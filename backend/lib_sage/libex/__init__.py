@@ -1,5 +1,5 @@
 """
-ReflEx (Reflection and Extraction) Module
+LibEx (Library Extraction) Module
 
 This module provides utilities to extract entities and relationships from Python modules and classes, such as:
 - Modules
