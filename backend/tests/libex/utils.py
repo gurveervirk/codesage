@@ -190,8 +190,37 @@ def generate_outputs(config: Dict[str, Any]) -> Dict[str, Any]:
                 # Get namespaces (for modules or classes with source)
                 try:
                     import inspect
+                    import re
                     source = inspect.getsource(entity_obj)
                     namespaces, runtime_ns = get_namespaces(source, module)
+                    
+                    # Helper function to normalize file paths in strings
+                    def normalize_path(val_str: str, key_name: str) -> str:
+                        """Remove absolute paths from __file__, __cached__, and similar keys."""
+                        # For __file__ and __cached__, replace absolute path with <PATH_NORMALIZED>
+                        if key_name in ("__file__", "__cached__"):
+                            # Just indicate it's a path without storing the actual path
+                            if val_str.endswith(".py"):
+                                return "<PATH:*.py>"
+                            elif val_str.endswith(".pyc"):
+                                return "<PATH:*.pyc>"
+                            elif val_str.endswith((".so", ".pyd", ".dll")):
+                                return "<PATH:*.(extension)>"
+                            else:
+                                return "<PATH:*>"
+                        
+                        # For other values that contain file paths
+                        # Match common path patterns: /path/to/file or C:\path\to\file
+                        if "/" in val_str or "\\" in val_str:
+                            # Check if it looks like an absolute path
+                            if (val_str.startswith("/") or 
+                                (len(val_str) > 2 and val_str[1] == ":" and val_str[2] in ("/", "\\"))):
+                                # Extract just the filename if it's a file path
+                                parts = val_str.replace("\\", "/").split("/")
+                                filename = parts[-1] if parts else val_str
+                                return f"<PATH:.../{filename}>"
+                        
+                        return val_str
                     
                     # Convert namespaces to serializable format
                     serializable_ns = {}
@@ -205,6 +234,7 @@ def generate_outputs(config: Dict[str, Any]) -> Dict[str, Any]:
                                 serializable_ns[key] = f"{value.__module__}.{value.__name__}"
                             else:
                                 value_str = str(value)
+                                
                                 # Replace memory addresses with placeholder for deterministic comparison
                                 if " object at 0x" in value_str:
                                     # Extract object type and create placeholder
@@ -216,15 +246,25 @@ def generate_outputs(config: Dict[str, Any]) -> Dict[str, Any]:
                                     # Extract module name from ModuleSpec and create placeholder
                                     # e.g., "ModuleSpec(name='pydantic.fields', ...)" 
                                     # becomes "<NON_DETERMINISTIC:ModuleSpec(name='pydantic.fields')>"
-                                    import re
                                     match = re.search(r"name='([^']+)'", value_str)
                                     if match:
                                         module_name = match.group(1)
                                         serializable_ns[key] = f"<NON_DETERMINISTIC:ModuleSpec(name='{module_name}')>"
                                     else:
                                         serializable_ns[key] = "<NON_DETERMINISTIC:ModuleSpec>"
+                                # Replace module file paths with just module name for deterministic comparison
+                                elif value_str.startswith("<module '") and "' from '" in value_str:
+                                    # Extract module name: "<module 'typing_inspection.typing_objects' from '/path/to/file.py'>"
+                                    # becomes "<module 'typing_inspection.typing_objects'>"
+                                    match = re.match(r"<module '([^']+)' from '.*'>", value_str)
+                                    if match:
+                                        module_name = match.group(1)
+                                        serializable_ns[key] = f"<module '{module_name}'>"
+                                    else:
+                                        serializable_ns[key] = value_str
                                 else:
-                                    serializable_ns[key] = value_str
+                                    # Apply path normalization for keys like __file__, __cached__
+                                    serializable_ns[key] = normalize_path(value_str, key)
                         except:
                             try:
                                 value_str = str(value)
@@ -232,8 +272,17 @@ def generate_outputs(config: Dict[str, Any]) -> Dict[str, Any]:
                                 if " object at 0x" in value_str:
                                     obj_type = value_str.split(" object at ")[0].lstrip("<")
                                     serializable_ns[key] = f"<NON_DETERMINISTIC:{obj_type}>"
+                                # Replace module paths
+                                elif value_str.startswith("<module '") and "' from '" in value_str:
+                                    match = re.match(r"<module '([^']+)' from '.*'>", value_str)
+                                    if match:
+                                        module_name = match.group(1)
+                                        serializable_ns[key] = f"<module '{module_name}'>"
+                                    else:
+                                        serializable_ns[key] = value_str
                                 else:
-                                    serializable_ns[key] = value_str
+                                    # Apply path normalization
+                                    serializable_ns[key] = normalize_path(value_str, key)
                             except:
                                 pass
                     

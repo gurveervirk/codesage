@@ -9,6 +9,7 @@ import json
 import pytest
 from pathlib import Path
 from typing import Dict, Any, List
+import re
 
 from .utils import generate_outputs, set_decoder
 
@@ -95,12 +96,41 @@ def _normalize_non_deterministic_value(value: Any) -> Any:
         return f"<NON_DETERMINISTIC:{obj_type}>"
     
     if value.startswith("ModuleSpec(") and " object at 0x" in value:
-        import re
         match = re.search(r"name='([^']+)'", value)
         if match:
             module_name = match.group(1)
             return f"<NON_DETERMINISTIC:ModuleSpec(name='{module_name}')>"
         return "<NON_DETERMINISTIC:ModuleSpec>"
+    
+    # Normalize module paths: "<module 'name' from '/path/to/file.py'>" -> "<module 'name'>"
+    if value.startswith("<module '") and "' from '" in value:
+        match = re.match(r"<module '([^']+)' from '.*'>", value)
+        if match:
+            module_name = match.group(1)
+            return f"<module '{module_name}'>"
+    
+    # Normalize file paths in old expected outputs
+    # Match absolute paths like /path/to/file.py or C:\path\to\file.py
+    if "/" in value or "\\" in value:
+        # Check if it looks like an absolute path
+        if (value.startswith("/") or 
+            (len(value) > 2 and value[1] == ":" and value[2] in ("/", "\\"))):
+            # Normalize based on file extension
+            if value.endswith(".py"):
+                return "<PATH:*.py>"
+            elif value.endswith(".pyc"):
+                return "<PATH:*.pyc>"
+            elif value.endswith((".so", ".pyd", ".dll")):
+                return "<PATH:*.(extension)>"
+            else:
+                # Extract just the filename
+                parts = value.replace("\\", "/").split("/")
+                filename = parts[-1] if parts else value
+                return f"<PATH:.../{filename}>"
+    
+    # If already normalized, return as-is
+    if value.startswith("<PATH:"):
+        return value
     
     return value
 
