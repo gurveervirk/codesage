@@ -64,14 +64,30 @@ jobs:
       
       - name: Run libex tests
         if: steps.check-outputs.outputs.has_outputs == 'true'
+        env:
+          PYTHONPATH: ${{ github.workspace }}/backend
         run: |
           cd backend/tests/libex
-          PYTHONPATH=$GITHUB_WORKSPACE/backend:$PYTHONPATH pytest test_libex_outputs.py -v --tb=short --junit-xml=../../test-results-libex.xml
+          pytest test_libex_outputs.py -v --tb=long --junit-xml=../../test-results-libex.xml
       
-      - name: Upload test results
+      - name: Generate debug outputs on failure
+        if: failure()
+        continue-on-error: true
+        env:
+          PYTHONPATH: ${{ github.workspace }}/backend
+        run: |
+          cd backend/tests/libex
+          echo "Generating fresh outputs for debugging..."
+          python prepare_tests.py 2>&1 | tee prepare_debug.log
+      
+      - name: Upload test results and debug info
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: libex-test-results-3.13.5
-          path: backend/test-results-libex.xml
+          name: libex-test-results-python-3.13.5
+          path: |
+            backend/tests/libex/expected_outputs/
+            backend/tests/libex/test_jsons/
+            backend/tests/libex/prepare_debug.log
+            backend/test-results-libex.xml
           retention-days: 30

@@ -84,9 +84,32 @@ jobs:
           uv pip install -r backend/tests/requirements.txt --system
       
       - name: Quick libex test run
+        env:
+          PYTHONPATH: ${{ github.workspace }}/backend
         run: |
           cd backend/tests/libex
-          PYTHONPATH=$GITHUB_WORKSPACE/backend:$PYTHONPATH pytest test_libex_outputs.py -v --maxfail=3 --tb=short
+          pytest test_libex_outputs.py -v --maxfail=3 --tb=long
+      
+      - name: Generate debug outputs on failure
+        if: failure()
+        continue-on-error: true
+        env:
+          PYTHONPATH: ${{ github.workspace }}/backend
+        run: |
+          cd backend/tests/libex
+          echo "Generating fresh outputs for debugging..."
+          python prepare_tests.py 2>&1 | tee prepare_debug.log
+      
+      - name: Upload debug info
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-check-debug-info
+          path: |
+            backend/tests/libex/expected_outputs/
+            backend/tests/libex/test_jsons/
+            backend/tests/libex/prepare_debug.log
+          retention-days: 7
       
       - name: Comment PR
         if: failure()
@@ -97,5 +120,5 @@ jobs:
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: '❌ Tests failed! Please check the Actions tab for details.'
+              body: '❌ Tests failed! Please check the Actions tab for details and download the debug artifacts to see generated outputs and errors.'
             })
