@@ -10,14 +10,9 @@ This directory contains CI/CD workflows for the CodeSage project.
 - Pull requests to any branch
 
 **What it does:**
-- Tests against multiple Python versions (3.9, 3.10, 3.11, 3.12, 3.13)
-- Runs libex tests (with `continue-on-error` to not block on missing expected outputs)
+- Tests against Python 3.13.5
+- Runs libex tests (fails if missing expected outputs)
 - Uploads test results as artifacts
-
-**Matrix:**
-```yaml
-python-version: ['3.9', '3.10', '3.11', '3.12', '3.13']
-```
 
 ---
 
@@ -32,9 +27,9 @@ python-version: ['3.9', '3.10', '3.11', '3.12', '3.13']
 - `.github/workflows/libex-tests.yml`
 
 **What it does:**
-- Tests against Python 3.11, 3.12, 3.13
+- Tests against Python 3.13.5
 - Checks if expected outputs exist before running tests
-- Skips tests gracefully if no expected outputs found
+- Fails explicitly if no expected outputs found
 - Uploads JUnit XML test results
 
 ---
@@ -100,7 +95,7 @@ python prepare_tests.py --override
 ## Troubleshooting
 
 ### Tests failing in CI but passing locally?
-- Check Python version differences
+- Check that you're using Python 3.13.5
 - Ensure all dependencies are in `pyproject.toml`
 - Check if expected outputs are committed
 
@@ -133,11 +128,12 @@ Edit `tests.yml`:
 ```
 
 ### Change Python versions
-Edit the matrix in either workflow:
+Edit the workflows to use a different version:
 ```yaml
-strategy:
-  matrix:
-    python-version: ['3.11', '3.13']  # Only test on these versions
+- name: Set up Python 3.13.5
+  uses: actions/setup-python@v5
+  with:
+    python-version: '3.13.5'
 ```
 
 ### Run on specific branches only

@@ -3,7 +3,7 @@
 ## What You Get
 
 ✅ **Automatic testing** on every push to any branch  
-✅ **Multi-version testing** (Python 3.9-3.13)  
+✅ **Python 3.13.5 testing**  
 ✅ **PR validation** before merging  
 ✅ **Smart libex testing** (only when files change)  
 ✅ **Test result artifacts** (downloadable)  
@@ -92,10 +92,13 @@ python prepare_tests.py --override
 ## Common Issues
 
 ### "Tests failing in CI but pass locally"
-**Solution:** Check Python version
+**Solution:** Ensure you're using Python 3.13.5
 ```bash
-# Test with specific Python version
-python3.11 -m pytest -v
+# Check your Python version
+python --version
+
+# Test with Python 3.13.5
+python3.13 -m pytest -v
 ```
 
 ### "LibEx tests skipped"
