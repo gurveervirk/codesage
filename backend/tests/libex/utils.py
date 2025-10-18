@@ -91,10 +91,10 @@ def generate_outputs(config: Dict[str, Any]) -> Dict[str, Any]:
             pip_path = venv_path / "bin" / "pip"
             python_path = venv_path / "bin" / "python"
         
-        # Install the library
+        # Install the library without cache and other stuff
         package_spec = f"{library}=={version}" if version else library
         subprocess.run(
-            [str(pip_path), "install", package_spec],
+            [str(pip_path), "install", "--no-cache-dir", "--disable-pip-version-check", package_spec],
             check=True,
             capture_output=True
         )

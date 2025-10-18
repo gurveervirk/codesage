@@ -66,7 +66,7 @@ jobs:
         if: steps.check-outputs.outputs.has_outputs == 'true'
         run: |
           cd backend/tests/libex
-          pytest test_libex_outputs.py -v --tb=short --junit-xml=../../test-results-libex.xml
+          PYTHONPATH=$GITHUB_WORKSPACE/backend:$PYTHONPATH pytest test_libex_outputs.py -v --tb=short --junit-xml=../../test-results-libex.xml
       
       - name: Upload test results
         if: always()

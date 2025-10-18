@@ -51,7 +51,7 @@ jobs:
       - name: Run libex tests
         run: |
           cd backend/tests/libex
-          pytest test_libex_outputs.py -v --tb=short
+          PYTHONPATH=$GITHUB_WORKSPACE/backend:$PYTHONPATH pytest test_libex_outputs.py -v --tb=short
       
       - name: Upload test results
         if: always()

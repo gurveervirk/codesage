@@ -86,7 +86,7 @@ jobs:
       - name: Quick libex test run
         run: |
           cd backend/tests/libex
-          pytest test_libex_outputs.py -v --maxfail=3 --tb=short
+          PYTHONPATH=$GITHUB_WORKSPACE/backend:$PYTHONPATH pytest test_libex_outputs.py -v --maxfail=3 --tb=short
       
       - name: Comment PR
         if: failure()
