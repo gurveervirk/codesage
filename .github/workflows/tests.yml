@@ -32,8 +32,7 @@ jobs:
       
       - name: Install dependencies
         run: |
-          cd backend
-          uv pip install -e ".[dev]" --system
+          uv pip install -e . --system
       
       - name: Check for expected outputs
         run: |

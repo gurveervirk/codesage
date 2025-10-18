@@ -69,6 +69,8 @@ pytest test_libex_outputs.py -v
 python prepare_tests.py --override
 ```
 
+**Note:** Dependencies are installed from the root `pyproject.toml`, not from `backend/`.
+
 ---
 
 ## Viewing Test Results

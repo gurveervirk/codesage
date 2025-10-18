@@ -44,8 +44,10 @@ python-version: ['3.9', '3.10', '3.11', '3.12', '3.13']
 ### Dependencies
 The workflows use `uv` for fast Python package management:
 ```bash
-uv pip install -e ".[dev]" --system
+uv pip install -e . --system
 ```
+
+Note: Dependencies are defined in the root `pyproject.toml`, not in `backend/`.
 
 ### Expected Outputs
 For libex tests to run, you need to generate expected outputs:

@@ -24,8 +24,7 @@ jobs:
       
       - name: Install dependencies
         run: |
-          cd backend
-          uv pip install -e ".[dev]" --system
+          uv pip install -e . --system
       
       - name: Check Python formatting (ruff)
         run: |
@@ -82,8 +81,7 @@ jobs:
       
       - name: Install dependencies
         run: |
-          cd backend
-          uv pip install -e ".[dev]" --system
+          uv pip install -e . --system
       
       - name: Quick libex test run
         run: |
