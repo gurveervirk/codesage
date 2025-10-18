@@ -1,0 +1,69 @@
+name: Run Tests
+
+on:
+  push:
+    branches:
+      - '**'  # Run on all branches
+  pull_request:
+    branches:
+      - '**'  # Run on all PRs
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    strategy:
+      matrix:
+        python-version: ['3.9', '3.10', '3.11', '3.12', '3.13']
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+      
+      - name: Install dependencies
+        run: |
+          cd backend
+          uv pip install -e ".[dev]" --system
+      
+      - name: Check for expected outputs
+        run: |
+          cd backend/tests/libex
+          if [ ! -d "expected_outputs" ] || [ -z "$(ls -A expected_outputs 2>/dev/null)" ]; then
+            echo "❌ ERROR: No expected outputs found!"
+            echo ""
+            echo "Expected outputs are required to run libex tests."
+            echo "Please generate them by running:"
+            echo ""
+            echo "  cd backend/tests/libex"
+            echo "  python prepare_tests.py"
+            echo "  git add expected_outputs/"
+            echo "  git commit -m 'Add expected outputs for libex tests'"
+            echo ""
+            exit 1
+          fi
+          echo "✅ Expected outputs found"
+      
+      - name: Run libex tests
+        run: |
+          cd backend/tests/libex
+          pytest test_libex_outputs.py -v --tb=short
+      
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ matrix.python-version }}
+          path: |
+            backend/tests/*.xml
+            backend/tests/**/*.xml
+          retention-days: 30

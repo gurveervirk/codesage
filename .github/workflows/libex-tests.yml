@@ -1,0 +1,82 @@
+name: LibEx Tests
+
+on:
+  push:
+    branches:
+      - '**'
+    paths:
+      - 'backend/lib_sage/libex/**'
+      - 'backend/tests/libex/**'
+      - '.github/workflows/libex-tests.yml'
+  pull_request:
+    branches:
+      - '**'
+    paths:
+      - 'backend/lib_sage/libex/**'
+      - 'backend/tests/libex/**'
+
+jobs:
+  libex-test:
+    runs-on: ubuntu-latest
+    
+    strategy:
+      matrix:
+        python-version: ['3.11', '3.12', '3.13']
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+      
+      - name: Install dependencies
+        run: |
+          cd backend
+          uv pip install -e ".[dev]" --system
+      
+      - name: Check for expected outputs
+        id: check-outputs
+        run: |
+          cd backend/tests/libex
+          if [ -d "expected_outputs" ] && [ "$(ls -A expected_outputs)" ]; then
+            echo "has_outputs=true" >> $GITHUB_OUTPUT
+            echo "✅ Expected outputs found"
+          else
+            echo "has_outputs=false" >> $GITHUB_OUTPUT
+            echo "❌ ERROR: No expected outputs found!"
+            echo ""
+            echo "Expected outputs are required to run libex tests."
+            echo "Please generate them by running:"
+            echo ""
+            echo "  cd backend/tests/libex"
+            echo "  python prepare_tests.py"
+            echo "  git add expected_outputs/"
+            echo "  git commit -m 'Add expected outputs for libex tests'"
+            echo ""
+          fi
+      
+      - name: Fail if no expected outputs
+        if: steps.check-outputs.outputs.has_outputs == 'false'
+        run: exit 1
+      
+      - name: Run libex tests
+        if: steps.check-outputs.outputs.has_outputs == 'true'
+        run: |
+          cd backend/tests/libex
+          pytest test_libex_outputs.py -v --tb=short --junit-xml=../../test-results-libex.xml
+      
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: libex-test-results-${{ matrix.python-version }}
+          path: backend/test-results-libex.xml
+          retention-days: 30

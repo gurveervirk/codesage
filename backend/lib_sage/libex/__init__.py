@@ -93,7 +93,7 @@ def _get_decorators_from_source(src: str) -> List[str]:
         return []
 
 
-def _function_method_labels(func: Callable, name: str, parent_obj: Optional[Any] = None) -> Tuple[List[str], List[str]]:
+def get_function_method_labels(func: Callable, name: str, parent_obj: Optional[Any] = None) -> Tuple[List[str], List[str]]:
     """
     Determine extra labels (ASYNC, GENERATOR, PROPERTY, CLASSMETHOD, STATICMETHOD) and decorators list.
     Also add visibility label.
@@ -332,42 +332,15 @@ def get_unused_imports(module_name: str, imported_names: Set[str]) -> Set[str]:
         return set()
 
 def get_fully_qualified_name(cls):
-    """
-    Get the fully qualified name of a class.
-
-    Args:
-        cls: The class object.
-
-    Returns:
-        str: The fully qualified name of the class.
-    """
     return f"{cls.__module__}.{cls.__qualname__}"
 
 def safe_get_source(obj) -> str:
-    """
-    Retrieve the source code of an object or fallback to its representation.
-
-    Args:
-        obj: The object to retrieve the source code for.
-
-    Returns:
-        str: The source code or representation of the object.
-    """
     try:
         return inspect.getsource(obj)
     except (OSError, TypeError):
         return f"# Representation:\n{repr(obj)}"
     
 def safe_get_docstring(obj) -> str:
-    """
-    Retrieve the docstring of an object or fallback to its representation.
-
-    Args:
-        obj: The object to retrieve the docstring for.
-
-    Returns:
-        str: The docstring or representation of the object.
-    """
     try:
         return inspect.getdoc(obj) or ""
     except (OSError, TypeError):
@@ -416,7 +389,7 @@ def find_submodules_importlib_resources(module_name: str) -> set[str]:
     return results
 
 module_cache: Dict[str, Any] = {}
-def parse_imports_and_assignments(source: str, module: Any) -> Tuple[Dict[str, Any], Dict[str, str]]:
+def get_namespaces(source: str, module: Any) -> Tuple[Dict[str, Any], Dict[str, str]]:
     """
     Parses the source code to extract import statements and assignments, especially those inside blocks.
     Uses `ast` to safely parse the code without executing it.
@@ -845,7 +818,7 @@ def get_globals(func: Callable) -> Tuple[Dict[str, Any], Dict[str, Any]]:
             # Use `ast` to parse the owning module's source code, to get imports and assignments that may have been missed out
             try:
                 source = inspect.getsource(mod)
-                parsed_ns, runtime_ns = parse_imports_and_assignments(source, mod)
+                parsed_ns, runtime_ns = get_namespaces(source, mod)
                 # Merge parsed types/imports into globals without re-evaluating
                 for name, val in parsed_ns.items():
                     if name not in globalns and val is not None:
@@ -895,7 +868,7 @@ def get_typed_signature(func, include_overloads: bool = True):
                 # Use `ast` to parse the owning module's source code, to get imports and assignments that may have been missed out
                 try:
                     source = inspect.getsource(mod)
-                    parsed_ns, runtime_ns = parse_imports_and_assignments(source, mod)
+                    parsed_ns, runtime_ns = get_namespaces(source, mod)
                     logging.info("Received parsed namespace keys: %s", list(parsed_ns.keys()))
                     for name, val in parsed_ns.items():
                         if name not in globalns and val is not None:
@@ -1131,7 +1104,7 @@ def process_member(
 
         source_code = safe_get_source(obj)
         docstring = safe_get_docstring(obj)
-        extra_labels, decorators = _function_method_labels(obj, name, parent_obj=parent_obj)
+        extra_labels, decorators = get_function_method_labels(obj, name, parent_obj=parent_obj)
         # Overload detection
         overloads: List[Callable] = []
         try:
@@ -1171,7 +1144,7 @@ def process_member(
                 except Exception:
                     ov_src = ""
                 ov_doc = safe_get_docstring(ov)
-                ov_extra_labels, ov_decorators = _function_method_labels(ov, name, parent_obj=parent_obj)
+                ov_extra_labels, ov_decorators = get_function_method_labels(ov, name, parent_obj=parent_obj)
                 ov_labels = ["FUNCTION", "OVERLOAD"] + (ov_extra_labels or [])
                 if _is_dunder(obj.__name__):
                     ov_labels.append("DUNDER")
@@ -1212,7 +1185,7 @@ def process_member(
 
         source_code = safe_get_source(obj)
         docstring = safe_get_docstring(obj)
-        extra_labels, decorators = _function_method_labels(obj, name, parent_obj=parent_obj)
+        extra_labels, decorators = get_function_method_labels(obj, name, parent_obj=parent_obj)
         # Overload detection
         overloads: List[Callable] = []
         try:
@@ -1252,7 +1225,7 @@ def process_member(
                 except Exception:
                     ov_src = ""
                 ov_doc = safe_get_docstring(ov)
-                ov_extra_labels, ov_decorators = _function_method_labels(ov, name, parent_obj=parent_obj)
+                ov_extra_labels, ov_decorators = get_function_method_labels(ov, name, parent_obj=parent_obj)
                 ov_labels = ["METHOD", "OVERLOAD"] + (ov_extra_labels or [])
                 if _is_dunder(obj.__name__):
                     ov_labels.append("DUNDER")

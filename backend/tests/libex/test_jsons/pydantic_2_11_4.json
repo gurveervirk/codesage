@@ -1,0 +1,90 @@
+{
+    "library": "pydantic",
+    "version": "2.11.4",
+    "entities": [
+        {
+            "path": "pydantic.v1.fields.ModelField",
+            "type": "class"
+        },
+        {
+            "path": "pydantic.v1.fields.ModelField.__init__",
+            "type": "method"
+        },
+        {
+            "path": "pydantic.v1.error_wrappers.ErrorWrapper",
+            "type": "class"
+        },
+        {
+            "path": "pydantic.v1.error_wrappers.ErrorWrapper.__init__",
+            "type": "method"
+        },
+        {
+            "path": "pydantic.dataclasses.dataclass",
+            "type": "function"
+        },
+        {
+            "path": "pydantic.validate_call_decorator.validate_call",
+            "type": "function"
+        },
+        {
+            "path": "pydantic._internal._schema_generation_shared.CallbackGetCoreSchemaHandler",
+            "type": "class"
+        },
+        {
+            "path": "pydantic._internal._schema_generation_shared.CallbackGetCoreSchemaHandler.__call__",
+            "type": "method"
+        },
+        {
+            "path": "pydantic._internal._dataclasses.set_dataclass_fields",
+            "type": "function"
+        },
+        {
+            "path": "pydantic._internal._dataclasses.set_dataclass_mocks",
+            "type": "function"
+        },
+        {
+            "path": "pydantic._internal._repr.Representation",
+            "type": "class"
+        },
+        {
+            "path": "pydantic._internal._repr.Representation.__repr__",
+            "type": "method"
+        },
+        {
+            "path": "pydantic.root_model.RootModel",
+            "type": "class"
+        },
+        {
+            "path": "pydantic.root_model.RootModel.__init__",
+            "type": "method"
+        },
+        {
+            "path": "pydantic.v1.dataclasses.DataclassProxy",
+            "type": "class"
+        },
+        {
+            "path": "pydantic.v1.dataclasses.DataclassProxy.__init__",
+            "type": "method"
+        },
+        {
+            "path": "pydantic.v1.class_validators.ValidatorGroup",
+            "type": "class"
+        },
+        {
+            "path": "pydantic.v1.class_validators.ValidatorGroup.__init__",
+            "type": "method"
+        },
+        {
+            "path": "pydantic._internal._typing_extra.is_classvar_annotation",
+            "type": "function"
+        },
+        {
+            "path": "pydantic.fields.Field",
+            "type": "function"
+        },
+        {
+            "path": "pydantic.fields.computed_field",
+            "type": "function"
+        }
+    ]
+}
