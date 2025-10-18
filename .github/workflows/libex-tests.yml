@@ -33,9 +33,11 @@ jobs:
         with:
           enable-cache: true
       
-      - name: Install dependencies
+      - name: Create virtual environment and install dependencies
         run: |
-          uv pip install -r backend/tests/requirements.txt --system
+          cd backend/tests
+          uv venv .venv
+          uv pip install -r requirements.txt
       
       - name: Check for expected outputs
         id: check-outputs
@@ -68,6 +70,7 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}/backend
         run: |
           cd backend/tests/libex
+          source ../.venv/bin/activate
           pytest test_libex_outputs.py -v --tb=long --junit-xml=../../test-results-libex.xml
       
       - name: Generate debug outputs on failure
@@ -77,6 +80,7 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}/backend
         run: |
           cd backend/tests/libex
+          source ../.venv/bin/activate
           echo "Generating fresh outputs for debugging..."
           python prepare_tests.py --override 2>&1 | tee prepare_debug.log
       

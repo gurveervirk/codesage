@@ -22,9 +22,11 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v3
       
-      - name: Install dependencies
+      - name: Create virtual environment and install dependencies
         run: |
-          uv pip install -r backend/tests/requirements.txt --system
+          cd backend/tests
+          uv venv .venv
+          uv pip install -r requirements.txt
       
       - name: Check Python formatting (ruff)
         run: |
@@ -79,15 +81,18 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v3
       
-      - name: Install dependencies
+      - name: Create virtual environment and install dependencies
         run: |
-          uv pip install -r backend/tests/requirements.txt --system
+          cd backend/tests
+          uv venv .venv
+          uv pip install -r requirements.txt
       
       - name: Quick libex test run
         env:
           PYTHONPATH: ${{ github.workspace }}/backend
         run: |
           cd backend/tests/libex
+          source ../.venv/bin/activate
           pytest test_libex_outputs.py -v --maxfail=3 --tb=long
       
       - name: Generate debug outputs on failure
@@ -97,6 +102,7 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}/backend
         run: |
           cd backend/tests/libex
+          source ../.venv/bin/activate
           echo "Generating fresh outputs for debugging..."
           python prepare_tests.py 2>&1 | tee prepare_debug.log
       
