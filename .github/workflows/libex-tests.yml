@@ -78,7 +78,7 @@ jobs:
         run: |
           cd backend/tests/libex
           echo "Generating fresh outputs for debugging..."
-          python prepare_tests.py 2>&1 | tee prepare_debug.log
+          python prepare_tests.py --override 2>&1 | tee prepare_debug.log
       
       - name: Upload test results and debug info
         if: always()
