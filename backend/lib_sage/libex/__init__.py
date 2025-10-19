@@ -27,7 +27,6 @@ import json
 import builtins
 import typing
 import logging
-import uuid
 
 # --------------------
 # Helpers
@@ -93,7 +92,7 @@ def _get_decorators_from_source(src: str) -> List[str]:
         return []
 
 
-def _function_method_labels(func: Callable, name: str, parent_obj: Optional[Any] = None) -> Tuple[List[str], List[str]]:
+def get_function_method_labels(func: Callable, name: str, parent_obj: Optional[Any] = None) -> Tuple[List[str], List[str]]:
     """
     Determine extra labels (ASYNC, GENERATOR, PROPERTY, CLASSMETHOD, STATICMETHOD) and decorators list.
     Also add visibility label.
@@ -332,42 +331,15 @@ def get_unused_imports(module_name: str, imported_names: Set[str]) -> Set[str]:
         return set()
 
 def get_fully_qualified_name(cls):
-    """
-    Get the fully qualified name of a class.
-
-    Args:
-        cls: The class object.
-
-    Returns:
-        str: The fully qualified name of the class.
-    """
     return f"{cls.__module__}.{cls.__qualname__}"
 
 def safe_get_source(obj) -> str:
-    """
-    Retrieve the source code of an object or fallback to its representation.
-
-    Args:
-        obj: The object to retrieve the source code for.
-
-    Returns:
-        str: The source code or representation of the object.
-    """
     try:
         return inspect.getsource(obj)
     except (OSError, TypeError):
         return f"# Representation:\n{repr(obj)}"
     
 def safe_get_docstring(obj) -> str:
-    """
-    Retrieve the docstring of an object or fallback to its representation.
-
-    Args:
-        obj: The object to retrieve the docstring for.
-
-    Returns:
-        str: The docstring or representation of the object.
-    """
     try:
         return inspect.getdoc(obj) or ""
     except (OSError, TypeError):
@@ -415,14 +387,22 @@ def find_submodules_importlib_resources(module_name: str) -> set[str]:
         logging.error(f"Error processing {module_name}: {e}")
     return results
 
+def create_mock_typeshed_module():
+    """Create a mock _typeshed module that can be used in the namespace."""
+    import types
+    mock_module = types.ModuleType("_typeshed")
+    mock_module.__file__ = "<_typeshed>"
+    return mock_module
+
 module_cache: Dict[str, Any] = {}
-def parse_imports_and_assignments(source: str, module: Any) -> Tuple[Dict[str, Any], Dict[str, str]]:
+def get_namespaces(source: str, module: Any) -> Tuple[Dict[str, Any], Dict[str, str]]:
     """
     Parses the source code to extract import statements and assignments, especially those inside blocks.
     Uses `ast` to safely parse the code without executing it.
     Uses `inspect` to assign values to the imported names and assigned variables.
     Most importantly, this only captures those assignments that define types, not function calls or other similar constructs.
     Handles both absolute and relative imports.
+    Now also captures TypeVar and Callable assignments.
     """
     # Check module cache
     mod_name = getattr(module, "__name__", None)
@@ -440,6 +420,10 @@ def parse_imports_and_assignments(source: str, module: Any) -> Tuple[Dict[str, A
             namespace.update(module.__dict__)
     except Exception:
         pass
+
+    # Create a mock _typeshed module to prevent import errors
+    mock_typeshed = create_mock_typeshed_module()
+    namespace["_typeshed"] = mock_typeshed
 
     def is_type_like(node: ast.AST) -> bool:
         """Heuristically determine if an AST node represents a type expression or a TypeVar assignment."""
@@ -562,8 +546,17 @@ def parse_imports_and_assignments(source: str, module: Any) -> Tuple[Dict[str, A
                     as_name = alias.asname or alias.name
                     mapped = f"_typeshed.{alias.name}"
                     runtime_ns[as_name] = mapped
+                    
+                    # Create a mock attribute on _typeshed module
+                    # This allows get_type_hints to resolve _typeshed.X without importing
+                    setattr(mock_typeshed, alias.name, mapped)
                     namespace[as_name] = mapped
-                    logging.info(f"Mapped from-import of _typeshed: {alias.name} as {as_name} -> '{mapped}'")
+
+                    # Also, map the actual name in runtime_ns and namespace to `mapped`
+                    runtime_ns[alias.name] = mapped
+                    setattr(mock_typeshed, alias.name, mapped)
+                    namespace[alias.name] = mapped
+                    logging.info(f"Mapped from-import of _typeshed: {alias.name} as {as_name} -> '{mapped}' (mock created)")
                 self.generic_visit(node)
                 return
             for alias in node.names:
@@ -581,6 +574,8 @@ def parse_imports_and_assignments(source: str, module: Any) -> Tuple[Dict[str, A
                             # Assign bound to mod.alias.name, as str, to indicate presence
                             is_runtime_name = True
                             bound = f"{mod.__name__}.{alias.name}"
+                        else:
+                            logging.info(f"Imported from {abs_mod_name}: {alias.name} as {as_name} -> {bound}")
                     except Exception:
                         logging.warning(f"Failed to import from module: {abs_mod_name}, name: {alias.name}")
                         bound = None
@@ -845,7 +840,7 @@ def get_globals(func: Callable) -> Tuple[Dict[str, Any], Dict[str, Any]]:
             # Use `ast` to parse the owning module's source code, to get imports and assignments that may have been missed out
             try:
                 source = inspect.getsource(mod)
-                parsed_ns, runtime_ns = parse_imports_and_assignments(source, mod)
+                parsed_ns, runtime_ns = get_namespaces(source, mod)
                 # Merge parsed types/imports into globals without re-evaluating
                 for name, val in parsed_ns.items():
                     if name not in globalns and val is not None:
@@ -876,6 +871,14 @@ def get_typed_signature(func, include_overloads: bool = True):
     """
 
     def _compute_single_signature(fn: Callable) -> str:
+        # If fn is a class, use __init__ for type hints resolution
+        # but keep the original fn for signature (inspect.signature handles this internally)
+        target_for_hints = fn
+        if inspect.isclass(fn):
+            if hasattr(fn, '__init__'):
+                target_for_hints = fn.__init__
+                logging.info(f"Function is a class; using __init__ for type hints resolution")
+        
         sig = inspect.signature(fn)
         logging.info(f"Inspecting signature for function: {fn.__name__}{sig}")
 
@@ -887,7 +890,7 @@ def get_typed_signature(func, include_overloads: bool = True):
         runtime_ns: Dict[str, str] = {}
 
         try:
-            mod = inspect.getmodule(fn)
+            mod = inspect.getmodule(target_for_hints)
             if mod is not None:
                 globalns = dict(getattr(mod, "__dict__", {}))
                 logging.info("Successfully retrieved module globals.")
@@ -895,7 +898,7 @@ def get_typed_signature(func, include_overloads: bool = True):
                 # Use `ast` to parse the owning module's source code, to get imports and assignments that may have been missed out
                 try:
                     source = inspect.getsource(mod)
-                    parsed_ns, runtime_ns = parse_imports_and_assignments(source, mod)
+                    parsed_ns, runtime_ns = get_namespaces(source, mod)
                     logging.info("Received parsed namespace keys: %s", list(parsed_ns.keys()))
                     for name, val in parsed_ns.items():
                         if name not in globalns and val is not None:
@@ -915,7 +918,7 @@ def get_typed_signature(func, include_overloads: bool = True):
                 globalns = merged
                 logging.info("Successfully merged function globals.")
             # Attempt to get the owner class for methods to access class-level annotations
-            owner_cls = _owner_class_of_callable(fn)
+            owner_cls = _owner_class_of_callable(target_for_hints)
             if owner_cls is not None:
                 localns = dict(vars(owner_cls))
         except Exception as e:
@@ -923,7 +926,7 @@ def get_typed_signature(func, include_overloads: bool = True):
 
         # Ensure the root package of the function's module is available in globals (e.g., 'pydantic')
         try:
-            mod_name = getattr(inspect.getmodule(fn), "__name__", "")
+            mod_name = getattr(inspect.getmodule(target_for_hints), "__name__", "")
             root_mod = mod_name.split(".") [0] if mod_name else ""
             if root_mod and root_mod not in globalns:
                 try:
@@ -938,7 +941,7 @@ def get_typed_signature(func, include_overloads: bool = True):
         retries = 0
         while retries < 10:
             try:
-                type_hints = get_type_hints(fn, globalns=globalns, localns=localns)
+                type_hints = get_type_hints(target_for_hints, globalns=globalns, localns=localns)
                 break
             except AttributeError as e:
                 # Simplified recovery: do not try to discover/import; just attach a Literal placeholder for the missing attribute
@@ -997,6 +1000,13 @@ def get_typed_signature(func, include_overloads: bool = True):
                         at_least_one_resolved = True
                     elif f"Literal['{str_repr}']" in typed_signature:
                         typed_signature = typed_signature.replace(f"Literal['{str_repr}']", str_repr)
+                        at_least_one_resolved = True
+                    # Handle _typeshed.<name> placeholders
+                    elif str_repr.startswith("_typeshed.") and f"ForwardRef('{str_repr}')" in typed_signature:
+                        typed_signature = typed_signature.replace(f"ForwardRef('{str_repr}')", str_repr)
+                        at_least_one_resolved = True
+                    elif str_repr.startswith("_typeshed.") and f'ForwardRef("{str_repr}"")' in typed_signature:
+                        typed_signature = typed_signature.replace(f'ForwardRef("{str_repr}")', str_repr)
                         at_least_one_resolved = True
                 if not at_least_one_resolved:
                     break
@@ -1131,7 +1141,7 @@ def process_member(
 
         source_code = safe_get_source(obj)
         docstring = safe_get_docstring(obj)
-        extra_labels, decorators = _function_method_labels(obj, name, parent_obj=parent_obj)
+        extra_labels, decorators = get_function_method_labels(obj, name, parent_obj=parent_obj)
         # Overload detection
         overloads: List[Callable] = []
         try:
@@ -1171,7 +1181,7 @@ def process_member(
                 except Exception:
                     ov_src = ""
                 ov_doc = safe_get_docstring(ov)
-                ov_extra_labels, ov_decorators = _function_method_labels(ov, name, parent_obj=parent_obj)
+                ov_extra_labels, ov_decorators = get_function_method_labels(ov, name, parent_obj=parent_obj)
                 ov_labels = ["FUNCTION", "OVERLOAD"] + (ov_extra_labels or [])
                 if _is_dunder(obj.__name__):
                     ov_labels.append("DUNDER")
@@ -1212,7 +1222,7 @@ def process_member(
 
         source_code = safe_get_source(obj)
         docstring = safe_get_docstring(obj)
-        extra_labels, decorators = _function_method_labels(obj, name, parent_obj=parent_obj)
+        extra_labels, decorators = get_function_method_labels(obj, name, parent_obj=parent_obj)
         # Overload detection
         overloads: List[Callable] = []
         try:
@@ -1252,7 +1262,7 @@ def process_member(
                 except Exception:
                     ov_src = ""
                 ov_doc = safe_get_docstring(ov)
-                ov_extra_labels, ov_decorators = _function_method_labels(ov, name, parent_obj=parent_obj)
+                ov_extra_labels, ov_decorators = get_function_method_labels(ov, name, parent_obj=parent_obj)
                 ov_labels = ["METHOD", "OVERLOAD"] + (ov_extra_labels or [])
                 if _is_dunder(obj.__name__):
                     ov_labels.append("DUNDER")

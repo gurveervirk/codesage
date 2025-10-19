@@ -1,0 +1,8 @@
+# Minimal requirements for running tests
+# Only includes what's needed for the test suite itself
+
+# Testing framework
+pytest==8.4.1
+pytest-asyncio==1.0.0
+typing-extensions>=4.0.0
+typing-inspect>=0.9.0

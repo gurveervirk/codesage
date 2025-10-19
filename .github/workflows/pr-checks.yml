@@ -1,0 +1,130 @@
+name: PR Checks
+
+on:
+  pull_request:
+    branches:
+      - main
+      - develop
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13.5'
+      
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+      
+      - name: Create virtual environment and install dependencies
+        run: |
+          cd backend/tests
+          uv venv .venv
+          uv pip install -r requirements.txt
+      
+      - name: Check Python formatting (ruff)
+        run: |
+          cd backend
+          ruff check . || echo "⚠️  Ruff check found issues"
+        continue-on-error: true
+      
+      - name: Validate libex test JSONs
+        run: |
+          cd backend/tests/libex
+          for file in test_jsons/*.json; do
+            if [ -f "$file" ]; then
+              python -c "import json; json.load(open('$file'))" || {
+                echo "❌ Invalid JSON: $file"
+                exit 1
+              }
+            fi
+          done
+          echo "✅ All test JSONs are valid"
+      
+      - name: Check for expected outputs
+        run: |
+          cd backend/tests/libex
+          if [ ! -d "expected_outputs" ] || [ -z "$(ls -A expected_outputs 2>/dev/null)" ]; then
+            echo "❌ ERROR: No expected outputs found for libex tests!"
+            echo ""
+            echo "Expected outputs are required to run tests."
+            echo "Please generate them by running:"
+            echo ""
+            echo "  cd backend/tests/libex"
+            echo "  python prepare_tests.py"
+            echo "  git add expected_outputs/"
+            echo "  git commit -m 'Add expected outputs for libex tests'"
+            echo ""
+            exit 1
+          else
+            echo "✅ Expected outputs present"
+          fi
+
+  test-quick:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13.5'
+      
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+      
+      - name: Create virtual environment and install dependencies
+        run: |
+          cd backend/tests
+          uv venv .venv
+          uv pip install -r requirements.txt
+      
+      - name: Quick libex test run
+        env:
+          PYTHONPATH: ${{ github.workspace }}/backend
+        run: |
+          cd backend/tests/libex
+          source ../.venv/bin/activate
+          pytest test_libex_outputs.py -v --maxfail=3 --tb=long
+      
+      - name: Generate debug outputs on failure
+        if: failure()
+        continue-on-error: true
+        env:
+          PYTHONPATH: ${{ github.workspace }}/backend
+        run: |
+          cd backend/tests/libex
+          source ../.venv/bin/activate
+          echo "Generating fresh outputs for debugging..."
+          python prepare_tests.py 2>&1 | tee prepare_debug.log
+      
+      - name: Upload debug info
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-check-debug-info
+          path: |
+            backend/tests/libex/expected_outputs/
+            backend/tests/libex/test_jsons/
+            backend/tests/libex/prepare_debug.log
+          retention-days: 7
+      
+      - name: Comment PR
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: '❌ Tests failed! Please check the Actions tab for details and download the debug artifacts to see generated outputs and errors.'
+            })

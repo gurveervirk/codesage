@@ -1,11 +1,11 @@
-# Copilot Instructions for CodeSage
+# Copilot Instructions for LibSage
 
-This guide helps AI coding agents work productively in the CodeSage monorepo. It covers architecture, workflows, and conventions unique to this project.
+This guide helps AI coding agents work productively in the LibSage monorepo. It covers architecture, workflows, and conventions unique to this project.
 
 ## Architecture Overview
 - **Backend (`backend/`)**: Python services for workflow orchestration, type inspection, and agent logic. Key modules:
   - `app.py`: Main entrypoint for backend API.
-  - `code_sage/`: Core logic, including `reflex/` (type/model inspection), `sage_workflow/` (workflow/agent orchestration), and `com_store/` (communication store).
+  - `lib_sage/`: Core logic, including `reflex/` (type/model inspection), `sage_workflow/` (workflow/agent orchestration), and `com_store/` (communication store).
   - `routes/`: API endpoints for LLM, generation, uploads, etc.
   - `utils/`: Shared utilities and prompt templates.
 - **Frontend (`frontend/`)**: Remix/React app for chat UI, context management, and agent interaction. Uses Tailwind CSS and Vite. Key files:
@@ -60,4 +60,5 @@ If any section is unclear or missing, please provide feedback so this guide can 
 - Please do only what is asked no more no less.
 - After every change/addition, reply in brief explaining what was done and ask if changes/additions to tests are needed.
 - If you are unsure about something, ask for clarification before proceeding.
-- Do not create extra Markdown files to explain your changes.
+- Do not create extra Markdown files to explain your changes (NO SUMMARY or EXPLANATION files).
+- Do not create unnecessary tests or documentation unless explicitly asked.
