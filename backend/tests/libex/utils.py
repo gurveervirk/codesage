@@ -3,16 +3,7 @@ import tempfile
 import sys
 from pathlib import Path
 from typing import Dict, Any
-import importlib
 import json
-
-from lib_sage.libex import (
-    get_typed_signature,
-    get_function_method_labels,
-    get_overloads,
-    get_namespaces,
-)
-
 
 class SetEncoder(json.JSONEncoder):
     """Custom JSON encoder that converts sets to a special format."""

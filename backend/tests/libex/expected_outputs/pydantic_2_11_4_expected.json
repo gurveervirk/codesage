@@ -11,6 +11,7 @@
                 "ArgsKwargs": "pydantic_core._pydantic_core.ArgsKwargs",
                 "ClassVar": "typing.ClassVar",
                 "ConfigDict": "pydantic.config.ConfigDict",
+                "DataclassInstance": "_typeshed.DataclassInstance",
                 "DeprecationWarning": "pydantic.warnings.PydanticDeprecatedSince20",
                 "FieldInfo": "pydantic.fields.FieldInfo",
                 "GenerateSchema": "pydantic._internal._generate_schema.GenerateSchema",
@@ -44,6 +45,7 @@
                 "_annotations": "_Feature((3, 7, 0, 'beta', 1), None, 16777216)",
                 "_config": "<module 'pydantic._internal._config'>",
                 "_decorators": "<module 'pydantic._internal._decorators'>",
+                "_typeshed": "<module '_typeshed'>",
                 "collect_dataclass_fields": "pydantic._internal._fields.collect_dataclass_fields",
                 "complete_dataclass": "pydantic._internal._dataclasses.complete_dataclass",
                 "core_schema": "<module 'pydantic_core.core_schema'>",
@@ -64,10 +66,11 @@
             },
             "overloads": [],
             "runtime_namespaces": {
+                "DataclassInstance": "_typeshed.DataclassInstance",
                 "PydanticDataclass": "pydantic._internal._dataclasses.PydanticDataclass",
                 "StandardDataclass": "_typeshed.DataclassInstance"
             },
-            "typed_signature": "(cls: 'type[StandardDataclass]', ns_resolver: 'NsResolver | None' = None, config_wrapper: '_config.ConfigWrapper | None' = None) -> 'None'"
+            "typed_signature": "(cls: type[_typeshed.DataclassInstance], ns_resolver: pydantic._internal._namespace_utils.NsResolver | None = None, config_wrapper: pydantic._internal._config.ConfigWrapper | None = None) -> NoneType"
         },
         "pydantic._internal._dataclasses.set_dataclass_mocks": {
             "decorators": [],
@@ -100,6 +103,7 @@
                 "_annotations": "_Feature((3, 7, 0, 'beta', 1), None, 16777216)",
                 "_config": "<module 'pydantic._internal._config'>",
                 "_decorators": "<module 'pydantic._internal._decorators'>",
+                "_typeshed": "<module '_typeshed'>",
                 "collect_dataclass_fields": "pydantic._internal._fields.collect_dataclass_fields",
                 "complete_dataclass": "pydantic._internal._dataclasses.complete_dataclass",
                 "core_schema": "<module 'pydantic_core.core_schema'>",
@@ -128,9 +132,7 @@
             "namespaces": {
                 "Any": "typing.Any",
                 "PlainRepr": "pydantic._internal._repr.PlainRepr",
-                "ReprArgs": "typing.Iterable[tuple[str | None, Any]]",
                 "Representation": "pydantic._internal._repr.Representation",
-                "RichReprResult": "typing.Iterable[Any | tuple[Any] | tuple[str, Any] | tuple[str, Any, Any]]",
                 "__annotations__": "{}",
                 "__builtins__": "{'__name__': 'builtins', '__doc__': \"Built-in functions, types, exceptions, and other objects.\\n\\nThis module provides direct access to all 'built-in'\\nidentifiers of Python; for example, builtins.len is\\nthe full name for the built-in function len().\\n\\nThis module is not normally accessed explicitly by most\\napplications, but can be useful in modules that provide\\nobjects with the same name as a built-in value, but in\\nwhich the built-in of that name is also needed.\", '__package__': '', '__loader__': <class '_frozen_importlib.BuiltinImporter'>, '__spec__': ModuleSpec(name='builtins', loader=<class '_frozen_importlib.BuiltinImporter'>, origin='built-in'), '__build_class__': <built-in function __build_class__>, '__import__': <built-in function __import__>, 'abs': <built-in function abs>, 'all': <built-in function all>, 'any': <built-in function any>, 'ascii': <built-in function ascii>, 'bin': <built-in function bin>, 'breakpoint': <built-in function breakpoint>, 'callable': <built-in function callable>, 'chr': <built-in function chr>, 'compile': <built-in function compile>, 'delattr': <built-in function delattr>, 'dir': <built-in function dir>, 'divmod': <built-in function divmod>, 'eval': <built-in function eval>, 'exec': <built-in function exec>, 'format': <built-in function format>, 'getattr': <built-in function getattr>, 'globals': <built-in function globals>, 'hasattr': <built-in function hasattr>, 'hash': <built-in function hash>, 'hex': <built-in function hex>, 'id': <built-in function id>, 'input': <built-in function input>, 'isinstance': <built-in function isinstance>, 'issubclass': <built-in function issubclass>, 'iter': <built-in function iter>, 'aiter': <built-in function aiter>, 'len': <built-in function len>, 'locals': <built-in function locals>, 'max': <built-in function max>, 'min': <built-in function min>, 'next': <built-in function next>, 'anext': <built-in function anext>, 'oct': <built-in function oct>, 'ord': <built-in function ord>, 'pow': <built-in function pow>, 'print': <built-in function print>, 'repr': <built-in function repr>, 'round': <built-in function round>, 'setattr': <built-in function setattr>, 'sorted': <built-in function sorted>, 'sum': <built-in function sum>, 'vars': <built-in function vars>, 'None': None, 'Ellipsis': Ellipsis, 'NotImplemented': NotImplemented, 'False': False, 'True': True, 'bool': <class 'bool'>, 'memoryview': <class 'memoryview'>, 'bytearray': <class 'bytearray'>, 'bytes': <class 'bytes'>, 'classmethod': <class 'classmethod'>, 'complex': <class 'complex'>, 'dict': <class 'dict'>, 'enumerate': <class 'enumerate'>, 'filter': <class 'filter'>, 'float': <class 'float'>, 'frozenset': <class 'frozenset'>, 'property': <class 'property'>, 'int': <class 'int'>, 'list': <class 'list'>, 'map': <class 'map'>, 'object': <class 'object'>, 'range': <class 'range'>, 'reversed': <class 'reversed'>, 'set': <class 'set'>, 'slice': <class 'slice'>, 'staticmethod': <class 'staticmethod'>, 'str': <class 'str'>, 'super': <class 'super'>, 'tuple': <class 'tuple'>, 'type': <class 'type'>, 'zip': <class 'zip'>, '__debug__': True, 'BaseException': <class 'BaseException'>, 'BaseExceptionGroup': <class 'BaseExceptionGroup'>, 'Exception': <class 'Exception'>, 'GeneratorExit': <class 'GeneratorExit'>, 'KeyboardInterrupt': <class 'KeyboardInterrupt'>, 'SystemExit': <class 'SystemExit'>, 'ArithmeticError': <class 'ArithmeticError'>, 'AssertionError': <class 'AssertionError'>, 'AttributeError': <class 'AttributeError'>, 'BufferError': <class 'BufferError'>, 'EOFError': <class 'EOFError'>, 'ImportError': <class 'ImportError'>, 'LookupError': <class 'LookupError'>, 'MemoryError': <class 'MemoryError'>, 'NameError': <class 'NameError'>, 'OSError': <class 'OSError'>, 'ReferenceError': <class 'ReferenceError'>, 'RuntimeError': <class 'RuntimeError'>, 'StopAsyncIteration': <class 'StopAsyncIteration'>, 'StopIteration': <class 'StopIteration'>, 'SyntaxError': <class 'SyntaxError'>, 'SystemError': <class 'SystemError'>, 'TypeError': <class 'TypeError'>, 'ValueError': <class 'ValueError'>, 'Warning': <class 'Warning'>, 'FloatingPointError': <class 'FloatingPointError'>, 'OverflowError': <class 'OverflowError'>, 'ZeroDivisionError': <class 'ZeroDivisionError'>, 'BytesWarning': <class 'BytesWarning'>, 'DeprecationWarning': <class 'DeprecationWarning'>, 'EncodingWarning': <class 'EncodingWarning'>, 'FutureWarning': <class 'FutureWarning'>, 'ImportWarning': <class 'ImportWarning'>, 'PendingDeprecationWarning': <class 'PendingDeprecationWarning'>, 'ResourceWarning': <class 'ResourceWarning'>, 'RuntimeWarning': <class 'RuntimeWarning'>, 'SyntaxWarning': <class 'SyntaxWarning'>, 'UnicodeWarning': <class 'UnicodeWarning'>, 'UserWarning': <class 'UserWarning'>, 'BlockingIOError': <class 'BlockingIOError'>, 'ChildProcessError': <class 'ChildProcessError'>, 'ConnectionError': <class 'ConnectionError'>, 'FileExistsError': <class 'FileExistsError'>, 'FileNotFoundError': <class 'FileNotFoundError'>, 'InterruptedError': <class 'InterruptedError'>, 'IsADirectoryError': <class 'IsADirectoryError'>, 'NotADirectoryError': <class 'NotADirectoryError'>, 'PermissionError': <class 'PermissionError'>, 'ProcessLookupError': <class 'ProcessLookupError'>, 'TimeoutError': <class 'TimeoutError'>, 'IndentationError': <class 'IndentationError'>, '_IncompleteInputError': <class '_IncompleteInputError'>, 'IndexError': <class 'IndexError'>, 'KeyError': <class 'KeyError'>, 'ModuleNotFoundError': <class 'ModuleNotFoundError'>, 'NotImplementedError': <class 'NotImplementedError'>, 'PythonFinalizationError': <class 'PythonFinalizationError'>, 'RecursionError': <class 'RecursionError'>, 'UnboundLocalError': <class 'UnboundLocalError'>, 'UnicodeError': <class 'UnicodeError'>, 'BrokenPipeError': <class 'BrokenPipeError'>, 'ConnectionAbortedError': <class 'ConnectionAbortedError'>, 'ConnectionRefusedError': <class 'ConnectionRefusedError'>, 'ConnectionResetError': <class 'ConnectionResetError'>, 'TabError': <class 'TabError'>, 'UnicodeDecodeError': <class 'UnicodeDecodeError'>, 'UnicodeEncodeError': <class 'UnicodeEncodeError'>, 'UnicodeTranslateError': <class 'UnicodeTranslateError'>, 'ExceptionGroup': <class 'ExceptionGroup'>, 'EnvironmentError': <class 'OSError'>, 'IOError': <class 'OSError'>, 'open': <built-in function open>, 'quit': Use quit() or Ctrl-D (i.e. EOF) to exit, 'exit': Use exit() or Ctrl-D (i.e. EOF) to exit, 'copyright': Copyright (c) 2001-2024 Python Software Foundation.\nAll Rights Reserved.\n\nCopyright (c) 2000 BeOpen.com.\nAll Rights Reserved.\n\nCopyright (c) 1995-2001 Corporation for National Research Initiatives.\nAll Rights Reserved.\n\nCopyright (c) 1991-1995 Stichting Mathematisch Centrum, Amsterdam.\nAll Rights Reserved., 'credits':     Thanks to CWI, CNRI, BeOpen, Zope Corporation, the Python Software\n    Foundation, and a cast of thousands for supporting Python\n    development.  See www.python.org for more information., 'license': Type license() to see the full license text, 'help': Type help() for interactive help, or help(object) for help about object.}",
                 "__cached__": "<PATH:*.pyc>",
@@ -142,11 +144,11 @@
                 "__slots__": "()",
                 "__spec__": "<NON_DETERMINISTIC:ModuleSpec(name='pydantic._internal._repr', loader=<_frozen_importlib_external.SourceFileLoader>",
                 "_annotations": "_Feature((3, 7, 0, 'beta', 1), None, 16777216)",
+                "_typeshed": "<module '_typeshed'>",
                 "_typing_extra": "<module 'pydantic._internal._typing_extra'>",
                 "attrs_names": "None",
                 "display_as_type": "pydantic._internal._repr.display_as_type",
                 "is_union_origin": "typing_inspection.introspection.is_union_origin",
-                "obj": "None",
                 "types": "<module 'types'>",
                 "typing": "<module 'typing'>",
                 "typing_extensions": "<module 'typing_extensions'>",
@@ -178,6 +180,7 @@
                 "__slots__": "()",
                 "__spec__": "<NON_DETERMINISTIC:ModuleSpec(name='pydantic._internal._repr', loader=<_frozen_importlib_external.SourceFileLoader>",
                 "_annotations": "_Feature((3, 7, 0, 'beta', 1), None, 16777216)",
+                "_typeshed": "<module '_typeshed'>",
                 "_typing_extra": "<module 'pydantic._internal._typing_extra'>",
                 "attrs_names": "None",
                 "display_as_type": "pydantic._internal._repr.display_as_type",
@@ -221,13 +224,14 @@
                 "__name__": "pydantic._internal._schema_generation_shared",
                 "__package__": "pydantic._internal",
                 "__spec__": "<NON_DETERMINISTIC:ModuleSpec(name='pydantic._internal._schema_generation_shared', loader=<_frozen_importlib_external.SourceFileLoader>",
+                "_typeshed": "<module '_typeshed'>",
                 "annotations": "_Feature((3, 7, 0, 'beta', 1), None, 16777216)",
                 "core_schema": "<module 'pydantic_core.core_schema'>",
                 "ref": "None"
             },
             "overloads": [],
             "runtime_namespaces": {},
-            "typed_signature": "(handler: 'Callable[[Any], core_schema.CoreSchema]', generate_schema: 'GenerateSchema', ref_mode: \"Literal['to-def', 'unpack']\" = 'to-def') -> 'None'"
+            "typed_signature": "(handler: Callable[[Any], Union[pydantic_core.core_schema.InvalidSchema, pydantic_core.core_schema.AnySchema, pydantic_core.core_schema.NoneSchema, pydantic_core.core_schema.BoolSchema, pydantic_core.core_schema.IntSchema, pydantic_core.core_schema.FloatSchema, pydantic_core.core_schema.DecimalSchema, pydantic_core.core_schema.StringSchema, pydantic_core.core_schema.BytesSchema, pydantic_core.core_schema.DateSchema, pydantic_core.core_schema.TimeSchema, pydantic_core.core_schema.DatetimeSchema, pydantic_core.core_schema.TimedeltaSchema, pydantic_core.core_schema.LiteralSchema, pydantic_core.core_schema.EnumSchema, pydantic_core.core_schema.IsInstanceSchema, pydantic_core.core_schema.IsSubclassSchema, pydantic_core.core_schema.CallableSchema, pydantic_core.core_schema.ListSchema, pydantic_core.core_schema.TupleSchema, pydantic_core.core_schema.SetSchema, pydantic_core.core_schema.FrozenSetSchema, pydantic_core.core_schema.GeneratorSchema, pydantic_core.core_schema.DictSchema, pydantic_core.core_schema.AfterValidatorFunctionSchema, pydantic_core.core_schema.BeforeValidatorFunctionSchema, pydantic_core.core_schema.WrapValidatorFunctionSchema, pydantic_core.core_schema.PlainValidatorFunctionSchema, pydantic_core.core_schema.WithDefaultSchema, pydantic_core.core_schema.NullableSchema, pydantic_core.core_schema.UnionSchema, pydantic_core.core_schema.TaggedUnionSchema, pydantic_core.core_schema.ChainSchema, pydantic_core.core_schema.LaxOrStrictSchema, pydantic_core.core_schema.JsonOrPythonSchema, pydantic_core.core_schema.TypedDictSchema, pydantic_core.core_schema.ModelFieldsSchema, pydantic_core.core_schema.ModelSchema, pydantic_core.core_schema.DataclassArgsSchema, pydantic_core.core_schema.DataclassSchema, pydantic_core.core_schema.ArgumentsSchema, pydantic_core.core_schema.ArgumentsV3Schema, pydantic_core.core_schema.CallSchema, pydantic_core.core_schema.CustomErrorSchema, pydantic_core.core_schema.JsonSchema, pydantic_core.core_schema.UrlSchema, pydantic_core.core_schema.MultiHostUrlSchema, pydantic_core.core_schema.DefinitionsSchema, pydantic_core.core_schema.DefinitionReferenceSchema, pydantic_core.core_schema.UuidSchema, pydantic_core.core_schema.ComplexSchema]], generate_schema: pydantic._internal._generate_schema.GenerateSchema, ref_mode: Literal['to-def', 'unpack'] = 'to-def') -> NoneType"
         },
         "pydantic._internal._schema_generation_shared.CallbackGetCoreSchemaHandler.__call__": {
             "decorators": [],
@@ -258,6 +262,7 @@
                 "__name__": "pydantic._internal._schema_generation_shared",
                 "__package__": "pydantic._internal",
                 "__spec__": "<NON_DETERMINISTIC:ModuleSpec(name='pydantic._internal._schema_generation_shared', loader=<_frozen_importlib_external.SourceFileLoader>",
+                "_typeshed": "<module '_typeshed'>",
                 "annotations": "_Feature((3, 7, 0, 'beta', 1), None, 16777216)",
                 "core_schema": "<module 'pydantic_core.core_schema'>",
                 "ref": "None"
@@ -301,6 +306,7 @@
                 "_te_annotated": "typing.Annotated",
                 "_te_final": "typing.Final",
                 "_type_convert": "pydantic._internal._typing_extra._type_convert",
+                "_typeshed": "<module '_typeshed'>",
                 "abc": "<module '_collections_abc' (frozen)>",
                 "ann": "{}",
                 "annotated_type": "None",
@@ -395,6 +401,7 @@
                 "_decorators": "<module 'pydantic._internal._decorators'>",
                 "_namespace_utils": "<module 'pydantic._internal._namespace_utils'>",
                 "_pydantic_dataclasses": "<module 'pydantic._internal._dataclasses'>",
+                "_typeshed": "<module '_typeshed'>",
                 "_typing_extra": "<module 'pydantic._internal._typing_extra'>",
                 "annotations": "None",
                 "bases": "None",
@@ -535,6 +542,7 @@
                 "_generics": "<module 'pydantic._internal._generics'>",
                 "_internal_dataclass": "<module 'pydantic._internal._internal_dataclass'>",
                 "_repr": "<module 'pydantic._internal._repr'>",
+                "_typeshed": "<module '_typeshed'>",
                 "_typing_extra": "<module 'pydantic._internal._typing_extra'>",
                 "_utils": "<module 'pydantic._internal._utils'>",
                 "_wrapped_property_is_private": "pydantic.fields._wrapped_property_is_private",
@@ -729,6 +737,7 @@
                 "_generics": "<module 'pydantic._internal._generics'>",
                 "_internal_dataclass": "<module 'pydantic._internal._internal_dataclass'>",
                 "_repr": "<module 'pydantic._internal._repr'>",
+                "_typeshed": "<module '_typeshed'>",
                 "_typing_extra": "<module 'pydantic._internal._typing_extra'>",
                 "_utils": "<module 'pydantic._internal._utils'>",
                 "_wrapped_property_is_private": "pydantic.fields._wrapped_property_is_private",
@@ -848,6 +857,7 @@
                 "_model_construction": "<module 'pydantic._internal._model_construction'>",
                 "_object_setattr": "<slot wrapper '__setattr__' of 'object' objects>",
                 "_repr": "<module 'pydantic._internal._repr'>",
+                "_typeshed": "<module '_typeshed'>",
                 "copy": "copy.copy",
                 "dataclass_transform": "typing.dataclass_transform",
                 "deepcopy": "copy.deepcopy",
@@ -856,7 +866,7 @@
             },
             "overloads": [],
             "runtime_namespaces": {},
-            "typed_signature": "(root: ~RootModelRootType = PydanticUndefined) -> None"
+            "typed_signature": "(root: ~RootModelRootType = PydanticUndefined) -> NoneType"
         },
         "pydantic.root_model.RootModel.__init__": {
             "decorators": [],
@@ -892,6 +902,7 @@
                 "_model_construction": "<module 'pydantic._internal._model_construction'>",
                 "_object_setattr": "<slot wrapper '__setattr__' of 'object' objects>",
                 "_repr": "<module 'pydantic._internal._repr'>",
+                "_typeshed": "<module '_typeshed'>",
                 "copy": "copy.copy",
                 "dataclass_transform": "typing.dataclass_transform",
                 "deepcopy": "copy.deepcopy",
@@ -950,6 +961,7 @@
                 "_generic_validator_basic": "pydantic.v1.class_validators._generic_validator_basic",
                 "_generic_validator_cls": "pydantic.v1.class_validators._generic_validator_cls",
                 "_prepare_validator": "pydantic.v1.class_validators._prepare_validator",
+                "_typeshed": "<module '_typeshed'>",
                 "all_kwargs": {
                     "__set__": [
                         "config",
@@ -987,7 +999,7 @@
                 "AnyClassMethod": "pydantic.v1.typing.AnyClassMethod",
                 "ModelOrDc": "pydantic.v1.types.ModelOrDc"
             },
-            "typed_signature": "(validators: 'ValidatorListDict') -> None"
+            "typed_signature": "(validators: Dict[str, List[pydantic.v1.class_validators.Validator]]) -> NoneType"
         },
         "pydantic.v1.class_validators.ValidatorGroup.__init__": {
             "decorators": [],
@@ -1037,6 +1049,7 @@
                 "_generic_validator_basic": "pydantic.v1.class_validators._generic_validator_basic",
                 "_generic_validator_cls": "pydantic.v1.class_validators._generic_validator_cls",
                 "_prepare_validator": "pydantic.v1.class_validators._prepare_validator",
+                "_typeshed": "<module '_typeshed'>",
                 "all_kwargs": {
                     "__set__": [
                         "config",
@@ -1134,6 +1147,7 @@
                 "_dataclass_validate_values": "pydantic.v1.dataclasses._dataclass_validate_values",
                 "_get_validators": "pydantic.v1.dataclasses._get_validators",
                 "_is_field_cached_property": "pydantic.v1.dataclasses._is_field_cached_property",
+                "_typeshed": "<module '_typeshed'>",
                 "_validate_dataclass": "pydantic.v1.dataclasses._validate_dataclass",
                 "cached_property": "functools.cached_property",
                 "contextmanager": "contextlib.contextmanager",
@@ -1169,9 +1183,10 @@
             "overloads": [],
             "runtime_namespaces": {
                 "CallableGenerator": "pydantic.v1.typing.CallableGenerator",
-                "Dataclass": "pydantic.v1.dataclasses.Dataclass"
+                "Dataclass": "pydantic.v1.dataclasses.Dataclass",
+                "pydantic.v1.dataclasses.Dataclass": "pydantic.v1.dataclasses.Dataclass"
             },
-            "typed_signature": "(dc_cls: Type[ForwardRef('Dataclass')]) -> None"
+            "typed_signature": "(dc_cls: Type[pydantic.v1.dataclasses.Dataclass]) -> NoneType"
         },
         "pydantic.v1.dataclasses.DataclassProxy.__init__": {
             "decorators": [],
@@ -1231,6 +1246,7 @@
                 "_dataclass_validate_values": "pydantic.v1.dataclasses._dataclass_validate_values",
                 "_get_validators": "pydantic.v1.dataclasses._get_validators",
                 "_is_field_cached_property": "pydantic.v1.dataclasses._is_field_cached_property",
+                "_typeshed": "<module '_typeshed'>",
                 "_validate_dataclass": "pydantic.v1.dataclasses._validate_dataclass",
                 "cached_property": "functools.cached_property",
                 "contextmanager": "contextlib.contextmanager",
@@ -1313,6 +1329,7 @@
                 "_display_error_loc": "pydantic.v1.error_wrappers._display_error_loc",
                 "_display_error_type_and_ctx": "pydantic.v1.error_wrappers._display_error_type_and_ctx",
                 "_get_exc_type": "pydantic.v1.error_wrappers._get_exc_type",
+                "_typeshed": "<module '_typeshed'>",
                 "config": "None",
                 "ctx": "None",
                 "d": "None",
@@ -1336,7 +1353,7 @@
                 "ReprArgs": "pydantic.v1.typing.ReprArgs",
                 "_ErrorDictRequired": "pydantic.v1.error_wrappers._ErrorDictRequired"
             },
-            "typed_signature": "(exc: Exception, loc: Union[str, ForwardRef('Loc')]) -> None"
+            "typed_signature": "(exc: Exception, loc: Union[str, Tuple[Union[int, str], ...]]) -> NoneType"
         },
         "pydantic.v1.error_wrappers.ErrorWrapper.__init__": {
             "decorators": [],
@@ -1380,6 +1397,7 @@
                 "_display_error_loc": "pydantic.v1.error_wrappers._display_error_loc",
                 "_display_error_type_and_ctx": "pydantic.v1.error_wrappers._display_error_type_and_ctx",
                 "_get_exc_type": "pydantic.v1.error_wrappers._get_exc_type",
+                "_typeshed": "<module '_typeshed'>",
                 "config": "None",
                 "ctx": "None",
                 "d": "None",
@@ -1498,6 +1516,7 @@
                 "__package__": "pydantic.v1",
                 "__slots__": "('default', 'default_factory')",
                 "__spec__": "<NON_DETERMINISTIC:ModuleSpec(name='pydantic.v1.fields', loader=<_frozen_importlib_external.SourceFileLoader>",
+                "_typeshed": "<module '_typeshed'>",
                 "all_aliases": "None",
                 "class_validators": "None",
                 "constant_validator": "pydantic.v1.validators.constant_validator",
@@ -1558,7 +1577,7 @@
                 "ReprArgs": "pydantic.v1.typing.ReprArgs",
                 "ValidatorsList": "pydantic.v1.class_validators.ValidatorsList"
             },
-            "typed_signature": "(*, name: str, type_: Type[Any], class_validators: Optional[Dict[str, pydantic.v1.class_validators.Validator]], model_config: Type[ForwardRef('BaseConfig')], default: Any = None, default_factory: Optional[Callable[[], Any]] = None, required: 'BoolUndefined' = PydanticUndefined, final: bool = False, alias: Optional[str] = None, field_info: Optional[pydantic.v1.fields.FieldInfo] = None) -> None"
+            "typed_signature": "(*, name: str, type_: Type[Any], class_validators: Optional[Dict[str, pydantic.v1.class_validators.Validator]], model_config: Type[pydantic.v1.config.BaseConfig], default: Any = None, default_factory: Optional[Callable[[], Any]] = None, required: Union[bool, pydantic.v1.fields.UndefinedType] = PydanticUndefined, final: bool = False, alias: Optional[str] = None, field_info: Optional[pydantic.v1.fields.FieldInfo] = None) -> NoneType"
         },
         "pydantic.v1.fields.ModelField.__init__": {
             "decorators": [],
@@ -1653,6 +1672,7 @@
                 "__package__": "pydantic.v1",
                 "__slots__": "('default', 'default_factory')",
                 "__spec__": "<NON_DETERMINISTIC:ModuleSpec(name='pydantic.v1.fields', loader=<_frozen_importlib_external.SourceFileLoader>",
+                "_typeshed": "<module '_typeshed'>",
                 "all_aliases": "None",
                 "class_validators": "None",
                 "constant_validator": "pydantic.v1.validators.constant_validator",
@@ -1742,6 +1762,7 @@
                 "_annotations": "_Feature((3, 7, 0, 'beta', 1), None, 16777216)",
                 "_check_function_type": "pydantic.validate_call_decorator._check_function_type",
                 "_generate_schema": "<module 'pydantic._internal._generate_schema'>",
+                "_typeshed": "<module '_typeshed'>",
                 "_typing_extra": "<module 'pydantic._internal._typing_extra'>",
                 "_validate_call": "<module 'pydantic._internal._validate_call'>",
                 "cast": "typing.cast",
