@@ -8,12 +8,14 @@ from llama_index.core.graph_stores.types import (
 )
 from llama_index.core import Settings
 from typing import Any, Dict, List, Optional, Tuple
-from ..libex import Entity, Relationship
+from ..com_extractor import Entity, Relationship
 import logging
 import neo4j
 import hashlib
+import json
 import xml.etree.ElementTree as ET
 from xml.dom import minidom
+import re
 
 logging.basicConfig(level=logging.INFO)
 BASE_ENTITY_LABEL = "__Entity__"
@@ -75,6 +77,47 @@ def _dict_to_xml_string(data: Dict[str, Any], root_tag: str = "response") -> str
     # Parse and pretty print
     dom = minidom.parseString(xml_str)
     return dom.toprettyxml(indent="  ")
+
+def _escape_regex_special_chars(text: str) -> str:
+    r"""
+    Escape special regex characters in a string for use in Cypher regex patterns.
+    
+    This escapes characters that have special meaning in regex: . ^ $ * + ? { } [ ] \ | ( )
+    
+    Args:
+        text: String that may contain regex special characters
+        
+    Returns:
+        String with regex special characters escaped
+    """
+    return re.escape(text)
+
+def _extract_partial_terms(term: str) -> List[str]:
+    """
+    Extract partial search terms from a potentially fully-qualified name.
+    
+    For example, 'mod.mod2.entity' would return ['entity', 'mod2.entity', 'mod.mod2.entity']
+    This allows finding entities by their simple name or partial path even if the full path doesn't exist.
+    
+    Args:
+        term: Search term (potentially a dotted path)
+        
+    Returns:
+        List of progressively longer partial terms, starting from the rightmost component
+    """
+    if '.' not in term:
+        return [term]
+    
+    parts = term.split('.')
+    partial_terms = []
+    
+    # Build from right to left: entity, mod2.entity, mod.mod2.entity
+    for i in range(len(parts)):
+        partial = '.'.join(parts[i:])
+        partial_terms.append(partial)
+    
+    # Reverse to get longest matches first (prefer more specific matches)
+    return list(reversed(partial_terms))
 
 def check_if_not_null(props: List[str], values: List[Any]) -> None:
     """Check if variable is not null and raise error accordingly."""
@@ -411,7 +454,7 @@ class COMStore(Neo4jPropertyGraphStore):
         Retrieve the next top_k entities from the stored list.
 
         Args:
-            from\_ (str): "ROOT_MODULE" or "CHILDREN", indicating which list to retrieve from.
+            from_ (str): "ROOT_MODULE" or "CHILDREN", indicating which list to retrieve from.
             top_k (int): The number of entities to retrieve.
 
         Returns:
@@ -664,6 +707,193 @@ class COMStore(Neo4jPropertyGraphStore):
         with self._driver.session(database=self.database) as session:
             data = session.run(neo4j.Query(text=query), params)
             return [r.data() for r in data]
+    
+    def upsert_nodes(self, nodes: List[Entity]) -> None:
+        """
+        Override parent's upsert_nodes to work directly with Entity models.
+        This method uses name and content_hash for MERGE operations.
+        Entity already has content_hash computed and labels sanitized.
+        
+        Args:
+            nodes: List of Entity objects to upsert
+        """
+        CHUNK_SIZE = 1000
+        
+        def _serialize_nested_collections(properties: Dict[str, Any]) -> Dict[str, Any]:
+            serialized_props = {}
+            for key, value in properties.items():
+                if value is None:
+                    continue
+                elif isinstance(value, (list, tuple)):
+                    if not value:
+                        serialized_props[key] = None
+                    elif any(isinstance(item, (list, tuple, dict)) for item in value):
+                        serialized_props[key] = json.dumps(value)
+                    else:
+                        serialized_props[key] = value
+                else:
+                    serialized_props[key] = value
+            return {k: v for k, v in serialized_props.items() if v is not None}
+        
+        entity_dicts: List[dict] = []
+        
+        for entity in nodes:
+            # Use content_hash from Entity (already computed in com_extractor)
+            c_hash = entity.content_hash
+            
+            # Prepare properties with content_hash
+            properties = dict(entity.properties or {})
+            properties["content_hash"] = c_hash
+            properties = _serialize_nested_collections(properties)
+            
+            # Labels are already sanitized in Entity model
+            sanitized_labels = entity.labels
+            
+            entity_dicts.append({
+                "name": entity.name,
+                "labels": sanitized_labels,  # All labels from entity.labels (already sanitized)
+                "properties": properties
+            })
+        
+        if entity_dicts:
+            for index in range(0, len(entity_dicts), CHUNK_SIZE):
+                chunked_params = entity_dicts[index : index + CHUNK_SIZE]
+                self.structured_query(
+                    """
+                    UNWIND $data AS row
+                    // Use name and content_hash for MERGE to support versioning
+                    MERGE (e {name: row.name, content_hash: row.properties.content_hash})
+                    // Set all properties
+                    SET e += apoc.map.clean(row.properties, [], [])
+                    SET e.name = row.name
+                    WITH e, row
+                    // Add all labels from the entity
+                    CALL apoc.create.addLabels(e, row.labels)
+                    YIELD node
+                    RETURN count(node)
+                    """,
+                    param_map={"data": chunked_params},
+                )
+    
+    def upsert_relations(self, relations: List[Relationship]) -> None:
+        """
+        Override parent's upsert_relations to work directly with Relationship models.
+        Matches nodes by name, version label, and content_hash.
+        
+        Args:
+            relations: List of Relationship objects to upsert
+        """
+        CHUNK_SIZE = 1000
+        
+        def _serialize_nested_collections(properties: Dict[str, Any]) -> Dict[str, Any]:
+            serialized_props = {}
+            for key, value in properties.items():
+                if value is None:
+                    continue
+                elif isinstance(value, (list, tuple)):
+                    if not value:
+                        serialized_props[key] = None
+                    elif any(isinstance(item, (list, tuple, dict)) for item in value):
+                        serialized_props[key] = json.dumps(value)
+                    else:
+                        serialized_props[key] = value
+                else:
+                    serialized_props[key] = value
+            return {k: v for k, v in serialized_props.items() if v is not None}
+        
+        def _extract_version_label(labels: List[str]) -> Optional[str]:
+            """Extract and sanitize version label from entity labels"""
+            for label in labels or []:
+                if isinstance(label, str) and label.startswith("version:"):
+                    # Sanitize for Neo4j
+                    return label.replace(":", "_").replace(".", "_").replace("-", "_")
+            return None
+        
+        params = []
+        relation_type_counts = {}
+        
+        for r in relations:
+            # Get source and target entity names directly
+            source_name = r.from_entity.name
+            target_name = r.to_entity.name
+            
+            # Use content_hash from Entity (already computed in com_extractor)
+            source_content_hash = r.from_entity.content_hash
+            target_content_hash = r.to_entity.content_hash
+            
+            # Extract version labels from entities
+            source_version_label = _extract_version_label(r.from_entity.labels)
+            target_version_label = _extract_version_label(r.to_entity.labels)
+            
+            # Serialize properties
+            properties = _serialize_nested_collections(r.properties or {})
+            
+            # Track relationship types for debugging
+            relation_type_counts[r.label] = relation_type_counts.get(r.label, 0) + 1
+            
+            params.append({
+                "source_name": source_name,
+                "source_content_hash": source_content_hash,
+                "source_version_label": source_version_label,
+                "target_name": target_name,
+                "target_content_hash": target_content_hash,
+                "target_version_label": target_version_label,
+                "label": r.label,
+                "properties": properties
+            })
+        
+        logging.info(f"Upserting {len(params)} relationships: {relation_type_counts}")
+        
+        for index in range(0, len(params), CHUNK_SIZE):
+            chunked_params = params[index : index + CHUNK_SIZE]
+            
+            try:
+                result = self.structured_query(
+                    """
+                    UNWIND $data AS row
+                    
+                    // Match source by name, content_hash, and version label
+                    // content_hash ensures we match the EXACT entity (critical for overloads)
+                    CALL {
+                        WITH row
+                        MATCH (source {name: row.source_name, content_hash: row.source_content_hash})
+                        WHERE row.source_version_label IS NULL OR row.source_version_label IN labels(source)
+                        RETURN source
+                        LIMIT 1
+                    }
+                    
+                    // Match target by name, content_hash, and version label
+                    CALL {
+                        WITH row
+                        MATCH (target {name: row.target_name, content_hash: row.target_content_hash})
+                        WHERE row.target_version_label IS NULL OR row.target_version_label IN labels(target)
+                        RETURN target
+                        LIMIT 1
+                    }
+                    
+                    // Only proceed if both nodes were found
+                    WITH source, target, row
+                    WHERE source IS NOT NULL AND target IS NOT NULL
+                    
+                    // Create or update the relationship
+                    CALL apoc.merge.relationship(source, row.label, {}, row.properties, target) 
+                    YIELD rel
+                    RETURN row.label AS rel_type, count(rel) AS created_count
+                    """,
+                    param_map={"data": chunked_params},
+                )
+                
+                # Log results for debugging
+                if result:
+                    for r in result:
+                        logging.info(f"Created {r.get('created_count', 0)} {r.get('rel_type', 'unknown')} relationships")
+                        
+            except Exception as e:
+                logging.error(f"Error upserting relationship chunk {index}-{index+CHUNK_SIZE}: {e}")
+                # Try to identify which relationships failed
+                for param in chunked_params[:5]:  # Log first 5 for debugging
+                    logging.error(f"Failed relationship example: {param['label']} from {param['source_name']} to {param['target_name']}")
+                raise
 
     def upsert_to_neo4j(
             self, 
@@ -682,134 +912,18 @@ class COMStore(Neo4jPropertyGraphStore):
             relations (List[Relationship]): List of relationships to upsert.
             other_relations (Dict[str, List[Tuple]]): Dictionary containing other relations.
         """
-        # Convert Entity to EntityNode and Relationship to Relation with versioning + overload support
-        entity_nodes: List[EntityNode] = []
-        # Map by Python object identity to support multiple entities with the same name (overloads, versions)
-        entities_to_entity_nodes: Dict[int, EntityNode] = {}
-        # Capture extra labels and version info to apply post-upsert
-        post_rows: List[Dict[str, Any]] = []
-
-        def _extract_version(labels: List[str]) -> Optional[str]:
-            for l in labels or []:
-                if isinstance(l, str) and l.startswith("version:"):
-                    return l.split("version:", 1)[1] or None
-            return None
-
-        def _content_hash(props: Dict[str, Any]) -> str:
-            # Use source + signature + resolved_signature + decorators as a stable content signature
-            src = str(props.get("source", ""))
-            sig = str(props.get("signature", ""))
-            rsig = str(props.get("resolved_signature", ""))
-            dec = ",".join(props.get("decorators", []) or [])
-            h = hashlib.sha256()
-            h.update(src.encode("utf-8", errors="ignore"))
-            h.update(b"|::|")
-            h.update(sig.encode("utf-8", errors="ignore"))
-            h.update(b"|::|")
-            h.update(rsig.encode("utf-8", errors="ignore"))
-            h.update(b"|::|")
-            h.update(dec.encode("utf-8", errors="ignore"))
-            return h.hexdigest()
-
-        def _build_id(e: Entity, content_hash: str) -> str:
-            # Stable ID based on path and content. This ensures: same content across versions -> same node.
-            # Different content (new version with changes) -> new node.
-            # Keep it compact for readability.
-            return f"{e.name}|{content_hash[:12]}"
-
-        def _extra_labels(labels: List[str]) -> List[str]:
-            # All labels except the primary one and version:* entries become extra Neo4j labels
-            if not labels:
-                return []
-            primary = labels[0]
-            extras: List[str] = []
-            for l in labels[1:]:
-                if isinstance(l, str) and not l.startswith("version:") and l != primary:
-                    # Neo4j labels cannot contain colon; our extras do not, so safe.
-                    extras.append(l)
-            return list(dict.fromkeys(extras))  # de-dupe
-
-        for entity in entities:
-            version = _extract_version(getattr(entity, "labels", []) or [])
-            c_hash = _content_hash(entity.properties or {})
-            node_id = _build_id(entity, c_hash)
-
-            # Attach helpful versioning properties on the node
-            properties = dict(entity.properties or {})
-            properties["content_hash"] = c_hash
-            if version:
-                # latest observed version for this ingestion
-                properties["version"] = version
-
-            entity_node = EntityNode(
-                id=node_id,
-                label=entity.label,
-                name=entity.name,
-                properties=properties,
-            )
-            entity_nodes.append(entity_node)
-            entities_to_entity_nodes[id(entity)] = entity_node
-
-            post_rows.append({
-                "id": node_id,
-                "version": version,
-                "content_hash": c_hash,
-                "extra_labels": _extra_labels(getattr(entity, "labels", []) or []),
-            })
-
-        # Convert incoming relationships using object-identity mapping
-        rels: List[Relation] = []
-        for r in relations:
-            src_node = entities_to_entity_nodes.get(id(r.from_entity))
-            tgt_node = entities_to_entity_nodes.get(id(r.to_entity))
-            if not src_node or not tgt_node:
-                # Skip relationships whose endpoints were filtered out for any reason
-                continue
-            rels.append(
-                Relation(
-                    label=r.label,
-                    source_id=src_node.id,
-                    target_id=tgt_node.id,
-                    properties=r.properties,
-                )
-            )
-
-        # Upsert nodes and relationships (MERGE semantics in underlying store)
-        self.upsert_nodes(entity_nodes)
-        self.upsert_relations(rels)
-
-        # Post-process: add versions and extra labels safely on the merged nodes
-        if post_rows:
-            # Update versions set, version (last seen), and ensure content_hash is stored
-            update_versions_query = """
-            UNWIND $rows AS row
-            MATCH (n {id: row.id})
-            FOREACH (v IN CASE WHEN row.version IS NOT NULL THEN [row.version] ELSE [] END |
-                SET n.versions = apoc.coll.toSet(coalesce(n.versions, []) + v)
-                SET n.version = v
-            )
-            SET n.content_hash = row.content_hash
-            RETURN count(n) AS updated
-            """
-            self.structured_query(update_versions_query, {"rows": post_rows})
-
-            # Apply extra labels like OVERLOAD, OVERLOADED, PRIVATE, etc.
-            add_labels_query = """
-            UNWIND $rows AS row
-            WITH row WHERE size(row.extra_labels) > 0
-            MATCH (n {id: row.id})
-            CALL apoc.create.addLabels(n, row.extra_labels)
-            YIELD node
-            RETURN count(node) AS labeled
-            """
-            self.structured_query(add_labels_query, {"rows": post_rows})
+        # Upsert nodes and relationships directly using our custom Entity/Relationship models
+        try:
+            logging.info(f"Upserting {len(entities)} nodes and {len(relations)} relationships")
+            self.upsert_nodes(entities)
+            self.upsert_relations(relations)
+        except Exception as e:
+            logging.error(f"Error during upsert to Neo4j: {e}")
+            raise e
 
         # Embed the nodes if specified
         if embed_nodes:
             self._embed_nodes()
-
-        # Add labels recursively
-        self._handle_inherited_methods(module_name)
 
         # Add INHERITS and IMPORTS relations as properties to the respective nodes
         self._add_other_relations_as_properties(other_relations)
@@ -817,81 +931,168 @@ class COMStore(Neo4jPropertyGraphStore):
         # Process INHERITS and IMPORTS relations
         self._process_other_relations()
 
+        # Handle inherited methods
+        self._handle_inherited_methods(module_name)
+
         # Set the shortest call paths for all nodes in the module
         self._set_shortest_call_paths(module_name)
 
     def _add_other_relations_as_properties(self, other_relations: Dict[str, List[Tuple]]):
         """
         Add INHERITS and IMPORTS relations as properties to the respective nodes.
+        Now works with (content_hash, ExternalEntityRef) tuples.
 
         Args:
             other_relations (Dict[str, List[Tuple]]): Dictionary containing INHERITS and IMPORTS relations.
+                Each tuple is (from_content_hash, ExternalEntityRef)
         """
+        from ..com_extractor import ExternalEntityRef
+        
         inherits_relations = other_relations.get("INHERITS", [])
         imports_relations = other_relations.get("IMPORTS", [])
         exposes_relations = other_relations.get("EXPOSES", [])
+        
+        # Convert (name, ExternalEntityRef) tuples to (name, target_info_dict) for INHERITS
+        # INHERITS uses entity name (not content_hash) as key since it's class-level
+        inherits_processed = []
+        for from_name, to_ref in inherits_relations:
+            if isinstance(to_ref, ExternalEntityRef):
+                # Store as dict with name, version, and content_hash
+                target_info = {
+                    "name": to_ref.name,
+                    "version": to_ref.version,
+                    "content_hash": to_ref.content_hash
+                }
+                inherits_processed.append((from_name, json.dumps(target_info)))
+            else:
+                # Legacy format: just name
+                inherits_processed.append((from_name, to_ref))
+        
+        # Convert (content_hash, ExternalEntityRef) tuples to (content_hash, target_info_dict) for IMPORTS/EXPOSES
+        imports_processed = []
+        for from_hash, to_ref in imports_relations:
+            if isinstance(to_ref, ExternalEntityRef):
+                target_info = {
+                    "name": to_ref.name,
+                    "version": to_ref.version,
+                    "content_hash": to_ref.content_hash
+                }
+                imports_processed.append((from_hash, json.dumps(target_info)))
+            else:
+                imports_processed.append((from_hash, to_ref))
+        
+        exposes_processed = []
+        for from_hash, to_ref in exposes_relations:
+            if isinstance(to_ref, ExternalEntityRef):
+                target_info = {
+                    "name": to_ref.name,
+                    "version": to_ref.version,
+                    "content_hash": to_ref.content_hash
+                }
+                exposes_processed.append((from_hash, json.dumps(target_info)))
+            else:
+                exposes_processed.append((from_hash, to_ref))
+        
         add_inherits_query = (
             """
             UNWIND $inherits_relations AS rel
             MATCH (c:CLASS {name: rel[0]})
-            SET c.INHERITS = apoc.coll.toSet(coalesce(c.INHERITS, []) + rel[1])
+            SET c.INHERITS = apoc.coll.toSet(coalesce(c.INHERITS, []) + [rel[1]])
             """
         )
         add_imports_query = (
             """
             UNWIND $imports_relations AS rel
-            MATCH (e {name: rel[0]})
-            SET e.IMPORTS = apoc.coll.toSet(coalesce(e.IMPORTS, []) + rel[1])
+            MATCH (e {content_hash: rel[0]})
+            SET e.IMPORTS = apoc.coll.toSet(coalesce(e.IMPORTS, []) + [rel[1]])
             """
         )
         add_exposes_query = (
             """
             UNWIND $exposes_relations AS rel
-            MATCH (m {name: rel[0]})
-            SET m.EXPOSES = apoc.coll.toSet(coalesce(m.EXPOSES, []) + rel[1])
+            MATCH (m {content_hash: rel[0]})
+            SET m.EXPOSES = apoc.coll.toSet(coalesce(m.EXPOSES, []) + [rel[1]])
             """
         )
-        self.structured_query(add_inherits_query, {"inherits_relations": inherits_relations})
-        self.structured_query(add_imports_query, {"imports_relations": imports_relations})
-        self.structured_query(add_exposes_query, {"exposes_relations": exposes_relations})
+        self.structured_query(add_inherits_query, {"inherits_relations": inherits_processed})
+        self.structured_query(add_imports_query, {"imports_relations": imports_processed})
+        self.structured_query(add_exposes_query, {"exposes_relations": exposes_processed})
 
     def _process_other_relations(self):
         """
         Execute Cypher queries to create relations on existing nodes with INHERITS, IMPORTS and EXPOSES properties.
-        Clear names from the INHERITS, IMPORTS and EXPOSES property arrays of the nodes if the relations could be created successfully.
+        Now handles version-aware matching using JSON-encoded target information.
+        Clear info from the INHERITS, IMPORTS and EXPOSES property arrays of the nodes if the relations could be created successfully.
         """
+        # Process INHERITS with version-aware matching
         process_inherits_query = (
             """
             MATCH (c:CLASS)
             WHERE c.INHERITS IS NOT NULL
-            UNWIND c.INHERITS AS parent
-            MATCH (p:CLASS {name: parent})
+            UNWIND c.INHERITS AS parentInfo
+            WITH c, parentInfo,
+                 CASE WHEN parentInfo STARTS WITH '{' 
+                      THEN apoc.convert.fromJsonMap(parentInfo)
+                      ELSE {name: parentInfo, version: null, content_hash: null}
+                 END AS parentData
+            // Try to match parent by name and version label if available
+            OPTIONAL MATCH (p:CLASS {name: parentData.name})
+            WHERE parentData.version IS NULL 
+               OR ('version_' + replace(replace(replace(parentData.version, '.', '_'), ':', '_'), '-', '_')) IN labels(p)
+            WITH c, parentInfo, p, parentData
+            WHERE p IS NOT NULL
             MERGE (c)-[:INHERITS]->(p)
-            WITH c, COLLECT(parent) AS parentNames
-            SET c.INHERITS = [name IN c.INHERITS WHERE NOT name IN parentNames]
-            SET c.NEW_INHERIT_RELS = parentNames
+            WITH c, COLLECT(parentInfo) AS processedParents
+            SET c.INHERITS = [info IN c.INHERITS WHERE NOT info IN processedParents]
+            SET c.NEW_INHERIT_RELS = processedParents
             """
         )
+        
+        # Process IMPORTS with version-aware and content_hash matching
         process_imports_query = (
             """
             MATCH (e1)
             WHERE e1.IMPORTS IS NOT NULL
-            UNWIND e1.IMPORTS AS importee
-            MATCH (e2 {name: importee})
+            UNWIND e1.IMPORTS AS importInfo
+            WITH e1, importInfo,
+                 CASE WHEN importInfo STARTS WITH '{'
+                      THEN apoc.convert.fromJsonMap(importInfo)
+                      ELSE {name: importInfo, version: null, content_hash: null}
+                 END AS importData
+            // Try to match by content_hash first (if available), then by name+version
+            OPTIONAL MATCH (e2)
+            WHERE (importData.content_hash IS NOT NULL AND e2.content_hash = importData.content_hash)
+               OR (e2.name = importData.name AND (importData.version IS NULL 
+                   OR ('version_' + replace(replace(replace(importData.version, '.', '_'), ':', '_'), '-', '_')) IN labels(e2)))
+            WITH e1, importInfo, e2
+            WHERE e2 IS NOT NULL
             MERGE (e1)-[:IMPORTS]->(e2)
-            WITH e1, COLLECT(importee) AS importeeNames
-            SET e1.IMPORTS = [name IN e1.IMPORTS WHERE NOT name IN importeeNames]
+            WITH e1, COLLECT(importInfo) AS processedImports
+            SET e1.IMPORTS = [info IN e1.IMPORTS WHERE NOT info IN processedImports]
             """
         )
+        
+        # Process EXPOSES with version-aware and content_hash matching
         process_exposes_query = (
             """
             MATCH (m:MODULE|ROOT_MODULE)
             WHERE m.EXPOSES IS NOT NULL
-            UNWIND m.EXPOSES AS exposed
-            MATCH (e {name: exposed})
+            UNWIND m.EXPOSES AS exposedInfo
+            WITH m, exposedInfo,
+                 CASE WHEN exposedInfo STARTS WITH '{'
+                      THEN apoc.convert.fromJsonMap(exposedInfo)
+                      ELSE {name: exposedInfo, version: null, content_hash: null}
+                 END AS exposedData
+            // Try to match by content_hash first (if available), then by name+version
+            OPTIONAL MATCH (e)
+            WHERE (exposedData.content_hash IS NOT NULL AND e.content_hash = exposedData.content_hash)
+               OR (e.name = exposedData.name AND (exposedData.version IS NULL
+                   OR ('version_' + replace(replace(replace(exposedData.version, '.', '_'), ':', '_'), '-', '_')) IN labels(e)))
+            WITH m, exposedInfo, e
+            WHERE e IS NOT NULL
             MERGE (m)-[:EXPOSES]->(e)
-            WITH m, COLLECT(exposed) AS exposedNames
-            SET m.EXPOSES = [name IN m.EXPOSES WHERE NOT name IN exposedNames]
+            WITH m, COLLECT(exposedInfo) AS processedExposes
+            SET m.EXPOSES = [info IN m.EXPOSES WHERE NOT info IN processedExposes]
             """
         )
         cleanup_empty_INHERITS_query = (
@@ -1250,10 +1451,10 @@ RETURN child.name AS ChildClass, size(members) AS TotalParentMembersLabeled
         Returns:
             str: The full path name of the entity if found, otherwise an empty string.
         """
-        processed_name = name.replace(".", ".*\.")
+        processed_name = name.replace(".", r".*\.")
         name_till_dotunderscore = processed_name
-        if ".*\._" in name_till_dotunderscore:
-            name_till_dotunderscore = name_till_dotunderscore.split(".*\._")[0] + ".*"
+        if r".*\._" in name_till_dotunderscore:
+            name_till_dotunderscore = name_till_dotunderscore.split(r".*\._")[0] + r".*"
 
         name_till_dotunderscore = f'/{name_till_dotunderscore}/'
         logging.info(f"Processed name for regex search: {processed_name}")
@@ -1541,23 +1742,29 @@ RETURN apoc.map.fromPairs(
         }
         return _dict_to_xml_string(data, "get_signatures_response")
 
-    def list_libraries(self) -> str:
+    def list_libraries(self, extra_props: List[str] = None) -> str:
         """
         Get a list of all ROOT_MODULE entities (libraries) in the knowledge graph.
+        
+        Args:
+            extra_props (List[str], optional): Additional properties to retrieve for each library.
         
         Returns:
             str: XML-formatted string containing:
                 - libraries: A list of library objects, each containing:
                     - name (str): The name of the library/root module
-                    - summary (str): Summary description of the library
-                    - source (str): Source file path
+                    - [extra properties if requested]
                 - system_message (str): Informational message about the results
         """
-        query = """
+        # Build the return fields
+        return_fields = ["lib.name AS name"]
+        if extra_props:
+            for prop in extra_props:
+                return_fields.append(f"lib.{prop} AS {prop}")
+        
+        query = f"""
         MATCH (lib:ROOT_MODULE)
-        RETURN lib.name AS name, 
-               lib.summary AS summary, 
-               lib.source AS source
+        RETURN {', '.join(return_fields)}
         ORDER BY lib.name
         """
         
@@ -1599,7 +1806,8 @@ RETURN apoc.map.fromPairs(
                 - definitions: Array of matching code definitions, each containing:
                     - name (str): The name of the definition
                     - fqn (str): Fully qualified name of the definition
-                    - definition_type (str): Type of definition (e.g., "FUNCTION", "CLASS", "METHOD")
+                    - definition_type (str): Primary type of definition (e.g., "FUNCTION", "CLASS", "METHOD")
+                    - all_labels (List[str]): All labels associated with the entity
                     - context (str): Code signature (for CLASS, shows __init__ signature if available)
                 - next_page (int | None): Next page number if more results are available
                 - current_page (int): Current page number
@@ -1609,8 +1817,20 @@ RETURN apoc.map.fromPairs(
         # Calculate skip value for pagination
         skip = (page - 1) * page_size
         
-        # Build the search pattern for case-insensitive partial matching
-        search_pattern = "|".join([f"(?i).*{term}.*" for term in search_terms])
+        # Process search terms: escape regex special chars and extract partial terms
+        all_search_patterns = []
+        for term in search_terms:
+            # Get partial terms (e.g., 'mod.mod2.entity' -> ['mod.mod2.entity', 'mod2.entity', 'entity'])
+            partial_terms = _extract_partial_terms(term)
+            
+            for partial in partial_terms:
+                # Escape regex special characters (dots, etc.)
+                escaped_term = _escape_regex_special_chars(partial)
+                # Build case-insensitive pattern that matches the term anywhere in __name__
+                all_search_patterns.append(f"(?i).*{escaped_term}.*")
+        
+        # Combine all patterns with OR (|)
+        search_pattern = "|".join(all_search_patterns)
         
         query = """
         // Find the parent entity
@@ -1641,7 +1861,8 @@ RETURN apoc.map.fromPairs(
         RETURN 
             child.name AS name,
             child.shortest_call_path AS fqn,
-            [label IN labels(child) WHERE label IN ['FUNCTION', 'CLASS', 'METHOD', 'MODULE']][0] AS definition_type,
+            [label IN labels(child) WHERE label IN ['FUNCTION', 'CLASS', 'METHOD', 'MODULE', 'ROOT_MODULE']][0] AS definition_type,
+            labels(child) AS all_labels,
             CASE
                 // For CLASS, use __init__ signature if available
                 WHEN "CLASS" IN labels(child) AND init IS NOT NULL THEN init.signature
@@ -1681,6 +1902,7 @@ RETURN apoc.map.fromPairs(
                     "name": result["name"],
                     "fqn": result["fqn"],
                     "definition_type": result["definition_type"],
+                    "all_labels": result["all_labels"],
                     "context": result["context"]
                 })
             
@@ -1720,24 +1942,27 @@ RETURN apoc.map.fromPairs(
         show_structure: bool = True,
         show_definitions: bool = True,
         page: int = 1,
-        page_size: int = 50
+        page_size: int = 50,
+        extra_props: List[str] = None,
+        version: str = None
     ) -> str:
         """
         Generate a compact, API-style map of a library segment showing structure and definitions.
         
         Args:
             library_name (str): Name of the ROOT_MODULE (library) to map
-            relative_paths (List[str], optional): Specific paths within the library to focus on.
-                                                  If None, maps entire library.
             depth (int): Directory/entity traversal depth. 0 = full depth, 1-3 = limited depth. Default is 2.
             show_structure (bool): Include the structure tree. Default is True.
             show_definitions (bool): Include definitions. Default is True.
             page (int): Page number for pagination. Default is 1.
             page_size (int): Max definitions per page. Default is 50.
+            extra_props (List[str], optional): Additional properties to retrieve for each entity.
+            version (str, optional): Specific version of the library to map. If None, all versions are included.
         
         Returns:
             str: XML-formatted string containing:
                 - library_name (str): Name of the library
+                - version (str | None): Version being mapped (if specified)
                 - depth (int): Depth used for traversal (0 = full)
                 - structure (str): ASCII tree representation of the library structure
                 - definitions: List of definitions found, each containing:
@@ -1746,7 +1971,7 @@ RETURN apoc.map.fromPairs(
                     - type (str): Type of definition
                     - location (str): Line range
                     - signature (str): Function/method signature
-                    - summary (str): Brief description
+                    - [extra properties if requested]
                 - next_page (int | None): Next page number if more results are available
                 - total_definitions (int): Total number of definitions found
                 - system_message (str): Informational message about the results
@@ -1761,28 +1986,80 @@ RETURN apoc.map.fromPairs(
             depth_display = actual_depth
         skip = (page - 1) * page_size
         
+        # Sanitize version string if provided
+        version_label = None
+        if version:
+            version_label = version.replace(":", "_").replace(".", "_").replace("-", "_")
+        
         structure_tree = ""
         definitions = []
         total_definitions = 0
         
         try:
+            # Check if library exists with the specified version
+            check_query = """
+            MATCH (lib:ROOT_MODULE {name: $library_name})
+            """
+            if version:
+                check_query += """
+                WHERE $version_label IN labels(lib)
+                """
+            check_query += """
+            RETURN lib.name AS name
+            """
+            
+            check_params = {"library_name": library_name}
+            if version:
+                check_params["version_label"] = f"version_{version_label}"
+            
+            check_result = self.structured_query(check_query, check_params)
+            
+            if not check_result:
+                if version:
+                    system_message = f"Library '{library_name}' with version '{version}' not found in the knowledge graph."
+                else:
+                    system_message = f"Library '{library_name}' not found in the knowledge graph."
+                
+                data = {
+                    "library_name": library_name,
+                    "version": version,
+                    "depth": depth_display,
+                    "structure": "",
+                    "definitions": [],
+                    "next_page": None,
+                    "current_page": page,
+                    "total_definitions": 0,
+                    "system_message": system_message
+                }
+                return _dict_to_xml_string(data, "library_map_response")
+            
             # Build structure tree if requested
             if show_structure:
                 structure_query = """
                 MATCH path = (lib:ROOT_MODULE {{name: $library_name}})-[:HAS_SUBMODULE|HAS_CLASS|HAS_METHOD|HAS_FUNCTION*0..{depth}]->(entity)
+                """
+                if version:
+                    structure_query += """
+                WHERE $version_label IN labels(entity)
+                """
+                structure_query += """
                 WITH entity, length(path) AS depth_level, path
                 WHERE depth_level <= $depth
                 ORDER BY depth_level, entity.__name__
                 RETURN 
                     entity.__name__ AS name,
-                    [label IN labels(entity) WHERE label IN ['MODULE', 'CLASS', 'FUNCTION', 'METHOD']][0] AS type,
+                    [label IN labels(entity) WHERE label IN ['ROOT_MODULE', 'MODULE', 'CLASS', 'FUNCTION', 'METHOD']][0] AS type,
                     depth_level,
                     [node in nodes(path) | node.__name__] AS path_segments
                 """
                 
+                structure_params = {"library_name": library_name, "depth": actual_depth}
+                if version:
+                    structure_params["version_label"] = f"version_{version_label}"
+                
                 structure_results = self.structured_query(
                     structure_query.format(depth=actual_depth),
-                    {"library_name": library_name, "depth": actual_depth}
+                    structure_params
                 )
                 
                 # Build ASCII tree
@@ -1799,7 +2076,8 @@ RETURN apoc.map.fromPairs(
                     prefix = "└── " if is_last else "├── "
                     
                     entity_type_marker = {
-                        "MODULE": "📦",
+                        "ROOT_MODULE": "�",
+                        "MODULE": "�",
                         "CLASS": "🔷",
                         "FUNCTION": "⚡",
                         "METHOD": "⚙️"
@@ -1811,10 +2089,29 @@ RETURN apoc.map.fromPairs(
             
             # Fetch definitions if requested
             if show_definitions:
-                definitions_query = """
-                MATCH path = (lib:ROOT_MODULE {{name: $library_name}})-[:HAS_SUBMODULE|HAS_CLASS|HAS_METHOD|HAS_FUNCTION*0..{depth}]->(entity)
+                # Build extra props fields
+                extra_fields = ""
+                if extra_props:
+                    extra_fields = ",\n                    " + ",\n                    ".join(
+                        [f"entity.{prop} AS {prop}" for prop in extra_props]
+                    )
+                
+                definitions_query = f"""
+                MATCH path = (lib:ROOT_MODULE {{{{name: $library_name}}}})-[:HAS_SUBMODULE|HAS_CLASS|HAS_METHOD|HAS_FUNCTION*0..{{depth}}]->(entity)
+                """
+                if version:
+                    definitions_query += """
+                WHERE $version_label IN labels(entity)
+                AND length(path) <= $depth
+                AND length(path) > 0
+                """
+                else:
+                    definitions_query += """
                 WHERE length(path) <= $depth
                 AND length(path) > 0
+                """
+                
+                definitions_query += f"""
                 WITH entity, 
                      [node in nodes(path) | node.__name__] AS path_segments,
                      length(path) AS depth_level
@@ -1831,46 +2128,55 @@ RETURN apoc.map.fromPairs(
                     entity.name AS full_name,
                     entity.__name__ AS name,
                     entity.shortest_call_path AS path,
-                    [label IN labels(entity) WHERE label IN ['MODULE', 'CLASS', 'FUNCTION', 'METHOD']][0] AS type,
+                    [label IN labels(entity) WHERE label IN ['ROOT_MODULE', 'MODULE', 'CLASS', 'FUNCTION', 'METHOD']][0] AS type,
                     CASE 
                         WHEN entity.start_line IS NOT NULL AND entity.end_line IS NOT NULL 
                         THEN 'L' + toString(entity.start_line) + '-' + toString(entity.end_line)
                         ELSE ''
                     END AS location,
-                    entity.signature AS signature,
-                    entity.summary AS summary,
+                    entity.signature AS signature{extra_fields},
                     total_count
                 """
                 
+                definitions_params = {
+                    "library_name": library_name,
+                    "depth": actual_depth,
+                    "skip": skip,
+                    "page_size": page_size
+                }
+                if version:
+                    definitions_params["version_label"] = f"version_{version_label}"
+                
                 definitions_results = self.structured_query(
                     definitions_query.format(depth=actual_depth),
-                    {
-                        "library_name": library_name,
-                        "depth": actual_depth,
-                        "skip": skip,
-                        "page_size": page_size
-                    }
+                    definitions_params
                 )
                 
                 if definitions_results:
                     total_definitions = definitions_results[0].get("total_count", 0)
                     
                     for result in definitions_results:
-                        definitions.append({
+                        def_data = {
                             "path": result["path"],
                             "name": result["name"],
                             "type": result["type"],
                             "location": result["location"],
-                            "signature": result.get("signature", ""),
-                            "summary": result.get("summary", "")
-                        })
+                            "signature": result.get("signature", "")
+                        }
+                        # Add extra props if requested
+                        if extra_props:
+                            for prop in extra_props:
+                                if prop in result:
+                                    def_data[prop] = result[prop]
+                        definitions.append(def_data)
             
             # Calculate pagination
             total_pages = (total_definitions + page_size - 1) // page_size if page_size > 0 else 1
             next_page = page + 1 if page < total_pages else None
             
             depth_msg = "full depth" if depth_display == 0 else f"depth={depth_display}"
-            system_message = f"Library map for '{library_name}' at {depth_msg}. "
+            version_msg = f" (version {version})" if version else ""
+            system_message = f"Library map for '{library_name}'{version_msg} at {depth_msg}. "
             if show_definitions:
                 system_message += f"Found {total_definitions} definitions. "
                 system_message += f"Showing page {page} of {total_pages}."
@@ -1879,6 +2185,7 @@ RETURN apoc.map.fromPairs(
             
             data = {
                 "library_name": library_name,
+                "version": version,
                 "depth": depth_display,
                 "structure": structure_tree if show_structure else "",
                 "definitions": definitions,
@@ -1893,6 +2200,7 @@ RETURN apoc.map.fromPairs(
             logging.error(f"Error generating library map: {e}")
             data = {
                 "library_name": library_name,
+                "version": version,
                 "depth": depth_display,
                 "structure": "",
                 "definitions": [],
@@ -1902,3 +2210,383 @@ RETURN apoc.map.fromPairs(
                 "system_message": f"Error generating library map: {str(e)}"
             }
             return _dict_to_xml_string(data, "library_map_response")
+        
+    def get_version_diff(self, parent_entity: str, old_version: str, new_version: str, extra_props: List[str] = None) -> str:
+        """
+        Get the version difference between two versions of an entity's hierarchy, in the structure of a library map and git diff.
+
+        Args:
+            parent_entity (str): The entity, under which the versions are to be compared for itself and it's children.
+            old_version (str): The old version identifier.
+            new_version (str): The new version identifier.
+            extra_props (List[str], optional): Additional properties to retrieve for each entity.
+
+        Returns:
+            str: XML-formatted string, in the form of a library map diff, containing:
+                - entity_name (str): Name of the parent entity
+                - old_version (str): The old version identifier
+                - new_version (str): The new version identifier
+                - diff (str): The git-style diff between the two versions (only for entities with signatures)
+                - entities: List of all entities with their status
+                - summary: Statistics about changes
+                - system_message (str): Informational message about the results
+        """
+        try:
+            # Sanitize version strings to match label format
+            old_version_label = old_version.replace(":", "_").replace(".", "_").replace("-", "_")
+            new_version_label = new_version.replace(":", "_").replace(".", "_").replace("-", "_")
+            
+            # Build extra props fields for query
+            extra_fields = ""
+            if extra_props:
+                extra_fields = ",\n                 " + ",\n                 ".join(
+                    [f"entity.{prop} AS {prop}" for prop in extra_props]
+                )
+            
+            # Single optimized query that validates and retrieves all data
+            query = f"""
+            // Try to find the parent entity
+            OPTIONAL MATCH (parent {{name: $parent_entity}})
+            
+            // Check if parent exists and has the required version labels
+            WITH parent,
+                 parent IS NOT NULL AS parent_exists,
+                 CASE WHEN parent IS NOT NULL THEN $old_version_label IN labels(parent) ELSE false END AS has_old_version,
+                 CASE WHEN parent IS NOT NULL THEN $new_version_label IN labels(parent) ELSE false END AS has_new_version
+            
+            // Early return metadata if parent doesn't exist or versions are missing
+            WITH parent, parent_exists, has_old_version, has_new_version,
+                 CASE 
+                     WHEN NOT parent_exists THEN 'parent_not_found'
+                     WHEN NOT has_old_version AND NOT has_new_version THEN 'neither_version_found'
+                     WHEN NOT has_old_version THEN 'old_version_not_found'
+                     WHEN NOT has_new_version THEN 'new_version_not_found'
+                     ELSE 'valid'
+                 END AS validation_status
+            
+            // If validation passes, find all descendants with old version label
+            CALL {{
+                WITH parent, validation_status, $old_version_label AS old_label
+                OPTIONAL MATCH path = (parent)-[:HAS_SUBMODULE|HAS_CLASS|HAS_METHOD|HAS_FUNCTION|EXPOSES*0..]->(entity)
+                WHERE validation_status = 'valid' AND old_label IN labels(entity)
+                RETURN entity, path, true AS has_old, false AS has_new
+            }}
+            
+            UNION ALL
+            
+            // Find all descendants with new version label
+            CALL {{
+                WITH parent, validation_status, $new_version_label AS new_label
+                OPTIONAL MATCH path = (parent)-[:HAS_SUBMODULE|HAS_CLASS|HAS_METHOD|HAS_FUNCTION|EXPOSES*0..]->(entity)
+                WHERE validation_status = 'valid' AND new_label IN labels(entity)
+                RETURN entity, path, false AS has_old, true AS has_new
+            }}
+            
+            // Return validation status and entity data (if valid)
+            WITH validation_status, entity, path, has_old, has_new,
+                 CASE WHEN entity IS NOT NULL THEN entity.name ELSE null END AS full_name,
+                 CASE WHEN entity IS NOT NULL THEN entity.__name__ ELSE null END AS simple_name,
+                 CASE WHEN entity IS NOT NULL THEN entity.shortest_call_path ELSE null END AS path_str,
+                 CASE WHEN entity IS NOT NULL THEN [label IN labels(entity) WHERE label IN ['ROOT_MODULE', 'MODULE', 'CLASS', 'FUNCTION', 'METHOD']][0] ELSE null END AS type,
+                 CASE WHEN entity IS NOT NULL THEN entity.signature ELSE null END AS signature{extra_fields if extra_props else ''},
+                 CASE WHEN path IS NOT NULL THEN length(path) ELSE null END AS depth
+            
+            // Collect all results and merge entities that appear in both versions
+            WITH validation_status, 
+                 full_name,
+                 simple_name,
+                 path_str,
+                 type,
+                 signature,
+                 max(has_old) AS has_old_version,
+                 max(has_new) AS has_new_version,
+                 max(depth) AS depth{', ' + ', '.join([f'entity.{prop} AS {prop}' for prop in extra_props]) if extra_props else ''}
+            WHERE full_name IS NOT NULL
+            
+            // Build entity data structure
+            WITH validation_status,
+                 collect({{
+                     full_name: full_name,
+                     simple_name: simple_name,
+                     path: path_str,
+                     type: type,
+                     signature: signature,
+                     has_old_version: has_old_version,
+                     has_new_version: has_new_version{', ' + ', '.join([f'{prop}: {prop}' for prop in extra_props]) if extra_props else ''},
+                     depth: depth
+                 }}) AS valid_entities
+            
+            // Sort the entities
+            UNWIND CASE WHEN size(valid_entities) > 0 THEN valid_entities ELSE [null] END AS entity_data
+            WITH validation_status, entity_data
+            ORDER BY entity_data.path, entity_data.depth, entity_data.full_name
+            
+            RETURN validation_status, 
+                   collect(entity_data) AS results
+            """
+            
+            query_result = self.structured_query(query, {
+                "parent_entity": parent_entity,
+                "old_version_label": f"version_{old_version_label}",
+                "new_version_label": f"version_{new_version_label}"
+            })[0]
+            
+            validation_status = query_result["validation_status"]
+            results = [r for r in query_result["results"] if r is not None]
+            
+            # Handle validation errors
+            if validation_status != 'valid':
+                error_messages = {
+                    'parent_not_found': f"Parent entity '{parent_entity}' not found in the knowledge graph.",
+                    'neither_version_found': f"Neither version '{old_version}' nor '{new_version}' found for entity '{parent_entity}'.",
+                    'old_version_not_found': f"Version '{old_version}' not found for entity '{parent_entity}'.",
+                    'new_version_not_found': f"Version '{new_version}' not found for entity '{parent_entity}'."
+                }
+                
+                data = {
+                    "entity_name": parent_entity,
+                    "old_version": old_version,
+                    "new_version": new_version,
+                    "diff": "",
+                    "entities": [],
+                    "summary": {
+                        "added": 0,
+                        "removed": 0,
+                        "modified": 0,
+                        "unchanged": 0
+                    },
+                    "system_message": error_messages.get(validation_status, "Unknown validation error.")
+                }
+                return _dict_to_xml_string(data, "get_version_diff_response")
+            
+            if not results:
+                data = {
+                    "entity_name": parent_entity,
+                    "old_version": old_version,
+                    "new_version": new_version,
+                    "diff": "",
+                    "entities": [],
+                    "summary": {
+                        "added": 0,
+                        "removed": 0,
+                        "modified": 0,
+                        "unchanged": 0
+                    },
+                    "system_message": f"No entities found under '{parent_entity}' with versions '{old_version}' or '{new_version}'."
+                }
+                return _dict_to_xml_string(data, "get_version_diff_response")
+            
+            # Build version maps: entity -> data for each version
+            old_version_map = {}
+            new_version_map = {}
+            all_entities = set()
+            
+            for result in results:
+                full_name = result["full_name"]
+                entity_type = result["type"]
+                signature = result.get("signature")
+                has_old = result.get("has_old_version", False)
+                has_new = result.get("has_new_version", False)
+                
+                all_entities.add(full_name)
+                
+                entity_data = {
+                    "signature": signature,
+                    "simple_name": result["simple_name"],
+                    "path": result["path"],
+                    "type": entity_type
+                }
+                
+                # Add extra props if requested
+                if extra_props:
+                    for prop in extra_props:
+                        if prop in result:
+                            entity_data[prop] = result[prop]
+                
+                # Check if entity exists in old_version (has the version label)
+                if has_old:
+                    old_version_map[full_name] = entity_data.copy()
+                
+                # Check if entity exists in new_version (has the version label)
+                if has_new:
+                    new_version_map[full_name] = entity_data.copy()
+            
+            # Generate git-style diff (only for entities with signatures that changed)
+            diff_lines = []
+            diff_lines.append(f"--- {parent_entity} @ {old_version}")
+            diff_lines.append(f"+++ {parent_entity} @ {new_version}")
+            diff_lines.append("")
+            
+            added_count = 0
+            removed_count = 0
+            modified_count = 0
+            unchanged_count = 0
+            
+            # Collect all entities with their status
+            entities_list = []
+            
+            # Process all entities
+            for entity_name in sorted(all_entities):
+                in_old = entity_name in old_version_map
+                in_new = entity_name in new_version_map
+                
+                if in_old and in_new:
+                    # Entity exists in both versions - check for changes
+                    old_data = old_version_map[entity_name]
+                    new_data = new_version_map[entity_name]
+                    old_sig = old_data.get("signature")
+                    new_sig = new_data.get("signature")
+                    entity_type = new_data["type"]
+                    path = new_data["path"]
+                    
+                    # Only show diff for entities with signatures
+                    if old_sig and new_sig and old_sig != new_sig:
+                        # Signature changed
+                        modified_count += 1
+                        diff_lines.append(f"@@ {entity_type}: {path} @@")
+                        diff_lines.append(f"- {old_sig}")
+                        diff_lines.append(f"+ {new_sig}")
+                        diff_lines.append("")
+                        
+                        entity_entry = {
+                            "name": entity_name,
+                            "path": path,
+                            "type": entity_type,
+                            "status": "modified",
+                            "old_signature": old_sig,
+                            "new_signature": new_sig
+                        }
+                    elif old_sig != new_sig:
+                        # Something changed but maybe no signature
+                        modified_count += 1
+                        entity_entry = {
+                            "name": entity_name,
+                            "path": path,
+                            "type": entity_type,
+                            "status": "modified",
+                            "old_signature": old_sig,
+                            "new_signature": new_sig
+                        }
+                    else:
+                        unchanged_count += 1
+                        entity_entry = {
+                            "name": entity_name,
+                            "path": path,
+                            "type": entity_type,
+                            "status": "unchanged",
+                            "signature": new_sig
+                        }
+                    
+                    # Add extra props if available
+                    if extra_props:
+                        for prop in extra_props:
+                            if prop in new_data:
+                                entity_entry[prop] = new_data[prop]
+                    
+                    entities_list.append(entity_entry)
+                
+                elif in_new and not in_old:
+                    # New entity added
+                    added_count += 1
+                    entity_data = new_version_map[entity_name]
+                    sig = entity_data.get("signature")
+                    
+                    # Only show in diff if has signature
+                    if sig:
+                        diff_lines.append(f"@@ {entity_data['type']}: {entity_data['path']} @@")
+                        diff_lines.append(f"+ {sig}")
+                        diff_lines.append("")
+                    
+                    entity_entry = {
+                        "name": entity_name,
+                        "path": entity_data["path"],
+                        "type": entity_data["type"],
+                        "status": "added",
+                        "signature": sig
+                    }
+                    
+                    # Add extra props if available
+                    if extra_props:
+                        for prop in extra_props:
+                            if prop in entity_data:
+                                entity_entry[prop] = entity_data[prop]
+                    
+                    entities_list.append(entity_entry)
+                
+                elif in_old and not in_new:
+                    # Entity removed
+                    removed_count += 1
+                    entity_data = old_version_map[entity_name]
+                    sig = entity_data.get("signature")
+                    
+                    # Only show in diff if has signature
+                    if sig:
+                        diff_lines.append(f"@@ {entity_data['type']}: {entity_data['path']} @@")
+                        diff_lines.append(f"- {sig}")
+                        diff_lines.append("")
+                    
+                    entity_entry = {
+                        "name": entity_name,
+                        "path": entity_data["path"],
+                        "type": entity_data["type"],
+                        "status": "removed",
+                        "signature": sig
+                    }
+                    
+                    # Add extra props if available
+                    if extra_props:
+                        for prop in extra_props:
+                            if prop in entity_data:
+                                entity_entry[prop] = entity_data[prop]
+                    
+                    entities_list.append(entity_entry)
+            
+            # Build summary message
+            summary_parts = []
+            if added_count > 0:
+                summary_parts.append(f"{added_count} added")
+            if removed_count > 0:
+                summary_parts.append(f"{removed_count} removed")
+            if modified_count > 0:
+                summary_parts.append(f"{modified_count} modified")
+            if unchanged_count > 0:
+                summary_parts.append(f"{unchanged_count} unchanged")
+            
+            summary = ", ".join(summary_parts) if summary_parts else "no changes"
+            system_message = f"Version diff generated for '{parent_entity}': {summary}."
+            
+            diff_text = "\n".join(diff_lines)
+            
+            data = {
+                "entity_name": parent_entity,
+                "old_version": old_version,
+                "new_version": new_version,
+                "diff": diff_text,
+                "entities": entities_list,
+                "summary": {
+                    "added": added_count,
+                    "removed": removed_count,
+                    "modified": modified_count,
+                    "unchanged": unchanged_count
+                },
+                "system_message": system_message
+            }
+            return _dict_to_xml_string(data, "get_version_diff_response")
+            
+        except Exception as e:
+            logging.error(f"Error generating version diff: {e}")
+            data = {
+                "entity_name": parent_entity,
+                "old_version": old_version,
+                "new_version": new_version,
+                "diff": "",
+                "entities": [],
+                "summary": {
+                    "added": 0,
+                    "removed": 0,
+                    "modified": 0,
+                    "unchanged": 0
+                },
+                "system_message": f"Error generating version diff: {str(e)}"
+            }
+            return _dict_to_xml_string(data, "get_version_diff_response")

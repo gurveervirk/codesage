@@ -1,5 +1,5 @@
 """
-LibEx (Library Extraction) Module
+COMExtractor (Code Object Model Extractor) Module
 
 This module provides utilities to extract entities and relationships from Python modules and classes, such as:
 - Modules
@@ -9,7 +9,7 @@ This module provides utilities to extract entities and relationships from Python
 - Imports
 """
 
-from .models import Entity, Relationship
+from .models import Entity, Relationship, ExternalEntityRef
 from typing import Any, Dict, List, Set, Tuple, Callable, Optional, get_type_hints, Literal, get_overloads
 from pathlib import Path
 import importlib.metadata
@@ -23,7 +23,6 @@ import traceback
 import ast
 import os
 import types
-import json
 import builtins
 import typing
 import logging
@@ -47,6 +46,41 @@ def _parse_name_and_version(name_or_spec: str, explicit_version: Optional[str] =
             name, ver = name_or_spec.split(sep, 1)
             return name.strip(), (ver.strip() or None)
     return name_or_spec, None
+
+
+def _get_entity_version(entity_path: str) -> Optional[str]:
+    """
+    Try to determine the version of an external entity by looking at its module's package.
+    
+    Args:
+        entity_path: Fully qualified path like 'numpy.ndarray' or 'pandas.DataFrame'
+    
+    Returns:
+        Version string if found, None otherwise
+    """
+    try:
+        # Extract the root package name (first component)
+        root_package = entity_path.split('.')[0]
+        
+        # Try to get version from importlib.metadata
+        try:
+            version = importlib.metadata.version(root_package)
+            return version
+        except importlib.metadata.PackageNotFoundError:
+            pass
+        
+        # Try to get version from __version__ attribute if module is loaded
+        try:
+            module = importlib.import_module(root_package)
+            if hasattr(module, '__version__'):
+                return str(module.__version__)
+        except Exception:
+            pass
+        
+        return None
+    except Exception as e:
+        logging.debug(f"Could not determine version for {entity_path}: {e}")
+        return None
 
 
 def _visibility_label(name: str) -> str:
@@ -1039,7 +1073,11 @@ def get_typed_signature(func, include_overloads: bool = True):
 
 def get_top_level_module(package_name: str) -> str:
     """
-    Get the top-level module of a package.
+    Get the top-level module of a package, preferring the package name itself if importable.
+    
+    Some packages (like pytest) have different internal module names (_pytest) but expose
+    a public API through the package name. This function tries the package name first,
+    then falls back to the distribution's top-level modules.
 
     Args:
         package_name (str): The name of the package.
@@ -1047,21 +1085,43 @@ def get_top_level_module(package_name: str) -> str:
     Returns:
         str: The top-level module of the package.
     """
+    # First, try importing the package name directly - this handles cases like pytest, where _pytest is internal and can be found first but pytest is the public API
+    try:
+        test_import = importlib.import_module(package_name)
+        # If successful and it's a real package (not just a namespace), use it
+        if hasattr(test_import, '__file__') or hasattr(test_import, '__path__'):
+            logging.info(f"Package {package_name} is directly importable, using it as top-level module")
+            return package_name
+    except (ImportError, ModuleNotFoundError):
+        logging.debug(f"Package name {package_name} is not directly importable, checking distribution metadata")
+    
+    # Fall back to checking distribution metadata
     mapping = importlib.metadata.packages_distributions()
-    top_level_module = ""
+    top_level_modules = []
 
     for top_module, distribution in mapping.items():
         if package_name in distribution:
-            top_level_module = top_module
-            break
+            top_level_modules.append(top_module)
 
-    return top_level_module
+    if not top_level_modules:
+        logging.warning(f"No top-level modules found for package {package_name}")
+        return ""
+    
+    # If we found multiple top-level modules, prefer one that matches the package name
+    if len(top_level_modules) > 1:
+        for mod in top_level_modules:
+            if mod == package_name or mod.replace('_', '-') == package_name.replace('_', '-'):
+                logging.info(f"Found matching top-level module {mod} for package {package_name}")
+                return mod
+        logging.info(f"Multiple top-level modules found for {package_name}: {top_level_modules}, using first: {top_level_modules[0]}")
+    
+    return top_level_modules[0]
 
 def process_member(
     name: str,
     obj: Any,
     root_module_path: str,
-    parent_entity,
+    parent_entity: Entity,
     processed_paths: Set[str],
     other_relations: Dict[str, Set[Tuple]] = None,
     *,
@@ -1095,17 +1155,26 @@ def process_member(
 
         if not obj_path.startswith(root_module_path + "."):
             if parent_entity and parent_entity.label in {"ROOT_MODULE", "MODULE"}:
-                other_relations["IMPORTS"].add((parent_entity.name, obj_path))
+                # Detect version for external imports
+                import_version = _get_entity_version(obj_path)
+                import_ref = ExternalEntityRef(name=obj_path, version=import_version)
+                other_relations["IMPORTS"].add((parent_entity.content_hash, import_ref))
             return [], []
 
         if obj_path in processed_paths:
             if parent_entity and parent_entity.label in {"ROOT_MODULE", "MODULE"}:
-                other_relations["IMPORTS"].add((parent_entity.name, obj_path))
+                # Internal import - use content_hash for from_entity
+                import_version = version  # Use module version for internal imports
+                import_ref = ExternalEntityRef(name=obj_path, version=import_version)
+                other_relations["IMPORTS"].add((parent_entity.content_hash, import_ref))
             return [], []
 
         if not obj_path.startswith(parent_entity.name + "."):
             if parent_entity and parent_entity.label in {"ROOT_MODULE", "MODULE"}:
-                other_relations["IMPORTS"].add((parent_entity.name, obj_path))
+                # Detect version for external imports
+                import_version = _get_entity_version(obj_path)
+                import_ref = ExternalEntityRef(name=obj_path, version=import_version)
+                other_relations["IMPORTS"].add((parent_entity.content_hash, import_ref))
             return [], []
 
         sub_entities, sub_relations = traverse_recursive(
@@ -1123,17 +1192,23 @@ def process_member(
 
         if not obj_path.startswith(root_module_path + "."):
             if parent_entity and parent_entity.label in {"ROOT_MODULE", "MODULE"}:
-                other_relations["IMPORTS"].add((parent_entity.name, obj_path))
+                import_version = _get_entity_version(obj_path)
+                import_ref = ExternalEntityRef(name=obj_path, version=import_version)
+                other_relations["IMPORTS"].add((parent_entity.content_hash, import_ref))
             return [], []
 
         if obj_path in processed_paths:
             if parent_entity and parent_entity.label in {"ROOT_MODULE", "MODULE"}:
-                other_relations["IMPORTS"].add((parent_entity.name, obj_path))
+                import_version = version
+                import_ref = ExternalEntityRef(name=obj_path, version=import_version)
+                other_relations["IMPORTS"].add((parent_entity.content_hash, import_ref))
             return [], []
 
         elif not obj_path.startswith(parent_entity.name + "."):
             if parent_entity and parent_entity.label in {"ROOT_MODULE", "MODULE"}:
-                other_relations["IMPORTS"].add((parent_entity.name, obj_path))
+                import_version = _get_entity_version(obj_path)
+                import_ref = ExternalEntityRef(name=obj_path, version=import_version)
+                other_relations["IMPORTS"].add((parent_entity.content_hash, import_ref))
             return [], []
 
         else:
@@ -1359,7 +1434,12 @@ def traverse_recursive(
                 try:
                     base_path = f"{base.__module__}.{base.__qualname__}"
                     if base_path != obj_path:
-                        other_relations["INHERITS"].add((obj_path, base_path))
+                        # Try to detect version for external entities
+                        base_version = _get_entity_version(base_path) if not base_path.startswith(root_module_path + ".") else version
+                        # Create ExternalEntityRef for the base class
+                        base_ref = ExternalEntityRef(name=base_path, version=base_version)
+                        # Store as (child_name, ExternalEntityRef)
+                        other_relations["INHERITS"].add((obj_path, base_ref))
                 except Exception:
                     pass
 
@@ -1512,49 +1592,81 @@ def process_module(module_name: str, version: Optional[str] = None):
         entities.extend(sub_entities)
         relations.extend(sub_relations)
 
+    # Build mapping from content_hash to entity for lookups
+    hash_to_entity: Dict[str, Entity] = {}
+    for entity in entities:
+        hash_to_entity[entity.content_hash] = entity
+    
     # Convert IMPORTS to EXPOSES for unused imports
+    # Now working with (content_hash, ExternalEntityRef) tuples
     imported_relations = other_relations["IMPORTS"]
-    updated_imported_relations: Set[Tuple[str, str]] = set()
-    module_to_imports: Dict[str, Set[str]] = {}
+    updated_imported_relations: Set[Tuple[str, ExternalEntityRef]] = set()
+    module_hash_to_imports: Dict[str, Set[str]] = {}
 
-    for from_entity, to_entity in imported_relations:
-        full_module_path = from_entity
+    for from_hash, to_ref in imported_relations:
+        # Get the entity name for unused import detection
+        from_entity = hash_to_entity.get(from_hash)
+        if not from_entity:
+            continue
+            
+        full_module_path = from_entity.name
 
-        if full_module_path not in module_to_imports:
-            module_to_imports[full_module_path] = set()
+        if full_module_path not in module_hash_to_imports:
+            module_hash_to_imports[full_module_path] = set()
 
-        module_to_imports[full_module_path].add(to_entity)
+        module_hash_to_imports[full_module_path].add(to_ref.name)
 
-    for module, imports in module_to_imports.items():
-        unused_imports = get_unused_imports(module, imports)
+    for module_name_key, imports in module_hash_to_imports.items():
+        unused_imports = get_unused_imports(module_name_key, imports)
         used_imports = set(imports) - set(unused_imports)
 
+        # Find the entity for this module
+        module_entity = next((e for e in entities if e.name == module_name_key), None)
+        if not module_entity:
+            continue
+            
         for unused_import in unused_imports:
-            other_relations["EXPOSES"].add((module, unused_import))
+            # Find the original ExternalEntityRef for this import
+            for from_hash, to_ref in imported_relations:
+                if from_hash == module_entity.content_hash and to_ref.name == unused_import:
+                    other_relations["EXPOSES"].add((from_hash, to_ref))
+                    break
 
         for used_import in used_imports:
-            updated_imported_relations.add((module, used_import))
+            # Find the original ExternalEntityRef for this import
+            for from_hash, to_ref in imported_relations:
+                if from_hash == module_entity.content_hash and to_ref.name == used_import:
+                    updated_imported_relations.add((from_hash, to_ref))
+                    break
 
     other_relations["IMPORTS"] = updated_imported_relations
 
-    cleaned_exposed_relations: Set[Tuple[str, str]] = set()
-    cleaned_imports_relations: Set[Tuple[str, str]] = set()
+    cleaned_exposed_relations: Set[Tuple[str, ExternalEntityRef]] = set()
+    cleaned_imports_relations: Set[Tuple[str, ExternalEntityRef]] = set()
 
     # Clean up IMPORTS relations
-    for from_entity, to_entity in other_relations["IMPORTS"]:
-        to_entity_ancestor_path = ".".join(to_entity.split(".")[:-1])
-        if to_entity_ancestor_path == from_entity:
+    for from_hash, to_ref in other_relations["IMPORTS"]:
+        from_entity = hash_to_entity.get(from_hash)
+        if not from_entity:
             continue
-        elif to_entity.startswith(module_name):
-            other_relations["EXPOSES"].add((from_entity, to_entity))
+            
+        to_entity_ancestor_path = ".".join(to_ref.name.split(".")[:-1])
+        if to_entity_ancestor_path == from_entity.name:
+            continue
+        elif to_ref.name.startswith(module_object.__name__):
+            other_relations["EXPOSES"].add((from_hash, to_ref))
         else:
-            cleaned_imports_relations.add((from_entity, to_entity))
+            cleaned_imports_relations.add((from_hash, to_ref))
 
     # Clean up EXPOSED relations
-    for from_entity, to_entity in other_relations["EXPOSES"]:
-        if not to_entity.startswith(from_entity):
+    for from_hash, to_ref in other_relations["EXPOSES"]:
+        from_entity = hash_to_entity.get(from_hash)
+        if not from_entity:
             continue
-        cleaned_exposed_relations.add((from_entity, to_entity))
+            
+        if not to_ref.name.startswith(from_entity.name):
+            continue
+        cleaned_exposed_relations.add((from_hash, to_ref))
 
     # Deduplicate entities and relations (Entity isn't hashable; use name)
     # ent_by_name: Dict[str, Entity] = {}
@@ -1577,7 +1689,18 @@ def process_module(module_name: str, version: Optional[str] = None):
 
         cleaned_import_aliases: List[Tuple[str, str]] = []
         for key, value in entity.properties.get("import_as_aliases", []):
-            if (entity.name, key) in other_relations["EXPOSES"] or (entity.name, key) in other_relations["IMPORTS"]:
+            # Check if this alias is in EXPOSES or IMPORTS using content_hash
+            found = False
+            for from_hash, to_ref in other_relations["EXPOSES"]:
+                if from_hash == entity.content_hash and to_ref.name == key:
+                    found = True
+                    break
+            if not found:
+                for from_hash, to_ref in other_relations["IMPORTS"]:
+                    if from_hash == entity.content_hash and to_ref.name == key:
+                        found = True
+                        break
+            if found:
                 cleaned_import_aliases.append((key, value))
         if cleaned_import_aliases:
             entity.properties["import_as_aliases"] = cleaned_import_aliases
@@ -1617,185 +1740,3 @@ def process_package(package_name: str, version: Optional[str] = None):
     
     logging.info(f"Processing package '{pkg_name}' with top-level module '{top_level_module}'...")
     return process_module(top_level_module, version=version)
-
-def visualize_to_html(entities: List[Entity], relations: List[Relationship], out_file: Optional[str] = None) -> str:
-    """
-    Generate a simple searchable HTML visualization of entities and relations.
-    Returns the HTML string and optionally writes it to out_file.
-    """
-    def esc(s: Any) -> str:
-        try:
-            return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-        except Exception:
-            return str(s)
-
-    # Serialize data for fast client-side rendering & search
-    ents_data = []
-    for e in entities:
-        ents_data.append({
-            "name": e.name,
-            "labels": ", ".join(e.labels),
-            "dname": e.properties.get("__name__", ""),
-            "sig": e.properties.get("signature", ""),
-            "found": ", ".join(e.properties.get("found_types", [])),
-        })
-    rels_data = []
-    for r in relations:
-        rels_data.append({
-            "from": r.from_entity.name,
-            "label": r.label,
-            "to": r.to_entity.name,
-        })
-
-    html = """
-<!DOCTYPE html>
-<html lang=\"en\">
-<head>
-    <meta charset=\"UTF-8\" />
-    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />
-    <title>CodeSage Reflex Visualization</title>
-    <style>
-        :root {{ --row-h: 28px; }}
-        body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Helvetica Neue', sans-serif; margin: 16px; }}
-        .section {{ margin-bottom: 40px; }}
-        .muted {{ color: #6b7280; font-size: 12px; }}
-        .controls {{ display: flex; gap: 8px; align-items: center; margin: 8px 0 12px; flex-wrap: wrap; }}
-        .search {{ flex: 1; min-width: 260px; }}
-        input[type="search"] {{ width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 6px; }}
-        .count {{ color: #6b7280; font-size: 12px; }}
-    .grid {{ display: grid; grid-template-columns: var(--cols); border: 1px solid #e5e7eb; border-radius: 6px; overflow: hidden; }}
-    .header {{ display: contents; }}
-    .cell.h {{ background: #f9fafb; font-weight: 600; }}
-    .cell {{ padding: 6px 8px; border-bottom: 1px solid #eee; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
-    .list {{ position: relative; height: 420px; overflow: auto; border: 1px solid #e5e7eb; border-radius: 6px; border-top: none; }}
-    .canvas {{ position: relative; height: 0px; }}
-    .r {{ position: absolute; left: 0; right: 0; display: grid; grid-template-columns: var(--cols); }}
-        .mono {{ font-family: ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,'Liberation Mono','Courier New',monospace; }}
-    </style>
-    <script>
-        const ents = __ENTS__;
-        const rels = __RELS__;
-
-        // Augment items with search text
-        for (const e of ents) {{ e._q = (e.name+" "+e.labels+" "+e.dname+" "+e.sig+" "+e.found).toLowerCase(); }}
-        for (const r of rels) {{ r._q = (r.from+" "+r.label+" "+r.to).toLowerCase(); }}
-
-        class VirtualList {
-            constructor(listEl, items, renderRow, columnsDef) {
-                this.viewport = listEl; // scrollable element
-                this.canvas = document.createElement('div');
-                this.canvas.className = 'canvas';
-                this.viewport.innerHTML = '';
-                this.viewport.appendChild(this.canvas);
-                this.items = items;
-                this.filtered = items;
-                this.renderRow = renderRow;
-                this.rowH = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--row-h')) || 28;
-                this.columnsDef = columnsDef;
-                this.countEl = null;
-                this.viewport.addEventListener('scroll', () => this._render());
-                this._render(true);
-            }
-            setItems(items) {
-                this.items = items;
-                this.filtered = items;
-                this._render(true);
-            }
-            filter(query) {
-                const q = query.trim().toLowerCase();
-                if (!q) this.filtered = this.items; else this.filtered = this.items.filter(it => it._q.includes(q));
-                this._render(true);
-            }
-            _render(reset=false) {
-                const H = this.viewport.clientHeight;
-                const total = this.filtered.length;
-                const vh = this.rowH;
-                const buffer = 8;
-                const scrollTop = this.viewport.scrollTop;
-                const start = Math.max(Math.floor(scrollTop / vh) - buffer, 0);
-                const visible = Math.ceil(H / vh) + 2*buffer;
-                const end = Math.min(start + visible, total);
-
-                this.canvas.style.height = (total * vh) + 'px';
-
-                // Clear existing rows
-                this.canvas.innerHTML = '';
-
-                const frag = document.createDocumentFragment();
-                for (let i = start; i < end; i++) {
-                    const row = document.createElement('div');
-                    row.className = 'r mono';
-                    row.style.top = (i * vh) + 'px';
-                    row.style.height = vh + 'px';
-                    row.style.setProperty('--cols', this.columnsDef);
-                    const cells = this.renderRow(this.filtered[i]);
-                    for (const c of cells) row.appendChild(c);
-                    frag.appendChild(row);
-                }
-                this.canvas.appendChild(frag);
-                if (this.countEl) this.countEl.textContent = (total.toLocaleString()) + ' rows';
-                if (reset) this.viewport.scrollTop = 0;
-            }
-        }
-
-        function mkCell(text, cls='cell') {{ const d=document.createElement('div'); d.className=cls; d.textContent=text; return d; }}
-
-        function init() {{
-            // Entities
-            const entCols = '2fr 1fr 1fr 2fr 1fr';
-            const entContainer = document.getElementById('entities');
-            const entList = new VirtualList(entContainer, ents, (e) => [
-                mkCell(e.name), mkCell(e.labels), mkCell(e.dname), mkCell(e.sig), mkCell(e.found)
-            ], entCols);
-            entList.countEl = document.getElementById('entCount');
-            const entInput = document.getElementById('searchEnt');
-            entInput.addEventListener('input', () => entList.filter(entInput.value));
-
-            // Relationships
-            const relCols = '2fr 1fr 2fr';
-            const relContainer = document.getElementById('relations');
-            const relList = new VirtualList(relContainer, rels, (r) => [
-                mkCell(r.from), mkCell(r.label), mkCell(r.to)
-            ], relCols);
-            relList.countEl = document.getElementById('relCount');
-            const relInput = document.getElementById('searchRel');
-            relInput.addEventListener('input', () => relList.filter(relInput.value));
-        }
-        window.addEventListener('DOMContentLoaded', init);
-    </script>
-    </head>
-    <body>
-        <h1>CodeSage Reflex Visualization</h1>
-        <p class=\"muted\">Fast client-side search with virtualized lists. Use the search boxes to filter.</p>
-        <div class=\"section\">
-            <h2>Entities <span id=\"entCount\" class=\"count\"></span></h2>
-            <div class=\"controls\">
-                <div class=\"search\"><input id=\"searchEnt\" type=\"search\" placeholder=\"Search entities...\" /></div>
-            </div>
-            <div class=\"grid mono\" style=\"--cols: 2fr 1fr 1fr 2fr 1fr\"> 
-                <div class=\"header\">
-                    <div class=\"cell h\">Name</div><div class=\"cell h\">Labels</div><div class=\"cell h\">__name__</div><div class=\"cell h\">Signature</div><div class=\"cell h\">Found Types</div>
-                </div>
-            </div>
-            <div id=\"entities\" class=\"list\"></div>
-        </div>
-        <div class=\"section\">
-            <h2>Relationships <span id=\"relCount\" class=\"count\"></span></h2>
-            <div class=\"controls\">
-                <div class=\"search\"><input id=\"searchRel\" type=\"search\" placeholder=\"Search relationships...\" /></div>
-            </div>
-            <div class=\"grid mono\" style=\"--cols: 2fr 1fr 2fr\"> 
-                <div class=\"header\">
-                    <div class=\"cell h\">From</div><div class=\"cell h\">Label</div><div class=\"cell h\">To</div>
-                </div>
-            </div>
-            <div id=\"relations\" class=\"list\"></div>
-        </div>
-    </body>
-    </html>
-"""
-    # Inject JSON safely
-    html = html.replace("__ENTS__", json.dumps(ents_data)).replace("__RELS__", json.dumps(rels_data))
-    if out_file:
-        Path(out_file).write_text(html, encoding="utf-8")
-    return html

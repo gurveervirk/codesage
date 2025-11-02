@@ -1,0 +1,545 @@
+#!/usr/bin/env python3
+"""
+Process library versions from GitChameleon dataset.
+
+This script:
+1. Reads library versions from version_info.json
+2. For each selected library version:
+   - Creates an isolated virtual environment
+   - Installs the specific library version
+   - Uses com_extractor to extract code entities
+   - Uploads entities to Neo4j using com_store
+   - Cleans up the virtual environment
+   - Proceeds to the next version
+"""
+
+import json
+import subprocess
+import sys
+import os
+import shutil
+import logging
+from pathlib import Path
+from typing import Dict, List, Optional
+from dotenv import load_dotenv
+
+sys.path.insert(0, str(Path(__file__).parent.parent.parent / 'backend'))
+
+try:
+    from lib_sage.com_store import COMStore
+except ImportError:
+    COMStore = None  # Placeholder if import fails
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+
+def load_version_info(version_info_path: Path) -> Dict:
+    """Load the version_info.json file."""
+    if not version_info_path.exists():
+        raise FileNotFoundError(f"version_info.json not found at {version_info_path}")
+    
+    with open(version_info_path, 'r') as f:
+        return json.load(f)
+
+
+def select_library(library_versions: Dict[str, List[str]]) -> Optional[str]:
+    """
+    Allow user to select a library from the list.
+    
+    Args:
+        library_versions: Dict mapping library names to lists of versions
+    
+    Returns:
+        Selected library name or None if cancelled
+    """
+    # Get unique library names (already keys in the dict)
+    libraries = sorted(library_versions.keys())
+    
+    print("\n" + "="*60)
+    print("Available Libraries:")
+    print("="*60)
+    for i, lib in enumerate(libraries, 1):
+        # Count versions for this library
+        versions = library_versions[lib]
+        print(f"{i:3d}. {lib} ({len(versions)} version(s))")
+    
+    print("\n0. Process ALL libraries")
+    print("="*60)
+    
+    while True:
+        try:
+            choice = input("\nSelect library number (or 0 for all, q to quit): ").strip()
+            if choice.lower() == 'q':
+                return None
+            
+            choice_num = int(choice)
+            if choice_num == 0:
+                return "ALL"
+            elif 1 <= choice_num <= len(libraries):
+                return libraries[choice_num - 1]
+            else:
+                print(f"Invalid choice. Please enter a number between 0 and {len(libraries)}")
+        except ValueError:
+            print("Invalid input. Please enter a number or 'q' to quit.")
+
+
+def get_library_versions(
+    library_name: str, 
+    library_versions_dict: Dict[str, List[str]],
+    lib_with_deps_dict: Dict[str, List[str]]
+) -> List[Dict[str, any]]:
+    """
+    Get all versions for a specific library with their dependencies.
+    
+    Args:
+        library_name: Name of the library or "ALL"
+        library_versions_dict: Dict mapping library -> [versions]
+        lib_with_deps_dict: Dict mapping "library==version" -> [deps]
+    
+    Returns:
+        List of dicts with 'library', 'version', 'dependencies' keys
+    """
+    result = []
+    
+    if library_name == "ALL":
+        libs_to_process = library_versions_dict.keys()
+    else:
+        libs_to_process = [library_name]
+    
+    for lib in libs_to_process:
+        for version in library_versions_dict.get(lib, []):
+            lib_ver_key = f"{lib}=={version}"
+            deps_list = lib_with_deps_dict.get(lib_ver_key, [])
+            
+            # Parse dependencies from string format "pkg1==ver1 pkg2==ver2"
+            parsed_deps = []
+            for dep_string in deps_list:
+                if dep_string:
+                    for dep in dep_string.split():
+                        if "==" in dep:
+                            pkg, ver = dep.split("==", 1)
+                            parsed_deps.append({"package": pkg, "version": ver})
+                        else:
+                            parsed_deps.append({"package": dep, "version": None})
+            
+            result.append({
+                "library": lib,
+                "version": version,
+                "additional_dependencies": parsed_deps
+            })
+    
+    return result
+
+
+def create_venv(venv_path: Path) -> bool:
+    """
+    Create a virtual environment.
+    
+    Args:
+        venv_path: Path where the venv should be created
+    
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        logger.info(f"Creating virtual environment at {venv_path}")
+        subprocess.run(
+            [sys.executable, "-m", "venv", str(venv_path)],
+            check=True,
+            capture_output=True
+        )
+        return True
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Failed to create venv: {e.stderr.decode()}")
+        return False
+
+
+def get_venv_python(venv_path: Path) -> Path:
+    """Get the path to the Python executable in the venv."""
+    if sys.platform == "win32":
+        return venv_path / "Scripts" / "python.exe"
+    else:
+        return venv_path / "bin" / "python"
+
+
+def install_package(venv_path: Path, package_spec: str) -> bool:
+    """
+    Install a package in the virtual environment.
+    
+    Args:
+        venv_path: Path to the virtual environment
+        package_spec: Package specification (e.g., "torch==1.9.0")
+    
+    Returns:
+        True if successful, False otherwise
+    """
+    python_exe = get_venv_python(venv_path)
+    
+    try:
+        logger.info(f"Installing {package_spec}")
+        cmd = [str(python_exe), "-m", "pip", "install", "--quiet", package_spec]
+        # Include pydantic as it's required for com_extractor
+        if "pydantic" not in package_spec.lower():
+            cmd += ["pydantic"]
+        subprocess.run(
+            cmd,
+            check=True,
+            capture_output=True,
+            timeout=600  # 10 minute timeout for installation
+        )
+        return True
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Failed to install {package_spec}: {e.stderr.decode()}")
+        return False
+    except subprocess.TimeoutExpired:
+        logger.error(f"Installation of {package_spec} timed out")
+        return False
+
+
+def run_extraction_in_venv(
+    venv_path: Path,
+    library: str,
+    version: str,
+    codesage_root: Path
+) -> Optional[tuple]:
+    """
+    Run the code extraction inside the virtual environment.
+    
+    Args:
+        venv_path: Path to the virtual environment
+        library: Library name
+        version: Library version
+        codesage_root: Path to CodeSage root directory
+    
+    Returns:
+        Tuple of (entities, relations, other_relations) or None if failed
+    """
+    python_exe = get_venv_python(venv_path)
+    
+    # Create a temporary Python script to run inside the venv
+    extraction_script = f"""
+import sys
+import os
+
+# Add CodeSage backend to path
+sys.path.insert(0, r"{codesage_root / 'backend'}")
+
+try:
+    from lib_sage.com_extractor import process_package
+    
+    # Process the package
+    entities, relations, other_relations = process_package("{library}", version="{version}")
+    
+    # Save results to a temporary file
+    import json
+    import pickle
+    
+    results = {{
+        'entities': entities,
+        'relations': relations,
+        'other_relations': other_relations
+    }}
+    
+    # Serialize using pickle for complex objects
+    with open('extraction_results.pkl', 'wb') as f:
+        pickle.dump(results, f)
+    
+    print("EXTRACTION_SUCCESS")
+    
+except Exception as e:
+    import traceback
+    print(f"EXTRACTION_ERROR: {{str(e)}}", file=sys.stderr)
+    traceback.print_exc(file=sys.stderr)
+    sys.exit(1)
+"""
+    
+    script_path = venv_path / "extract_code.py"
+    results_path = venv_path / "extraction_results.pkl"
+    
+    try:
+        # Write the extraction script
+        with open(script_path, 'w') as f:
+            f.write(extraction_script)
+        
+        # Run the script
+        logger.info(f"Extracting entities from {library}=={version}")
+        result = subprocess.run(
+            [str(python_exe), str(script_path)],
+            cwd=str(venv_path),
+            capture_output=True,
+            timeout=1800,  # 30 minute timeout
+            text=True
+        )
+        
+        if result.returncode != 0:
+            logger.error(f"Extraction failed: {result.stderr}")
+            return None
+        
+        if "EXTRACTION_SUCCESS" not in result.stdout:
+            logger.error(f"Extraction did not complete successfully")
+            return None
+        
+        # Load the results
+        import pickle
+        with open(results_path, 'rb') as f:
+            results = pickle.load(f)
+        
+        logger.info(f"Extracted {len(results['entities'])} entities and {len(results['relations'])} relations")
+        return (results['entities'], results['relations'], results['other_relations'])
+        
+    except subprocess.TimeoutExpired:
+        logger.error(f"Extraction timed out for {library}=={version}")
+        return None
+    except Exception as e:
+        logger.error(f"Error during extraction: {e}")
+        return None
+    finally:
+        # Cleanup temporary files
+        if script_path.exists():
+            script_path.unlink()
+        if results_path.exists():
+            results_path.unlink()
+
+
+def upload_to_neo4j(
+    entities: List,
+    relations: List,
+    other_relations: Dict,
+    library: str,
+    version: str,
+    neo4j_config: Dict
+) -> bool:
+    """
+    Upload extracted entities to Neo4j.
+    
+    Args:
+        entities: List of Entity objects
+        relations: List of Relationship objects
+        other_relations: Dict of other relationship types
+        library: Library name
+        version: Library version
+        neo4j_config: Neo4j connection configuration
+    
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        logger.info(f"Connecting to Neo4j at {neo4j_config.get('url', 'default')}")
+        
+        # Create COMStore instance
+        store = COMStore(
+            username=neo4j_config.get('username', 'neo4j'),
+            password=neo4j_config.get('password', 'password'),
+            url=neo4j_config.get('url', 'bolt://localhost:7687'),
+            database=neo4j_config.get('database', 'neo4j'),
+            # refresh_schema=False  # Skip schema refresh to avoid issues with existing data
+        )
+        
+        # Upload to Neo4j
+        logger.info(f"Uploading {len(entities)} entities to Neo4j for {library}=={version}")
+        store.upsert_to_neo4j(
+            module_name=library,
+            entities=entities,
+            relations=relations,
+            other_relations=other_relations,
+        )
+        
+        logger.info(f"Successfully uploaded {library}=={version} to Neo4j")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Failed to upload to Neo4j: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
+def process_library_version(
+    library: str,
+    version: str,
+    additional_deps: List[Dict],
+    work_dir: Path,
+    codesage_root: Path,
+    neo4j_config: Dict,
+    keep_venv: bool = False
+) -> bool:
+    """
+    Process a single library version.
+    
+    Args:
+        library: Library name
+        version: Library version
+        additional_deps: List of additional dependencies
+        work_dir: Working directory for temporary files
+        codesage_root: Path to CodeSage root
+        neo4j_config: Neo4j configuration
+        keep_venv: Whether to keep the venv after processing
+    
+    Returns:
+        True if successful, False otherwise
+    """
+    venv_path = work_dir / f"venv_{library}_{version.replace('.', '_')}"
+    
+    try:
+        # Step 1: Create virtual environment
+        if not create_venv(venv_path):
+            return False
+        
+        # Step 2: Install the library
+        package_spec = f"{library}=={version}"
+        if not install_package(venv_path, package_spec):
+            return False
+        
+        # Step 3: Install additional dependencies
+        for dep in additional_deps:
+            dep_package = dep['package']
+            dep_version = dep.get('version')
+            if dep_version:
+                dep_spec = f"{dep_package}=={dep_version}"
+            else:
+                dep_spec = dep_package
+            
+            if not install_package(venv_path, dep_spec):
+                logger.warning(f"Failed to install dependency {dep_spec}, continuing anyway")
+        
+        # Step 4: Extract code entities
+        extraction_result = run_extraction_in_venv(venv_path, library, version, codesage_root)
+        if extraction_result is None:
+            return False
+        
+        entities, relations, other_relations = extraction_result
+        
+        # Step 5: Upload to Neo4j
+        if not upload_to_neo4j(entities, relations, other_relations, library, version, neo4j_config):
+            return False
+        
+        logger.info(f"✓ Successfully processed {library}=={version}")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error processing {library}=={version}: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+    
+    finally:
+        # Step 6: Cleanup virtual environment
+        if not keep_venv and venv_path.exists():
+            logger.info(f"Cleaning up venv at {venv_path}")
+            try:
+                shutil.rmtree(venv_path)
+            except Exception as e:
+                logger.warning(f"Failed to remove venv: {e}")
+
+
+def main():
+    """Main function."""
+    # Determine paths
+    script_dir = Path(__file__).parent
+    codesage_root = script_dir.parent.parent
+    backend_dir = codesage_root / "backend"
+    version_info_path = script_dir / "version_info.json"
+    
+    # Load environment variables from backend/.env
+    env_file = backend_dir / ".env"
+    if env_file.exists():
+        logger.info(f"Loading configuration from {env_file}")
+        load_dotenv(env_file)
+    else:
+        logger.warning(f"No .env file found at {env_file}, using defaults/environment variables")
+    
+    # Load version information
+    try:
+        version_info = load_version_info(version_info_path)
+    except FileNotFoundError as e:
+        logger.error(str(e))
+        logger.info("Please run extract_versions.py first to generate version_info.json")
+        return 1
+    
+    library_versions_dict = version_info.get('library_versions', {})
+    lib_with_deps_dict = version_info.get('library_version_with_dependencies', {})
+    
+    if not library_versions_dict:
+        logger.error("No library versions found in version_info.json")
+        logger.info("The version_info.json file may be empty or have an incorrect structure")
+        return 1
+    
+    # Select library
+    selected_library = select_library(library_versions_dict)
+    if selected_library is None:
+        logger.info("Processing cancelled by user")
+        return 0
+    
+    # Get versions to process
+    versions_to_process = get_library_versions(selected_library, library_versions_dict, lib_with_deps_dict)
+    
+    logger.info(f"Will process {len(versions_to_process)} library version(s)")
+    
+    # Get Neo4j configuration from .env file (loaded above) or environment variables
+    neo4j_config = {
+        'username': os.getenv('NEO4J_USER', 'neo4j'),
+        'password': os.getenv('NEO4J_PASSWORD', ''),
+        'url': os.getenv('NEO4J_URI', 'bolt://localhost:7687'),
+        'database': os.getenv('NEO4J_DATABASE', 'neo4j'),
+        'embed_nodes': os.getenv('EMBED_NODES', 'false').lower() == 'true'
+    }
+    
+    # Validate Neo4j configuration
+    if not neo4j_config['password']:
+        logger.error("NEO4J_PASSWORD is not set. Please configure it in backend/.env or as an environment variable.")
+        return 1
+    
+    logger.info(f"Neo4j URL: {neo4j_config['url']}")
+    logger.info(f"Neo4j User: {neo4j_config['username']}")
+    logger.info(f"Neo4j Database: {neo4j_config['database']}")
+    logger.info(f"Embed nodes: {neo4j_config['embed_nodes']}")
+    
+    # Create working directory
+    work_dir = script_dir / "venvs"
+    work_dir.mkdir(exist_ok=True)
+    
+    # Process each version
+    successful = 0
+    failed = 0
+    
+    for i, lib_version in enumerate(versions_to_process, 1):
+        library = lib_version['library']
+        version = lib_version['version']
+        additional_deps = lib_version.get('additional_dependencies', [])
+        
+        logger.info(f"\n{'='*60}")
+        logger.info(f"Processing {i}/{len(versions_to_process)}: {library}=={version}")
+        logger.info(f"{'='*60}")
+        
+        if process_library_version(
+            library=library,
+            version=version,
+            additional_deps=additional_deps,
+            work_dir=work_dir,
+            codesage_root=codesage_root,
+            neo4j_config=neo4j_config,
+            keep_venv=False
+        ):
+            successful += 1
+        else:
+            failed += 1
+            logger.error(f"✗ Failed to process {library}=={version}")
+    
+    # Final summary
+    logger.info(f"\n{'='*60}")
+    logger.info(f"PROCESSING COMPLETE")
+    logger.info(f"{'='*60}")
+    logger.info(f"Successful: {successful}/{len(versions_to_process)}")
+    logger.info(f"Failed: {failed}/{len(versions_to_process)}")
+    logger.info(f"{'='*60}")
+    
+    return 0 if failed == 0 else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
