@@ -55,6 +55,31 @@ After setting up the environment:
 3. Use AI Toolkit Agent Builder to test the server
 4. Click `Run` to test the server with your prompts
 
+### Transport Options
+
+The server supports three transport mechanisms:
+
+| Transport | Description | Use Case |
+| --------- | ----------- | -------- |
+| **streamable-http** (default) | Modern single-endpoint protocol with full-duplex streaming | Recommended for all new deployments, better proxy compatibility |
+| **sse** (legacy) | Server-Sent Events with separate endpoints | Backward compatibility with older MCP clients |
+| **stdio** | Standard input/output | Local development and direct process communication |
+
+To start with a specific transport:
+```bash
+# Default (streamable-http)
+python -m src
+
+# Explicit streamable-http
+python -m src streamable-http
+
+# Legacy SSE
+python -m src sse
+
+# STDIO
+python -m src stdio
+```
+
 ## Example Prompts
 
 Here are some example prompts to test the MCP server:
@@ -82,7 +107,7 @@ Here are some example prompts to test the MCP server:
 | Debug Mode | Description | Steps |
 | ---------- | ----------- | ----- |
 | Agent Builder | Debug via AI Toolkit Agent Builder | 1. Open VS Code Debug panel<br>2. Select `Debug in Agent Builder` and press `F5`<br>3. Use AI Toolkit Agent Builder to test<br>4. Click `Run` to execute prompts |
-| MCP Inspector | Debug using MCP Inspector | 1. Install [Node.js](https://nodejs.org/)<br>2. Set up Inspector: `cd inspector && npm install`<br>3. Select `Debug SSE in Inspector` and press `F5`<br>4. Click `Connect` in the browser<br>5. Test tools via the Inspector UI |
+| MCP Inspector | Debug using MCP Inspector | 1. Install [Node.js](https://nodejs.org/)<br>2. Set up Inspector: `cd inspector && npm install`<br>3. Select `Debug Streamable HTTP in Inspector` or `Debug SSE in Inspector` and press `F5`<br>4. Click `Connect` in the browser<br>5. Test tools via the Inspector UI |
 
 ## Default Ports
 
@@ -90,6 +115,14 @@ Here are some example prompts to test the MCP server:
 | ---------- | ----- | ------------------- | ------------- |
 | Agent Builder | 3001 | [tasks.json](.vscode/tasks.json) | Edit launch.json, tasks.json, \_\_init\_\_.py, mcp.json |
 | MCP Inspector | 3001 (Server); 5173, 3000 (Inspector) | [tasks.json](.vscode/tasks.json) | Edit launch.json, tasks.json, \_\_init\_\_.py, mcp.json |
+
+## Endpoints
+
+| Transport | Endpoint | Description |
+| --------- | -------- | ----------- |
+| Streamable HTTP | `http://127.0.0.1:3001/mcp` | Single endpoint for all MCP communication (POST/GET) |
+| SSE (Legacy) | `http://127.0.0.1:3001` | Base URL for SSE connection and message endpoints |
+| STDIO | N/A | Uses standard input/output streams |
 
 ## Feedback
 

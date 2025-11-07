@@ -291,6 +291,7 @@ def get_import_as_aliases(source_code: str, current_file_path: str) -> List[Tupl
 def get_unused_imports(module_name: str, imported_names: Set[str]) -> Set[str]:
     """
     Get the list of unused imports in a module using flake8, returning the full paths.
+    Also checks if imports are only used in __all__ (re-exports) and treats them as unused.
 
     Args:
         module_name (str): The name of the module.
@@ -306,14 +307,15 @@ def get_unused_imports(module_name: str, imported_names: Set[str]) -> Set[str]:
         logging.debug(f"Checking unused imports for {module_name} at {module_file_path}...")
 
         # Run flake8 and capture output
-        # If system OS is Windows, use shell=True
+        # Note: flake8 returns exit code 1 when it finds violations, which is expected behavior
+        # So we use check=False to avoid raising an exception
         process = None
         if os.name == 'nt':
             process = subprocess.run(
                 ["python", "-m", "flake8", "--select", "F401", module_file_path],
                 capture_output=True,
                 text=True,
-                check=True,
+                check=False,
                 shell=True,
             )
         else:
@@ -322,9 +324,17 @@ def get_unused_imports(module_name: str, imported_names: Set[str]) -> Set[str]:
                 ["python", "-m", "flake8", "--select", "F401", module_file_path],
                 capture_output=True,
                 text=True,
-                check=True,
+                check=False,
                 shell=False,
             )
+
+        # Check if flake8 command failed to run (not just found violations)
+        # Exit code 1 means violations found (expected), > 1 means command failed
+        if process.returncode > 1:
+            logging.warning(f"flake8 command failed for {module_name} with exit code {process.returncode}")
+            if process.stderr:
+                logging.debug(f"flake8 stderr: {process.stderr}")
+            return set()
 
         output = process.stdout
         unused_names: List[str] = []
@@ -334,6 +344,67 @@ def get_unused_imports(module_name: str, imported_names: Set[str]) -> Set[str]:
             match = re.search(r":\d+:(\d+): F401 '(.*)' imported but unused", line)
             if match:
                 unused_names.append(match.group(2))
+        
+        # Check for imports that are only used in __all__ (re-exports without actual usage)
+        # Parse the module source to find imports and __all__
+        try:
+            source = inspect.getsource(module)
+            tree = ast.parse(source)
+            
+            # Extract __all__ if it exists
+            all_names: Set[str] = set()
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Assign):
+                    for target in node.targets:
+                        if isinstance(target, ast.Name) and target.id == "__all__":
+                            # Extract names from __all__ list
+                            if isinstance(node.value, (ast.List, ast.Tuple)):
+                                for elt in node.value.elts:
+                                    if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
+                                        all_names.add(elt.value)
+                                    elif hasattr(ast, 'Str') and isinstance(elt, ast.Str):  # py<3.8
+                                        all_names.add(elt.s)  # type: ignore
+            
+            if all_names:
+                logging.debug(f"Found __all__ in {module_name} with {len(all_names)} names")
+                
+                # For each imported name, check if it's ONLY in __all__ and nowhere else
+                # Build a map of simple names to full paths
+                simple_name_to_full: Dict[str, str] = {}
+                for full_name in imported_names:
+                    simple = full_name.split(".")[-1]
+                    simple_name_to_full[simple] = full_name
+                
+                # Check each name in __all__
+                for all_name in all_names:
+                    if all_name in simple_name_to_full:
+                        full_path = simple_name_to_full[all_name]
+                        
+                        # Count usages outside of __all__ and import statements
+                        usage_count = 0
+                        for node in ast.walk(tree):
+                            # Skip __all__ assignments
+                            if isinstance(node, ast.Assign):
+                                for target in node.targets:
+                                    if isinstance(target, ast.Name) and target.id == "__all__":
+                                        continue
+                            
+                            # Skip import statements
+                            if isinstance(node, (ast.Import, ast.ImportFrom)):
+                                continue
+                            
+                            # Count actual usage
+                            if isinstance(node, ast.Name) and node.id == all_name:
+                                # Check if this is not in __all__ assignment context
+                                usage_count += 1
+                        
+                        # If usage_count is 1 or less (just the reference in __all__), it's only exported
+                        if usage_count <= 1:
+                            unused_names.append(all_name)
+                            logging.debug(f"Import '{all_name}' only used in __all__, treating as exposed")
+        
+        except Exception as e:
+            logging.debug(f"Could not parse __all__ for {module_name}: {e}")
 
         # Handle aliases and from-imports statements
         for i in range(len(unused_names)):
@@ -357,6 +428,9 @@ def get_unused_imports(module_name: str, imported_names: Set[str]) -> Set[str]:
             #     unused_imports.add(full_name)
             if any(full_name.endswith(name) for name in unused_names):
                  unused_imports.add(full_name)
+
+        if module_name == "pytest":
+            logging.info("Found these:", unused_imports)
 
         return unused_imports
     except Exception as e:
@@ -1071,6 +1145,47 @@ def get_typed_signature(func, include_overloads: bool = True):
     # No overloads; just compute the single signature
     return _compute_single_signature(func)
 
+def get_top_level_modules_for_package(package_name: str) -> List[str]:
+    """
+    Get all top-level modules associated with a package name.
+    
+    This function finds all packages/distributions that contain the given package_name
+    and returns all their top-level modules.
+
+    Args:
+        package_name (str): The name of the package.
+
+    Returns:
+        List[str]: List of top-level modules for all matching packages.
+    """
+    # First, try importing the package name directly - this handles cases like pytest
+    top_level_modules = []
+    try:
+        test_import = importlib.import_module(package_name)
+        # If successful and it's a real package (not just a namespace), use it
+        if hasattr(test_import, '__file__') or hasattr(test_import, '__path__'):
+            logging.info(f"Package {package_name} is directly importable, adding it as top-level module")
+            top_level_modules.append(package_name)
+    except (ImportError, ModuleNotFoundError):
+        logging.debug(f"Package name {package_name} is not directly importable, will check distribution metadata")
+    
+    # Check distribution metadata for all matching packages
+    mapping = importlib.metadata.packages_distributions()
+
+    for top_module, distributions in mapping.items():
+        # Check if package_name is in any of the distributions for this top-level module
+        if package_name in distributions:
+            if top_module not in top_level_modules:
+                top_level_modules.append(top_module)
+
+    if not top_level_modules:
+        logging.warning(f"No top-level modules found for package {package_name}")
+        return []
+    
+    logging.info(f"Found {len(top_level_modules)} top-level module(s) for package {package_name}: {top_level_modules}")
+    return top_level_modules
+
+
 def get_top_level_module(package_name: str) -> str:
     """
     Get the top-level module of a package, preferring the package name itself if importable.
@@ -1085,37 +1200,19 @@ def get_top_level_module(package_name: str) -> str:
     Returns:
         str: The top-level module of the package.
     """
-    # First, try importing the package name directly - this handles cases like pytest, where _pytest is internal and can be found first but pytest is the public API
-    try:
-        test_import = importlib.import_module(package_name)
-        # If successful and it's a real package (not just a namespace), use it
-        if hasattr(test_import, '__file__') or hasattr(test_import, '__path__'):
-            logging.info(f"Package {package_name} is directly importable, using it as top-level module")
-            return package_name
-    except (ImportError, ModuleNotFoundError):
-        logging.debug(f"Package name {package_name} is not directly importable, checking distribution metadata")
-    
-    # Fall back to checking distribution metadata
-    mapping = importlib.metadata.packages_distributions()
-    top_level_modules = []
-
-    for top_module, distribution in mapping.items():
-        if package_name in distribution:
-            top_level_modules.append(top_module)
-
-    if not top_level_modules:
-        logging.warning(f"No top-level modules found for package {package_name}")
+    modules = get_top_level_modules_for_package(package_name)
+    if not modules:
         return ""
     
-    # If we found multiple top-level modules, prefer one that matches the package name
-    if len(top_level_modules) > 1:
-        for mod in top_level_modules:
+    # Prefer the module that matches the package name
+    if len(modules) > 1:
+        for mod in modules:
             if mod == package_name or mod.replace('_', '-') == package_name.replace('_', '-'):
                 logging.info(f"Found matching top-level module {mod} for package {package_name}")
                 return mod
-        logging.info(f"Multiple top-level modules found for {package_name}: {top_level_modules}, using first: {top_level_modules[0]}")
+        logging.info(f"Multiple top-level modules found for {package_name}: {modules}, using first: {modules[0]}")
     
-    return top_level_modules[0]
+    return modules[0]
 
 def process_member(
     name: str,
@@ -1535,8 +1632,66 @@ def process_module(module_name: str, version: Optional[str] = None):
     labels = ["ROOT_MODULE"]
     if version:
         labels.append(f"version:{version}")
+    
     root_entity = Entity(module_object.__name__, labels, properties)
     entities.append(root_entity)
+
+    # Process ROOT_MODULE's direct imports
+    # Extract imports from the root module's source using AST
+    try:
+        tree = ast.parse(source)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    try:
+                        imported_module = importlib.import_module(alias.name)
+                        imported_path = imported_module.__name__
+                        # Only track external imports (not within the same root module)
+                        if not imported_path.startswith(module_object.__name__ + "."):
+                            import_version = _get_entity_version(imported_path)
+                            import_ref = ExternalEntityRef(name=imported_path, version=import_version)
+                            other_relations["IMPORTS"].add((root_entity.content_hash, import_ref))
+                    except Exception as e:
+                        logging.debug(f"Could not process import {alias.name}: {e}")
+            elif isinstance(node, ast.ImportFrom):
+                if node.module:
+                    try:
+                        # Resolve the module being imported from
+                        from_module = node.module
+                        imported_module = importlib.import_module(from_module)
+                        
+                        # Process each imported name
+                        for alias in node.names:
+                            try:
+                                imported_obj = getattr(imported_module, alias.name)
+                                if inspect.ismodule(imported_obj):
+                                    imported_path = imported_obj.__name__
+                                elif inspect.isclass(imported_obj) or inspect.isfunction(imported_obj):
+                                    imported_path = get_fully_qualified_name(imported_obj)
+                                else:
+                                    # For other objects, construct the path
+                                    imported_path = f"{from_module}.{alias.name}"
+                                
+                                # Only track external imports
+                                if not imported_path.startswith(module_object.__name__ + "."):
+                                    import_version = _get_entity_version(imported_path)
+                                    import_ref = ExternalEntityRef(name=imported_path, version=import_version)
+                                    other_relations["IMPORTS"].add((root_entity.content_hash, import_ref))
+                            except AttributeError:
+                                # Attribute doesn't exist, still track it
+                                imported_path = f"{from_module}.{alias.name}"
+                                if not imported_path.startswith(module_object.__name__ + "."):
+                                    import_version = _get_entity_version(imported_path)
+                                    import_ref = ExternalEntityRef(name=imported_path, version=import_version)
+                                    other_relations["IMPORTS"].add((root_entity.content_hash, import_ref))
+                            except Exception as e:
+                                logging.debug(f"Could not process import {alias.name} from {from_module}: {e}")
+                    except Exception as e:
+                        logging.debug(f"Could not process import from {node.module}: {e}")
+    except Exception as e:
+        logging.warning(f"Error parsing imports from root module source: {e}")
+
+    logging.warning('Extracted IMPORTS for ' + module_name + ' as follows: ' + str(other_relations['IMPORTS']))
 
     # Get all sub-modules using `find_submodules_importlib_resources` and process them
     submodules: set = find_submodules_importlib_resources(module_object.__name__)
@@ -1663,24 +1818,36 @@ def process_module(module_name: str, version: Optional[str] = None):
         from_entity = hash_to_entity.get(from_hash)
         if not from_entity:
             continue
+        
+        # Check if this is a valid EXPOSES relationship:
+        # 1. Normal case: to_ref.name starts with from_entity.name (e.g., pytest.Config exposed by pytest)
+        # 2. _<package> pattern: from_entity is from _<package> and to_ref is from the main package
+        #    (e.g., _pytest.config.Config exposed by pytest when imported in pytest/__init__.py)
+        
+        is_valid_expose = False
+        
+        # Case 1: Normal internal expose
+        if to_ref.name.startswith(from_entity.name):
+            is_valid_expose = True
+        
+        # Case 2: _<package> pattern - check if from_entity is in a _<package> module
+        # and to_ref is being exposed to the main <package>
+        else:
+            # Extract root module names
+            from_root = from_entity.name.split(".")[0]
+            to_root = to_ref.name.split(".")[0]
             
-        if not to_ref.name.startswith(from_entity.name):
-            continue
-        cleaned_exposed_relations.add((from_hash, to_ref))
-
-    # Deduplicate entities and relations (Entity isn't hashable; use name)
-    # ent_by_name: Dict[str, Entity] = {}
-    # for e in entities:
-    #     ent_by_name[e.name] = e
-    # dedup_rel: List[Relationship] = []
-    # rel_keys: Set[Tuple[str, str, str]] = set()
-    # for r in relations:
-    #     key = (r.from_entity.name, r.label, r.to_entity.name)
-    #     if key not in rel_keys:
-    #         rel_keys.add(key)
-    #         dedup_rel.append(r)
-    # entities = list(ent_by_name.values())
-    # relations = dedup_rel
+            # Check if from_root is _<something> and to_root is <something>
+            if from_root.startswith("_") and to_root == from_root[1:]:
+                is_valid_expose = True
+                logging.debug(f"Found _<package> pattern expose: {from_entity.name} exposes {to_ref.name}")
+            # Also check reverse: from_root is <something> and to_root is _<something>
+            elif to_root.startswith("_") and from_root == to_root[1:]:
+                is_valid_expose = True
+                logging.debug(f"Found <package> to _<package> pattern expose: {from_entity.name} exposes {to_ref.name}")
+        
+        if is_valid_expose:
+            cleaned_exposed_relations.add((from_hash, to_ref))
 
     # Clean up Alias Imports
     for entity in entities:
@@ -1715,28 +1882,70 @@ def process_module(module_name: str, version: Optional[str] = None):
 
 def process_package(package_name: str, version: Optional[str] = None):
     """
-    Process the top-level module of a package. If the package is not available, it will try installing it using pip.
+    Process all top-level modules associated with a package name.
+    
+    This function finds all packages/distributions that contain the given package_name,
+    processes each of their top-level modules, and combines the results.
+    Each top-level module is treated as a ROOT_MODULE.
 
     Args:
         package_name (str): The name of the package.
+        version (Optional[str]): Version of the package.
+        
+    Returns:
+        Tuple[List[Entity], List[Relationship], Dict]: Combined entities, relations, and other relations
+            from all top-level modules associated with the package.
     """
     pkg_name, parsed_version = _parse_name_and_version(package_name, version)
     version = parsed_version
-    top_level_module = get_top_level_module(pkg_name)
+    top_level_modules = get_top_level_modules_for_package(pkg_name)
 
-    if not top_level_module:
+    if not top_level_modules:
         logging.info(f"Package '{pkg_name}' not found. Attempting to install...")
         try:
             subprocess.run(["pip", "install", pkg_name], check=True)
             logging.info(f"Package '{pkg_name}' installed successfully.")
         except subprocess.CalledProcessError as e:
             logging.error(f"Failed to install package '{pkg_name}': {e}")
-            return
+            return [], [], {"INHERITS": [], "IMPORTS": [], "EXPOSES": []}
     
-    top_level_module = get_top_level_module(pkg_name)
-    if not top_level_module:
+    top_level_modules = get_top_level_modules_for_package(pkg_name)
+    if not top_level_modules:
         logging.error(f"Package '{pkg_name}' not found after installation.")
-        return
+        return [], [], {"INHERITS": [], "IMPORTS": [], "EXPOSES": []}
     
-    logging.info(f"Processing package '{pkg_name}' with top-level module '{top_level_module}'...")
-    return process_module(top_level_module, version=version)
+    # Process all top-level modules and combine results
+    all_entities: List[Entity] = []
+    all_relations: List[Relationship] = []
+    combined_other_relations: Dict[str, List] = {"INHERITS": [], "IMPORTS": [], "EXPOSES": []}
+    
+    logging.info(f"Processing package '{pkg_name}' with {len(top_level_modules)} top-level module(s): {top_level_modules}")
+    
+    for top_level_module in top_level_modules:
+        logging.info(f"Processing top-level module '{top_level_module}' for package '{pkg_name}'...")
+        try:
+            entities, relations, other_relations = process_module(top_level_module, version=version)
+            
+            all_entities.extend(entities)
+            all_relations.extend(relations)
+            
+            # Combine other_relations
+            for rel_type in ["INHERITS", "IMPORTS", "EXPOSES"]:
+                if rel_type in other_relations:
+                    combined_other_relations[rel_type].extend(other_relations[rel_type])
+                    
+            logging.info(f"Successfully processed top-level module '{top_level_module}': "
+                        f"{len(entities)} entities, {len(relations)} relations")
+        except Exception as e:
+            logging.error(f"Error processing top-level module '{top_level_module}' for package '{pkg_name}': {e}")
+            logging.error(traceback.format_exc())
+            continue
+    
+    # Deduplicate other_relations
+    for rel_type in ["INHERITS", "IMPORTS", "EXPOSES"]:
+        combined_other_relations[rel_type] = list(set(combined_other_relations[rel_type]))
+    
+    logging.info(f"Completed processing package '{pkg_name}': "
+                f"{len(all_entities)} total entities, {len(all_relations)} total relations")
+    
+    return all_entities, all_relations, combined_other_relations

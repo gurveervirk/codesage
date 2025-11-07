@@ -1305,141 +1305,6 @@ RETURN child.name AS ChildClass, size(members) AS TotalParentMembersLabeled
             node.properties[self.embedding_node_property] = embeddings[i]
 
         self.upsert_nodes(entity_nodes)
-
-    def _get_entity_info(self, entity_name: str) -> List[str]:
-        """
-        Get information about the entity.
-
-        Args:
-            entity_name (str): The name of the entity.
-
-        Returns:
-            List[str]: Information about the entity.
-        """
-        get_entity_info_query = (
-            """
-            // Try to match the entity by name
-            MATCH (end {name: $entity_name})
-            OPTIONAL MATCH (end:CLASS)-[:HAS_METHOD]->(init {__name__: "__init__"})
-            WHERE "CLASS" IN labels(end)
-            WITH end, init, NULL AS parent_class, NULL AS parent_init
-            RETURN 
-                end.name AS name, 
-                end.__name__ AS __name__, 
-                end.summary AS summary, 
-                CASE 
-                    WHEN "CLASS" IN labels(end) AND init IS NOT NULL THEN init.signature
-                    ELSE end.signature
-                END AS signature,
-                end.llm_signature AS llm_signature, 
-                end.shortest_call_path AS shortest_call_path,
-                end.doc AS docstring,
-                'entity' AS type
-            UNION
-            // If the entity is a method, also get its parent class's __init__ (if any)
-            MATCH (m:METHOD {name: $entity_name})<-[:HAS_METHOD]-(cls:CLASS)
-            OPTIONAL MATCH (cls)-[:HAS_METHOD]->(init:METHOD {__name__: "__init__"})
-            RETURN 
-                init.name AS name, 
-                init.__name__ AS __name__, 
-                init.summary AS summary, 
-                init.signature AS signature,
-                init.llm_signature AS llm_signature, 
-                init.shortest_call_path AS shortest_call_path,
-                init.doc AS docstring,
-                'init' AS type
-            """
-        )
-        result = self.structured_query(get_entity_info_query, {"entity_name": entity_name})
-        # Filter out None results (e.g., if no __init__ exists)
-        result = [r for r in result if r.get("name")]
-        return result if result else []
-
-    def _get_retrieved_entity_representation(self, retrieved_node: Dict) -> str:
-        """
-        Get the representation of the retrieved entity.
-
-        Args:
-            retrieved_node (Dict): The retrieved node.
-
-        Returns:
-            str: The representation of the retrieved entity.
-        """
-        entity_representation = f"""
-*Name*: {retrieved_node["__name__"]}
-*Full Path*: {retrieved_node["name"]}
-*Shortest Call Path*: {retrieved_node["shortest_call_path"]}
-*Signature*: {retrieved_node["signature"]}
-*Signature identified by LLM as JSON (ONLY TO BE USED IF TYPES CANNOT BE ASCERTAINED FROM THE `Signature` FIELD)*: 
-{retrieved_node["llm_signature"]}
-
-*Summary of the Entity*:
-```
-{retrieved_node["summary"]}
-```
-
-*Docstring*:
-```
-{retrieved_node["docstring"]}
-```
-        """
-        return entity_representation
-    
-    def get_entity_info(self, entity_name: str) -> str:
-        """
-        Get information about the entity.
-
-        Args:
-            entity_name (str): The name of the entity.
-
-        Returns:
-            str: XML-formatted string containing:
-                - entity_data: Detailed information about the entity
-                - system_message (str): Informational message
-        """
-        entity_node = self._get_entity_info(entity_name)
-        if not entity_node:
-            data = {
-                "entity_data": [],
-                "system_message": f"No entity found with the name: {entity_name}"
-            }
-            return _dict_to_xml_string(data, "get_entity_info_response")
-        
-        # If the list contains multiple entries, it is most likely a class' method and its __init__ method
-        data = {
-            "entity_data": entity_node,
-            "system_message": f"Found {len(entity_node)} entity record(s) for '{entity_name}'." + 
-                             (" (Includes method and its class __init__)" if len(entity_node) > 1 else "")
-        }
-        return _dict_to_xml_string(data, "get_entity_info_response")
-    
-    def get_info_for_entities(self, entity_names: List[str]) -> str:
-        """
-        Get information about multiple entities.
-
-        Args:
-            entity_names (List[str]): List of entity names.
-
-        Returns:
-            str: XML-formatted string containing:
-                - entities: Information for each entity
-                - system_message (str): Informational message
-        """
-        entities_data = []
-        # Iterate through the list of entity names and retrieve their information
-        for name in entity_names:
-            entity_info_list = self._get_entity_info(name)
-            entities_data.append({
-                "entity_name": name,
-                "records": entity_info_list if entity_info_list else [],
-                "found": len(entity_info_list) > 0 if entity_info_list else False
-            })
-
-        data = {
-            "entities": entities_data,
-            "system_message": f"Retrieved information for {len(entity_names)} entity name(s)."
-        }
-        return _dict_to_xml_string(data, "get_info_for_entities_response")
     
     def _fts_full_path_name(self, name: str) -> str:
         """
@@ -1742,38 +1607,66 @@ RETURN apoc.map.fromPairs(
         }
         return _dict_to_xml_string(data, "get_signatures_response")
 
-    def list_libraries(self, extra_props: List[str] = None) -> str:
+    def list_libraries(
+            self,
+            search_terms: Optional[List[str]] = None,
+        ) -> str:
         """
         Get a list of all ROOT_MODULE entities (libraries) in the knowledge graph.
         
         Args:
-            extra_props (List[str], optional): Additional properties to retrieve for each library.
-        
+            search_terms (List[str], optional): Search terms to filter libraries by name, using case-insensitive partial matching. Defaults to None.
+
         Returns:
             str: XML-formatted string containing:
                 - libraries: A list of library objects, each containing:
                     - name (str): The name of the library/root module
-                    - [extra properties if requested]
+                    - versions (List[str]): List of version labels available for the library
                 - system_message (str): Informational message about the results
         """
-        # Build the return fields
-        return_fields = ["lib.name AS name"]
-        if extra_props:
-            for prop in extra_props:
-                return_fields.append(f"lib.{prop} AS {prop}")
-        
-        query = f"""
+        # Build the query with optional filtering and version aggregation
+        query = """
         MATCH (lib:ROOT_MODULE)
-        RETURN {', '.join(return_fields)}
-        ORDER BY lib.name
+        """
+        
+        query_params = {}
+        
+        # Add WHERE clause if search_terms are provided
+        if search_terms:
+            # Create case-insensitive partial match patterns for each search term
+            search_patterns = [f"(?i).*{_escape_regex_special_chars(term)}.*" for term in search_terms]
+            # Combine patterns with OR
+            search_pattern = "|".join(search_patterns)
+            query += """
+        WHERE lib.name =~ $search_pattern
+            """
+            query_params["search_pattern"] = search_pattern
+        
+        # Group by library name and collect all versions across nodes
+        query += """
+        WITH lib.name AS name,
+             collect(DISTINCT [label IN labels(lib) WHERE label STARTS WITH 'version_']) AS all_version_lists
+        WITH name,
+             reduce(versions = [], version_list IN all_version_lists | versions + version_list) AS all_versions
+        RETURN name,
+               apoc.coll.toSet(all_versions) AS versions
+        ORDER BY name
         """
         
         try:
-            results = self.structured_query(query)
+            results = self.structured_query(query, query_params)
             
+            # Clean up version labels (remove 'version_' prefix and convert underscores back)
+            for result in results:
+                result['versions'] = sorted([
+                    v.replace('version_', '').replace('_', '.')
+                    for v in result.get('versions', [])
+                ])
+            
+            filtered_msg = " matching search terms" if search_terms else ""
             data = {
                 "libraries": results,
-                "system_message": f"Found {len(results)} indexed libraries in the knowledge graph."
+                "system_message": f"Found {len(results)} indexed libraries{filtered_msg} in the knowledge graph."
             }
             return _dict_to_xml_string(data, "list_libraries_response")
         except Exception as e:
@@ -1804,11 +1697,11 @@ RETURN apoc.map.fromPairs(
         Returns:
             str: XML-formatted string containing:
                 - definitions: Array of matching code definitions, each containing:
-                    - name (str): The name of the definition
-                    - fqn (str): Fully qualified name of the definition
+                    - fqn (str): Fully qualified name (entity.name)
+                    - api_path (str): API call path (entity.shortest_call_path)
                     - definition_type (str): Primary type of definition (e.g., "FUNCTION", "CLASS", "METHOD")
                     - all_labels (List[str]): All labels associated with the entity
-                    - context (str): Code signature (for CLASS, shows __init__ signature if available)
+                    - signature (str): Code signature (for CLASS, shows __init__ signature if available)
                 - next_page (int | None): Next page number if more results are available
                 - current_page (int): Current page number
                 - total_results (int): Total number of matching results
@@ -1836,31 +1729,21 @@ RETURN apoc.map.fromPairs(
         // Find the parent entity
         MATCH (parent {name: $parent_entity_name})
         
-        // Find all children recursively
-        MATCH (parent)-[:HAS_SUBMODULE|HAS_CLASS|HAS_METHOD|HAS_FUNCTION|EXPOSES*]->(child)
+        // Find all children recursively using variable-length path
+        MATCH (parent)-[:HAS_SUBMODULE|HAS_CLASS|HAS_METHOD|HAS_FUNCTION*]->(child)
         WHERE child.__name__ =~ $search_pattern
         
-        // Get total count
-        WITH collect(child) AS all_children
-        WITH all_children, size(all_children) AS total_count
-        
-        // Unwind for pagination
-        UNWIND all_children AS child
+        // Get distinct children to avoid duplicates from multiple paths
+        WITH DISTINCT child
         
         // For CLASS entities, optionally get their __init__ method signature
         OPTIONAL MATCH (child)-[:HAS_METHOD]->(init:METHOD {__name__: "__init__"})
         WHERE "CLASS" IN labels(child)
         
-        // Apply pagination
-        WITH child, init, total_count
-        ORDER BY child.name
-        SKIP $skip
-        LIMIT $page_size
-        
-        // Return results with metadata
-        RETURN 
-            child.name AS name,
-            child.shortest_call_path AS fqn,
+        // Build complete result set with all data
+        WITH child, init,
+            child.name AS fqn,
+            child.shortest_call_path AS api_path,
             [label IN labels(child) WHERE label IN ['FUNCTION', 'CLASS', 'METHOD', 'MODULE', 'ROOT_MODULE']][0] AS definition_type,
             labels(child) AS all_labels,
             CASE
@@ -1869,7 +1752,33 @@ RETURN apoc.map.fromPairs(
                 // For others, use their own signature
                 WHEN child.signature IS NOT NULL THEN child.signature
                 ELSE child.__name__
-            END AS context,
+            END AS signature
+        ORDER BY fqn
+        
+        // Get total count before pagination
+        WITH collect({
+            fqn: fqn,
+            api_path: api_path,
+            definition_type: definition_type,
+            all_labels: all_labels,
+            signature: signature
+        }) AS all_results
+        
+        WITH all_results, size(all_results) AS total_count
+        
+        // Apply pagination at the end
+        UNWIND all_results AS result
+        WITH result, total_count
+        SKIP $skip
+        LIMIT $page_size
+        
+        // Return paginated results with total count
+        RETURN 
+            result.fqn AS fqn,
+            result.api_path AS api_path,
+            result.definition_type AS definition_type,
+            result.all_labels AS all_labels,
+            result.signature AS signature,
             total_count
         """
         
@@ -1899,11 +1808,11 @@ RETURN apoc.map.fromPairs(
             
             for result in results:
                 definitions.append({
-                    "name": result["name"],
                     "fqn": result["fqn"],
+                    "api_path": result["api_path"],
                     "definition_type": result["definition_type"],
                     "all_labels": result["all_labels"],
-                    "context": result["context"]
+                    "signature": result["signature"]
                 })
             
             # Calculate if there's a next page
@@ -1934,265 +1843,184 @@ RETURN apoc.map.fromPairs(
                 "system_message": f"Error searching definitions: {str(e)}"
             }
             return _dict_to_xml_string(data, "search_definitions_response")
+        
+    def get_definitions(self, entity_names: List[str]) -> str:
+        """
+        Get definition information for one or more entities.
+
+        Args:
+            entity_names (List[str]): List of entity names (can be a single entity or multiple).
+
+        Returns:
+            str: XML-formatted string containing:
+                - definitions: List of entity definitions, each containing:
+                    - query_name (str): The queried entity name
+                    - fqn (str): Fully qualified name
+                    - docstring (str): Entity docstring
+                    - all_labels (List[str]): All labels
+                    - api_path (str): API call path
+                    - signature (str): Entity signature
+                    - resolved_sig (str): Resolved signature from type hints
+                    - found (bool): Whether the entity was found
+                - system_message (str): Informational message
+        """
+        get_definitions_query = """
+            UNWIND $entity_names AS entity_name
+            
+            // Try to match the entity by name
+            OPTIONAL MATCH (end {name: entity_name})
+            OPTIONAL MATCH (end:CLASS)-[:HAS_METHOD]->(init {__name__: "__init__"})
+            WHERE "CLASS" IN labels(end)
+            
+            WITH entity_name, end, init
+            RETURN 
+                entity_name AS query_name,
+                CASE WHEN end IS NOT NULL THEN end.name ELSE "" END AS fqn,
+                CASE WHEN end IS NOT NULL THEN end.doc ELSE "" END AS docstring,
+                CASE WHEN end IS NOT NULL THEN labels(end) ELSE [] END AS all_labels,
+                CASE WHEN end IS NOT NULL THEN end.shortest_call_path ELSE "" END AS api_path,
+                CASE 
+                    WHEN end IS NULL THEN ""
+                    WHEN "CLASS" IN labels(end) AND init IS NOT NULL THEN init.signature
+                    ELSE end.signature
+                END AS signature,
+                CASE 
+                    WHEN end IS NULL THEN ""
+                    WHEN "CLASS" IN labels(end) AND init IS NOT NULL THEN init.resolved_signature
+                    ELSE end.resolved_signature
+                END AS resolved_sig,
+                end IS NOT NULL AS found
+        """
+        
+        results = self.structured_query(get_definitions_query, {"entity_names": entity_names})
+        
+        found_count = sum(1 for r in results if r['found'])
+        data = {
+            "definitions": results,
+            "system_message": f"Retrieved {len(entity_names)} definition(s). Found {found_count} entities."
+        }
+        return _dict_to_xml_string(data, "get_definitions_response")
 
     def library_map(
         self,
         library_name: str,
-        depth: int = 2,
-        show_structure: bool = True,
-        show_definitions: bool = True,
-        page: int = 1,
-        page_size: int = 50,
-        extra_props: List[str] = None,
-        version: str = None
+        version: str,
+        depth: int = 0
     ) -> str:
         """
-        Generate a compact, API-style map of a library segment showing structure and definitions.
+        Generate a hierarchical map of a library showing all entities in nested form.
         
         Args:
             library_name (str): Name of the ROOT_MODULE (library) to map
-            depth (int): Directory/entity traversal depth. 0 = full depth, 1-3 = limited depth. Default is 2.
-            show_structure (bool): Include the structure tree. Default is True.
-            show_definitions (bool): Include definitions. Default is True.
-            page (int): Page number for pagination. Default is 1.
-            page_size (int): Max definitions per page. Default is 50.
-            extra_props (List[str], optional): Additional properties to retrieve for each entity.
-            version (str, optional): Specific version of the library to map. If None, all versions are included.
+            version (str): Version of the library (e.g., "4.28" or "version_4_28")
+            depth (int): Directory/entity traversal depth. 0 = full depth (default), >0 = limited depth.
         
         Returns:
             str: XML-formatted string containing:
                 - library_name (str): Name of the library
-                - version (str | None): Version being mapped (if specified)
+                - version (str): Version being mapped
                 - depth (int): Depth used for traversal (0 = full)
-                - structure (str): ASCII tree representation of the library structure
-                - definitions: List of definitions found, each containing:
-                    - path (str): Path to the entity
-                    - name (str): Name of the entity
-                    - type (str): Type of definition
-                    - location (str): Line range
-                    - signature (str): Function/method signature
-                    - [extra properties if requested]
-                - next_page (int | None): Next page number if more results are available
-                - total_definitions (int): Total number of definitions found
+                - entities: Nested hierarchy of all entities, each containing:
+                    - all_labels (List[str]): All labels associated with the entity
+                    - fqn (str): Fully qualified name (entity.name)
+                    - api_path (str): API call path (entity.shortest_call_path)
+                    - children (List): Nested child entities
                 - system_message (str): Informational message about the results
         """
-        # Handle depth: 0 means full depth, otherwise clamp between 1 and 3
-        if depth == 0:
-            # Use a very large number to represent "unlimited" depth
-            actual_depth = 999
-            depth_display = 0
+        # Normalize version string
+        if version.startswith("version_"):
+            version_label = version
+            version_display = version.replace("version_", "").replace("_", ".")
         else:
-            actual_depth = max(1, min(3, depth))
-            depth_display = actual_depth
-        skip = (page - 1) * page_size
+            version_display = version
+            version_label = f"version_{version.replace('.', '_').replace(':', '_').replace('-', '_')}"
         
-        # Sanitize version string if provided
-        version_label = None
-        if version:
-            version_label = version.replace(":", "_").replace(".", "_").replace("-", "_")
-        
-        structure_tree = ""
-        definitions = []
-        total_definitions = 0
+        # Handle depth: 0 means full depth
+        actual_depth = 999 if depth == 0 else depth
         
         try:
             # Check if library exists with the specified version
             check_query = """
             MATCH (lib:ROOT_MODULE {name: $library_name})
-            """
-            if version:
-                check_query += """
-                WHERE $version_label IN labels(lib)
-                """
-            check_query += """
+            WHERE $version_label IN labels(lib)
             RETURN lib.name AS name
             """
             
-            check_params = {"library_name": library_name}
-            if version:
-                check_params["version_label"] = f"version_{version_label}"
-            
-            check_result = self.structured_query(check_query, check_params)
+            check_result = self.structured_query(check_query, {
+                "library_name": library_name,
+                "version_label": version_label
+            })
             
             if not check_result:
-                if version:
-                    system_message = f"Library '{library_name}' with version '{version}' not found in the knowledge graph."
-                else:
-                    system_message = f"Library '{library_name}' not found in the knowledge graph."
-                
                 data = {
                     "library_name": library_name,
-                    "version": version,
-                    "depth": depth_display,
-                    "structure": "",
-                    "definitions": [],
-                    "next_page": None,
-                    "current_page": page,
-                    "total_definitions": 0,
-                    "system_message": system_message
+                    "version": version_display,
+                    "depth": depth,
+                    "entities": [],
+                    "system_message": f"Library '{library_name}' with version '{version_display}' not found in the knowledge graph."
                 }
                 return _dict_to_xml_string(data, "library_map_response")
             
-            # Build structure tree if requested
-            if show_structure:
-                structure_query = """
-                MATCH path = (lib:ROOT_MODULE {{name: $library_name}})-[:HAS_SUBMODULE|HAS_CLASS|HAS_METHOD|HAS_FUNCTION*0..{depth}]->(entity)
-                """
-                if version:
-                    structure_query += """
-                WHERE $version_label IN labels(entity)
-                """
-                structure_query += """
-                WITH entity, length(path) AS depth_level, path
-                WHERE depth_level <= $depth
-                ORDER BY depth_level, entity.__name__
-                RETURN 
-                    entity.__name__ AS name,
-                    [label IN labels(entity) WHERE label IN ['ROOT_MODULE', 'MODULE', 'CLASS', 'FUNCTION', 'METHOD']][0] AS type,
-                    depth_level,
-                    [node in nodes(path) | node.__name__] AS path_segments
-                """
-                
-                structure_params = {"library_name": library_name, "depth": actual_depth}
-                if version:
-                    structure_params["version_label"] = f"version_{version_label}"
-                
-                structure_results = self.structured_query(
-                    structure_query.format(depth=actual_depth),
-                    structure_params
-                )
-                
-                # Build ASCII tree
-                tree_lines = [library_name + "/"]
-                prev_path = []
-                
-                for result in structure_results:
-                    if result["depth_level"] == 0:
-                        continue
-                        
-                    segments = result["path_segments"][1:]  # Skip root
-                    indent = "  " * (len(segments) - 1)
-                    is_last = False  # Simplified - could be enhanced with sibling detection
-                    prefix = "└── " if is_last else "├── "
-                    
-                    entity_type_marker = {
-                        "ROOT_MODULE": "�",
-                        "MODULE": "�",
-                        "CLASS": "🔷",
-                        "FUNCTION": "⚡",
-                        "METHOD": "⚙️"
-                    }.get(result["type"], "")
-                    
-                    tree_lines.append(f"{indent}{prefix}{entity_type_marker} {result['name']}")
-                
-                structure_tree = "\n".join(tree_lines)
+            # Fetch all entities in hierarchical order
+            hierarchy_query = """
+            MATCH path = (lib:ROOT_MODULE {name: $library_name})-[:HAS_SUBMODULE|HAS_CLASS|HAS_METHOD|HAS_FUNCTION*0..]->(entity)
+            WHERE $version_label IN labels(entity)
+            AND length(path) <= $actual_depth
+            WITH entity, path, length(path) AS depth_level,
+                 [node in nodes(path) | node.name] AS path_names
+            ORDER BY path_names, entity.__name__
+            RETURN 
+                entity.name AS fqn,
+                entity.shortest_call_path AS api_path,
+                labels(entity) AS all_labels,
+                depth_level,
+                path_names
+            """
             
-            # Fetch definitions if requested
-            if show_definitions:
-                # Build extra props fields
-                extra_fields = ""
-                if extra_props:
-                    extra_fields = ",\n                    " + ",\n                    ".join(
-                        [f"entity.{prop} AS {prop}" for prop in extra_props]
-                    )
+            results = self.structured_query(hierarchy_query, {
+                "library_name": library_name,
+                "version_label": version_label,
+                "actual_depth": actual_depth
+            })
+            
+            # Build nested hierarchy
+            def build_hierarchy(results):
+                """Convert flat list to nested hierarchy based on path_names"""
+                root_entities = []
+                entity_map = {}
                 
-                definitions_query = f"""
-                MATCH path = (lib:ROOT_MODULE {{{{name: $library_name}}}})-[:HAS_SUBMODULE|HAS_CLASS|HAS_METHOD|HAS_FUNCTION*0..{{depth}}]->(entity)
-                """
-                if version:
-                    definitions_query += """
-                WHERE $version_label IN labels(entity)
-                AND length(path) <= $depth
-                AND length(path) > 0
-                """
-                else:
-                    definitions_query += """
-                WHERE length(path) <= $depth
-                AND length(path) > 0
-                """
-                
-                definitions_query += f"""
-                WITH entity, 
-                     [node in nodes(path) | node.__name__] AS path_segments,
-                     length(path) AS depth_level
-                ORDER BY path_segments, entity.__name__
-                
-                WITH collect(entity) AS all_entities, count(entity) AS total_count
-                UNWIND all_entities AS entity
-                
-                WITH entity, total_count
-                SKIP $skip
-                LIMIT $page_size
-                
-                RETURN 
-                    entity.name AS full_name,
-                    entity.__name__ AS name,
-                    entity.shortest_call_path AS path,
-                    [label IN labels(entity) WHERE label IN ['ROOT_MODULE', 'MODULE', 'CLASS', 'FUNCTION', 'METHOD']][0] AS type,
-                    CASE 
-                        WHEN entity.start_line IS NOT NULL AND entity.end_line IS NOT NULL 
-                        THEN 'L' + toString(entity.start_line) + '-' + toString(entity.end_line)
-                        ELSE ''
-                    END AS location,
-                    entity.signature AS signature{extra_fields},
-                    total_count
-                """
-                
-                definitions_params = {
-                    "library_name": library_name,
-                    "depth": actual_depth,
-                    "skip": skip,
-                    "page_size": page_size
-                }
-                if version:
-                    definitions_params["version_label"] = f"version_{version_label}"
-                
-                definitions_results = self.structured_query(
-                    definitions_query.format(depth=actual_depth),
-                    definitions_params
-                )
-                
-                if definitions_results:
-                    total_definitions = definitions_results[0].get("total_count", 0)
+                for result in results:
+                    entity_data = {
+                        "all_labels": result["all_labels"],
+                        "fqn": result["fqn"],
+                        "api_path": result["api_path"],
+                        "children": []
+                    }
                     
-                    for result in definitions_results:
-                        def_data = {
-                            "path": result["path"],
-                            "name": result["name"],
-                            "type": result["type"],
-                            "location": result["location"],
-                            "signature": result.get("signature", "")
-                        }
-                        # Add extra props if requested
-                        if extra_props:
-                            for prop in extra_props:
-                                if prop in result:
-                                    def_data[prop] = result[prop]
-                        definitions.append(def_data)
+                    fqn = result["fqn"]
+                    entity_map[fqn] = entity_data
+                    
+                    # Determine parent
+                    path_names = result["path_names"]
+                    if len(path_names) == 1:
+                        # Root level entity
+                        root_entities.append(entity_data)
+                    else:
+                        # Find parent by checking if any entity has this one in its path
+                        parent_fqn = path_names[-2]
+                        if parent_fqn in entity_map:
+                            entity_map[parent_fqn]["children"].append(entity_data)
+                
+                return root_entities
             
-            # Calculate pagination
-            total_pages = (total_definitions + page_size - 1) // page_size if page_size > 0 else 1
-            next_page = page + 1 if page < total_pages else None
-            
-            depth_msg = "full depth" if depth_display == 0 else f"depth={depth_display}"
-            version_msg = f" (version {version})" if version else ""
-            system_message = f"Library map for '{library_name}'{version_msg} at {depth_msg}. "
-            if show_definitions:
-                system_message += f"Found {total_definitions} definitions. "
-                system_message += f"Showing page {page} of {total_pages}."
-                if next_page:
-                    system_message += f" Use page={next_page} to see more."
+            entities = build_hierarchy(results)
             
             data = {
                 "library_name": library_name,
-                "version": version,
-                "depth": depth_display,
-                "structure": structure_tree if show_structure else "",
-                "definitions": definitions,
-                "next_page": next_page,
-                "current_page": page,
-                "total_definitions": total_definitions,
-                "system_message": system_message
+                "version": version_display,
+                "depth": depth,
+                "entities": entities,
+                "system_message": f"Found {len(results)} entities in '{library_name}' version {version_display}."
             }
             return _dict_to_xml_string(data, "library_map_response")
             
@@ -2200,53 +2028,48 @@ RETURN apoc.map.fromPairs(
             logging.error(f"Error generating library map: {e}")
             data = {
                 "library_name": library_name,
-                "version": version,
-                "depth": depth_display,
-                "structure": "",
-                "definitions": [],
-                "next_page": None,
-                "current_page": page,
-                "total_definitions": 0,
+                "version": version_display,
+                "depth": depth,
+                "entities": [],
                 "system_message": f"Error generating library map: {str(e)}"
             }
             return _dict_to_xml_string(data, "library_map_response")
         
-    def get_version_diff(self, parent_entity: str, old_version: str, new_version: str, extra_props: List[str] = None) -> str:
+    def get_version_diff(self, parent_entity: str, old_version: str, new_version: str) -> str:
         """
-        Get the version difference between two versions of an entity's hierarchy, in the structure of a library map and git diff.
+        Get the version difference between two versions of an entity's hierarchy, in hierarchical form with git-style diff.
 
         Args:
-            parent_entity (str): The entity, under which the versions are to be compared for itself and it's children.
-            old_version (str): The old version identifier.
-            new_version (str): The new version identifier.
-            extra_props (List[str], optional): Additional properties to retrieve for each entity.
+            parent_entity (str): The entity, under which the versions are to be compared for itself and its children.
+            old_version (str): The old version identifier (e.g., "4.28" or "version_4_28").
+            new_version (str): The new version identifier (e.g., "4.29" or "version_4_29").
 
         Returns:
-            str: XML-formatted string, in the form of a library map diff, containing:
+            str: XML-formatted string containing:
                 - entity_name (str): Name of the parent entity
                 - old_version (str): The old version identifier
                 - new_version (str): The new version identifier
                 - diff (str): The git-style diff between the two versions (only for entities with signatures)
-                - entities: List of all entities with their status
+                - entities: Nested hierarchy of entities with their status and changes
                 - summary: Statistics about changes
                 - system_message (str): Informational message about the results
         """
         try:
-            # Sanitize version strings to match label format
-            old_version_label = old_version.replace(":", "_").replace(".", "_").replace("-", "_")
-            new_version_label = new_version.replace(":", "_").replace(".", "_").replace("-", "_")
+            # Normalize version strings to match label format
+            def normalize_version(version):
+                if version.startswith("version_"):
+                    return version, version.replace("version_", "").replace("_", ".")
+                else:
+                    normalized = f"version_{version.replace('.', '_').replace(':', '_').replace('-', '_')}"
+                    return normalized, version
             
-            # Build extra props fields for query
-            extra_fields = ""
-            if extra_props:
-                extra_fields = ",\n                 " + ",\n                 ".join(
-                    [f"entity.{prop} AS {prop}" for prop in extra_props]
-                )
+            old_version_label, old_version_display = normalize_version(old_version)
+            new_version_label, new_version_display = normalize_version(new_version)
             
             # Single optimized query that validates and retrieves all data
-            query = f"""
+            query = """
             // Try to find the parent entity
-            OPTIONAL MATCH (parent {{name: $parent_entity}})
+            OPTIONAL MATCH (parent {name: $parent_entity})
             
             // Check if parent exists and has the required version labels
             WITH parent,
@@ -2265,61 +2088,70 @@ RETURN apoc.map.fromPairs(
                  END AS validation_status
             
             // If validation passes, find all descendants with old version label
-            CALL {{
+            CALL {
                 WITH parent, validation_status, $old_version_label AS old_label
-                OPTIONAL MATCH path = (parent)-[:HAS_SUBMODULE|HAS_CLASS|HAS_METHOD|HAS_FUNCTION|EXPOSES*0..]->(entity)
+                OPTIONAL MATCH path = (parent)-[:HAS_SUBMODULE|HAS_CLASS|HAS_METHOD|HAS_FUNCTION*0..]->(entity)
                 WHERE validation_status = 'valid' AND old_label IN labels(entity)
                 RETURN entity, path, true AS has_old, false AS has_new
-            }}
+            }
             
             UNION ALL
             
             // Find all descendants with new version label
-            CALL {{
+            CALL {
                 WITH parent, validation_status, $new_version_label AS new_label
-                OPTIONAL MATCH path = (parent)-[:HAS_SUBMODULE|HAS_CLASS|HAS_METHOD|HAS_FUNCTION|EXPOSES*0..]->(entity)
+                OPTIONAL MATCH path = (parent)-[:HAS_SUBMODULE|HAS_CLASS|HAS_METHOD|HAS_FUNCTION*0..]->(entity)
                 WHERE validation_status = 'valid' AND new_label IN labels(entity)
                 RETURN entity, path, false AS has_old, true AS has_new
-            }}
+            }
             
             // Return validation status and entity data (if valid)
             WITH validation_status, entity, path, has_old, has_new,
-                 CASE WHEN entity IS NOT NULL THEN entity.name ELSE null END AS full_name,
+                 CASE WHEN entity IS NOT NULL THEN entity.name ELSE null END AS fqn,
                  CASE WHEN entity IS NOT NULL THEN entity.__name__ ELSE null END AS simple_name,
-                 CASE WHEN entity IS NOT NULL THEN entity.shortest_call_path ELSE null END AS path_str,
+                 CASE WHEN entity IS NOT NULL THEN entity.shortest_call_path ELSE null END AS api_path,
+                 CASE WHEN entity IS NOT NULL THEN labels(entity) ELSE [] END AS all_labels,
                  CASE WHEN entity IS NOT NULL THEN [label IN labels(entity) WHERE label IN ['ROOT_MODULE', 'MODULE', 'CLASS', 'FUNCTION', 'METHOD']][0] ELSE null END AS type,
-                 CASE WHEN entity IS NOT NULL THEN entity.signature ELSE null END AS signature{extra_fields if extra_props else ''},
-                 CASE WHEN path IS NOT NULL THEN length(path) ELSE null END AS depth
+                 CASE WHEN entity IS NOT NULL THEN entity.signature ELSE null END AS signature,
+                 CASE WHEN path IS NOT NULL THEN [node in nodes(path) | node.name] ELSE [] END AS path_names
             
             // Collect all results and merge entities that appear in both versions
             WITH validation_status, 
-                 full_name,
+                 fqn,
                  simple_name,
-                 path_str,
+                 api_path,
+                 all_labels,
                  type,
                  signature,
                  max(has_old) AS has_old_version,
                  max(has_new) AS has_new_version,
-                 max(depth) AS depth{', ' + ', '.join([f'entity.{prop} AS {prop}' for prop in extra_props]) if extra_props else ''}
-            WHERE full_name IS NOT NULL
+                 path_names
+            WHERE fqn IS NOT NULL
+            
+            // Get signatures for both versions (if different)
+            WITH validation_status, fqn, simple_name, api_path, all_labels, type, has_old_version, has_new_version, path_names,
+                 CASE WHEN has_old_version THEN signature ELSE null END AS old_signature,
+                 CASE WHEN has_new_version THEN signature ELSE null END AS new_signature
             
             // Build entity data structure
             WITH validation_status,
-                 collect({{
-                     full_name: full_name,
+                 collect({
+                     fqn: fqn,
                      simple_name: simple_name,
-                     path: path_str,
+                     api_path: api_path,
+                     all_labels: all_labels,
                      type: type,
-                     signature: signature,
+                     old_signature: old_signature,
+                     new_signature: new_signature,
                      has_old_version: has_old_version,
-                     has_new_version: has_new_version{', ' + ', '.join([f'{prop}: {prop}' for prop in extra_props]) if extra_props else ''},
-                     depth: depth
-                 }}) AS valid_entities
+                     has_new_version: has_new_version,
+                     path_names: path_names
+                 }) AS valid_entities
             
             // Sort the entities
             UNWIND CASE WHEN size(valid_entities) > 0 THEN valid_entities ELSE [null] END AS entity_data
             WITH validation_status, entity_data
-            ORDER BY entity_data.path, entity_data.depth, entity_data.full_name
+            ORDER BY entity_data.path_names, entity_data.fqn
             
             RETURN validation_status, 
                    collect(entity_data) AS results
@@ -2327,8 +2159,8 @@ RETURN apoc.map.fromPairs(
             
             query_result = self.structured_query(query, {
                 "parent_entity": parent_entity,
-                "old_version_label": f"version_{old_version_label}",
-                "new_version_label": f"version_{new_version_label}"
+                "old_version_label": old_version_label,
+                "new_version_label": new_version_label
             })[0]
             
             validation_status = query_result["validation_status"]
@@ -2338,15 +2170,15 @@ RETURN apoc.map.fromPairs(
             if validation_status != 'valid':
                 error_messages = {
                     'parent_not_found': f"Parent entity '{parent_entity}' not found in the knowledge graph.",
-                    'neither_version_found': f"Neither version '{old_version}' nor '{new_version}' found for entity '{parent_entity}'.",
-                    'old_version_not_found': f"Version '{old_version}' not found for entity '{parent_entity}'.",
-                    'new_version_not_found': f"Version '{new_version}' not found for entity '{parent_entity}'."
+                    'neither_version_found': f"Neither version '{old_version_display}' nor '{new_version_display}' found for entity '{parent_entity}'.",
+                    'old_version_not_found': f"Version '{old_version_display}' not found for entity '{parent_entity}'.",
+                    'new_version_not_found': f"Version '{new_version_display}' not found for entity '{parent_entity}'."
                 }
                 
                 data = {
                     "entity_name": parent_entity,
-                    "old_version": old_version,
-                    "new_version": new_version,
+                    "old_version": old_version_display,
+                    "new_version": new_version_display,
                     "diff": "",
                     "entities": [],
                     "summary": {
@@ -2362,8 +2194,8 @@ RETURN apoc.map.fromPairs(
             if not results:
                 data = {
                     "entity_name": parent_entity,
-                    "old_version": old_version,
-                    "new_version": new_version,
+                    "old_version": old_version_display,
+                    "new_version": new_version_display,
                     "diff": "",
                     "entities": [],
                     "summary": {
@@ -2372,49 +2204,14 @@ RETURN apoc.map.fromPairs(
                         "modified": 0,
                         "unchanged": 0
                     },
-                    "system_message": f"No entities found under '{parent_entity}' with versions '{old_version}' or '{new_version}'."
+                    "system_message": f"No entities found under '{parent_entity}' with versions '{old_version_display}' or '{new_version_display}'."
                 }
                 return _dict_to_xml_string(data, "get_version_diff_response")
             
-            # Build version maps: entity -> data for each version
-            old_version_map = {}
-            new_version_map = {}
-            all_entities = set()
-            
-            for result in results:
-                full_name = result["full_name"]
-                entity_type = result["type"]
-                signature = result.get("signature")
-                has_old = result.get("has_old_version", False)
-                has_new = result.get("has_new_version", False)
-                
-                all_entities.add(full_name)
-                
-                entity_data = {
-                    "signature": signature,
-                    "simple_name": result["simple_name"],
-                    "path": result["path"],
-                    "type": entity_type
-                }
-                
-                # Add extra props if requested
-                if extra_props:
-                    for prop in extra_props:
-                        if prop in result:
-                            entity_data[prop] = result[prop]
-                
-                # Check if entity exists in old_version (has the version label)
-                if has_old:
-                    old_version_map[full_name] = entity_data.copy()
-                
-                # Check if entity exists in new_version (has the version label)
-                if has_new:
-                    new_version_map[full_name] = entity_data.copy()
-            
             # Generate git-style diff (only for entities with signatures that changed)
             diff_lines = []
-            diff_lines.append(f"--- {parent_entity} @ {old_version}")
-            diff_lines.append(f"+++ {parent_entity} @ {new_version}")
+            diff_lines.append(f"--- {parent_entity} @ {old_version_display}")
+            diff_lines.append(f"+++ {parent_entity} @ {new_version_display}")
             diff_lines.append("")
             
             added_count = 0
@@ -2422,124 +2219,98 @@ RETURN apoc.map.fromPairs(
             modified_count = 0
             unchanged_count = 0
             
-            # Collect all entities with their status
-            entities_list = []
+            # Process entities and determine their status
+            entity_map = {}
             
-            # Process all entities
-            for entity_name in sorted(all_entities):
-                in_old = entity_name in old_version_map
-                in_new = entity_name in new_version_map
+            for result in results:
+                fqn = result["fqn"]
+                has_old = result.get("has_old_version", False)
+                has_new = result.get("has_new_version", False)
+                old_sig = result.get("old_signature")
+                new_sig = result.get("new_signature")
+                entity_type = result["type"]
+                api_path = result["api_path"]
+                all_labels = result["all_labels"]
+                path_names = result["path_names"]
                 
-                if in_old and in_new:
-                    # Entity exists in both versions - check for changes
-                    old_data = old_version_map[entity_name]
-                    new_data = new_version_map[entity_name]
-                    old_sig = old_data.get("signature")
-                    new_sig = new_data.get("signature")
-                    entity_type = new_data["type"]
-                    path = new_data["path"]
-                    
-                    # Only show diff for entities with signatures
-                    if old_sig and new_sig and old_sig != new_sig:
-                        # Signature changed
+                # Determine status
+                if has_old and has_new:
+                    if old_sig != new_sig:
+                        status = "modified"
                         modified_count += 1
-                        diff_lines.append(f"@@ {entity_type}: {path} @@")
-                        diff_lines.append(f"- {old_sig}")
+                        # Add to diff if signatures exist and changed
+                        if old_sig and new_sig:
+                            diff_lines.append(f"@@ {entity_type}: {api_path} @@")
+                            diff_lines.append(f"- {old_sig}")
+                            diff_lines.append(f"+ {new_sig}")
+                            diff_lines.append("")
+                    else:
+                        status = "unchanged"
+                        unchanged_count += 1
+                elif has_new and not has_old:
+                    status = "added"
+                    added_count += 1
+                    # Add to diff if signature exists
+                    if new_sig:
+                        diff_lines.append(f"@@ {entity_type}: {api_path} @@")
                         diff_lines.append(f"+ {new_sig}")
                         diff_lines.append("")
-                        
-                        entity_entry = {
-                            "name": entity_name,
-                            "path": path,
-                            "type": entity_type,
-                            "status": "modified",
-                            "old_signature": old_sig,
-                            "new_signature": new_sig
-                        }
-                    elif old_sig != new_sig:
-                        # Something changed but maybe no signature
-                        modified_count += 1
-                        entity_entry = {
-                            "name": entity_name,
-                            "path": path,
-                            "type": entity_type,
-                            "status": "modified",
-                            "old_signature": old_sig,
-                            "new_signature": new_sig
-                        }
-                    else:
-                        unchanged_count += 1
-                        entity_entry = {
-                            "name": entity_name,
-                            "path": path,
-                            "type": entity_type,
-                            "status": "unchanged",
-                            "signature": new_sig
-                        }
-                    
-                    # Add extra props if available
-                    if extra_props:
-                        for prop in extra_props:
-                            if prop in new_data:
-                                entity_entry[prop] = new_data[prop]
-                    
-                    entities_list.append(entity_entry)
-                
-                elif in_new and not in_old:
-                    # New entity added
-                    added_count += 1
-                    entity_data = new_version_map[entity_name]
-                    sig = entity_data.get("signature")
-                    
-                    # Only show in diff if has signature
-                    if sig:
-                        diff_lines.append(f"@@ {entity_data['type']}: {entity_data['path']} @@")
-                        diff_lines.append(f"+ {sig}")
-                        diff_lines.append("")
-                    
-                    entity_entry = {
-                        "name": entity_name,
-                        "path": entity_data["path"],
-                        "type": entity_data["type"],
-                        "status": "added",
-                        "signature": sig
-                    }
-                    
-                    # Add extra props if available
-                    if extra_props:
-                        for prop in extra_props:
-                            if prop in entity_data:
-                                entity_entry[prop] = entity_data[prop]
-                    
-                    entities_list.append(entity_entry)
-                
-                elif in_old and not in_new:
-                    # Entity removed
+                elif has_old and not has_new:
+                    status = "removed"
                     removed_count += 1
-                    entity_data = old_version_map[entity_name]
-                    sig = entity_data.get("signature")
-                    
-                    # Only show in diff if has signature
-                    if sig:
-                        diff_lines.append(f"@@ {entity_data['type']}: {entity_data['path']} @@")
-                        diff_lines.append(f"- {sig}")
+                    # Add to diff if signature exists
+                    if old_sig:
+                        diff_lines.append(f"@@ {entity_type}: {api_path} @@")
+                        diff_lines.append(f"- {old_sig}")
                         diff_lines.append("")
+                else:
+                    continue
+                
+                # Build entity entry
+                entity_entry = {
+                    "fqn": fqn,
+                    "api_path": api_path,
+                    "all_labels": all_labels,
+                    "status": status,
+                    "children": []
+                }
+                
+                if status == "modified":
+                    entity_entry["old_signature"] = old_sig
+                    entity_entry["new_signature"] = new_sig
+                elif status == "added":
+                    entity_entry["signature"] = new_sig
+                elif status == "removed":
+                    entity_entry["signature"] = old_sig
+                else:  # unchanged
+                    entity_entry["signature"] = new_sig
+                
+                entity_map[fqn] = {
+                    "data": entity_entry,
+                    "path_names": path_names
+                }
+            
+            # Build nested hierarchy
+            def build_diff_hierarchy(entity_map):
+                """Convert flat entity map to nested hierarchy"""
+                root_entities = []
+                
+                for fqn, info in entity_map.items():
+                    entity_data = info["data"]
+                    path_names = info["path_names"]
                     
-                    entity_entry = {
-                        "name": entity_name,
-                        "path": entity_data["path"],
-                        "type": entity_data["type"],
-                        "status": "removed",
-                        "signature": sig
-                    }
-                    
-                    # Add extra props if available
-                    if extra_props:
-                        for prop in extra_props:
-                            if prop in entity_data:
-                                entity_entry[prop] = entity_data[prop]
-                    
-                    entities_list.append(entity_entry)
+                    if len(path_names) == 1:
+                        # Root level entity
+                        root_entities.append(entity_data)
+                    else:
+                        # Find parent
+                        parent_fqn = path_names[-2]
+                        if parent_fqn in entity_map:
+                            entity_map[parent_fqn]["data"]["children"].append(entity_data)
+                
+                return root_entities
+            
+            entities_hierarchy = build_diff_hierarchy(entity_map)
             
             # Build summary message
             summary_parts = []
@@ -2559,10 +2330,10 @@ RETURN apoc.map.fromPairs(
             
             data = {
                 "entity_name": parent_entity,
-                "old_version": old_version,
-                "new_version": new_version,
+                "old_version": old_version_display,
+                "new_version": new_version_display,
                 "diff": diff_text,
-                "entities": entities_list,
+                "entities": entities_hierarchy,
                 "summary": {
                     "added": added_count,
                     "removed": removed_count,
@@ -2577,8 +2348,8 @@ RETURN apoc.map.fromPairs(
             logging.error(f"Error generating version diff: {e}")
             data = {
                 "entity_name": parent_entity,
-                "old_version": old_version,
-                "new_version": new_version,
+                "old_version": old_version_display if 'old_version_display' in locals() else old_version,
+                "new_version": new_version_display if 'new_version_display' in locals() else new_version,
                 "diff": "",
                 "entities": [],
                 "summary": {
