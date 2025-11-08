@@ -1613,7 +1613,7 @@ def process_module(module_name: str, version: Optional[str] = None):
     entities: List[Entity] = []
     relations: List[Relationship] = []
     processed_paths: Set[str] = set()
-    other_relations: Dict[str, Set[Tuple]] = {"INHERITS": set(), "IMPORTS": set(), "EXPOSES": set()}
+    other_relations: Dict[str, Set[Tuple]] = {"INHERITS": set(), "IMPORTS": set(), "EXPOSES": set(), "PUBLISHES": set()}
 
     module_object = importlib.import_module(name_only)
 
@@ -1797,6 +1797,7 @@ def process_module(module_name: str, version: Optional[str] = None):
     other_relations["IMPORTS"] = updated_imported_relations
 
     cleaned_exposed_relations: Set[Tuple[str, ExternalEntityRef]] = set()
+    cleaned_publishes_relations: Set[Tuple[str, ExternalEntityRef]] = set()
     cleaned_imports_relations: Set[Tuple[str, ExternalEntityRef]] = set()
 
     # Clean up IMPORTS relations
@@ -1813,41 +1814,34 @@ def process_module(module_name: str, version: Optional[str] = None):
         else:
             cleaned_imports_relations.add((from_hash, to_ref))
 
-    # Clean up EXPOSED relations
+    # Clean up EXPOSED relations and separate PUBLISHES relations
     for from_hash, to_ref in other_relations["EXPOSES"]:
         from_entity = hash_to_entity.get(from_hash)
         if not from_entity:
             continue
         
-        # Check if this is a valid EXPOSES relationship:
-        # 1. Normal case: to_ref.name starts with from_entity.name (e.g., pytest.Config exposed by pytest)
-        # 2. _<package> pattern: from_entity is from _<package> and to_ref is from the main package
-        #    (e.g., _pytest.config.Config exposed by pytest when imported in pytest/__init__.py)
+        # Extract root module names for pattern detection
+        from_root = from_entity.name.split(".")[0]
+        to_root = to_ref.name.split(".")[0]
         
-        is_valid_expose = False
+        # Check if this is a PUBLISHES relationship (_<package> pattern)
+        is_publishes = False
+        if from_root.startswith("_") and to_root == from_root[1:]:
+            # Case: _pytest publishing to pytest
+            is_publishes = True
+            logging.debug(f"Found PUBLISHES: {from_entity.name} publishes {to_ref.name}")
+        elif to_root.startswith("_") and from_root == to_root[1:]:
+            # Case: pytest publishing from _pytest
+            is_publishes = True
+            logging.debug(f"Found PUBLISHES: {from_entity.name} publishes {to_ref.name}")
         
-        # Case 1: Normal internal expose
-        if to_ref.name.startswith(from_entity.name):
-            is_valid_expose = True
-        
-        # Case 2: _<package> pattern - check if from_entity is in a _<package> module
-        # and to_ref is being exposed to the main <package>
-        else:
-            # Extract root module names
-            from_root = from_entity.name.split(".")[0]
-            to_root = to_ref.name.split(".")[0]
-            
-            # Check if from_root is _<something> and to_root is <something>
-            if from_root.startswith("_") and to_root == from_root[1:]:
-                is_valid_expose = True
-                logging.debug(f"Found _<package> pattern expose: {from_entity.name} exposes {to_ref.name}")
-            # Also check reverse: from_root is <something> and to_root is _<something>
-            elif to_root.startswith("_") and from_root == to_root[1:]:
-                is_valid_expose = True
-                logging.debug(f"Found <package> to _<package> pattern expose: {from_entity.name} exposes {to_ref.name}")
-        
-        if is_valid_expose:
+        if is_publishes:
+            # This is a PUBLISHES relationship
+            cleaned_publishes_relations.add((from_hash, to_ref))
+        elif to_ref.name.startswith(from_entity.name):
+            # Normal internal EXPOSES
             cleaned_exposed_relations.add((from_hash, to_ref))
+        # Otherwise, skip this relation (invalid)
 
     # Clean up Alias Imports
     for entity in entities:
@@ -1856,12 +1850,17 @@ def process_module(module_name: str, version: Optional[str] = None):
 
         cleaned_import_aliases: List[Tuple[str, str]] = []
         for key, value in entity.properties.get("import_as_aliases", []):
-            # Check if this alias is in EXPOSES or IMPORTS using content_hash
+            # Check if this alias is in EXPOSES, PUBLISHES, or IMPORTS using content_hash
             found = False
             for from_hash, to_ref in other_relations["EXPOSES"]:
                 if from_hash == entity.content_hash and to_ref.name == key:
                     found = True
                     break
+            if not found:
+                for from_hash, to_ref in other_relations["PUBLISHES"]:
+                    if from_hash == entity.content_hash and to_ref.name == key:
+                        found = True
+                        break
             if not found:
                 for from_hash, to_ref in other_relations["IMPORTS"]:
                     if from_hash == entity.content_hash and to_ref.name == key:
@@ -1873,6 +1872,7 @@ def process_module(module_name: str, version: Optional[str] = None):
             entity.properties["import_as_aliases"] = cleaned_import_aliases
 
     other_relations["EXPOSES"] = list(cleaned_exposed_relations)
+    other_relations["PUBLISHES"] = list(cleaned_publishes_relations)
     other_relations["IMPORTS"] = list(cleaned_imports_relations)
     other_relations["INHERITS"] = list(other_relations["INHERITS"])
 
@@ -1907,17 +1907,17 @@ def process_package(package_name: str, version: Optional[str] = None):
             logging.info(f"Package '{pkg_name}' installed successfully.")
         except subprocess.CalledProcessError as e:
             logging.error(f"Failed to install package '{pkg_name}': {e}")
-            return [], [], {"INHERITS": [], "IMPORTS": [], "EXPOSES": []}
+            return [], [], {"INHERITS": [], "IMPORTS": [], "EXPOSES": [], "PUBLISHES": []}
     
     top_level_modules = get_top_level_modules_for_package(pkg_name)
     if not top_level_modules:
         logging.error(f"Package '{pkg_name}' not found after installation.")
-        return [], [], {"INHERITS": [], "IMPORTS": [], "EXPOSES": []}
+        return [], [], {"INHERITS": [], "IMPORTS": [], "EXPOSES": [], "PUBLISHES": []}
     
     # Process all top-level modules and combine results
     all_entities: List[Entity] = []
     all_relations: List[Relationship] = []
-    combined_other_relations: Dict[str, List] = {"INHERITS": [], "IMPORTS": [], "EXPOSES": []}
+    combined_other_relations: Dict[str, List] = {"INHERITS": [], "IMPORTS": [], "EXPOSES": [], "PUBLISHES": []}
     
     logging.info(f"Processing package '{pkg_name}' with {len(top_level_modules)} top-level module(s): {top_level_modules}")
     
@@ -1930,7 +1930,7 @@ def process_package(package_name: str, version: Optional[str] = None):
             all_relations.extend(relations)
             
             # Combine other_relations
-            for rel_type in ["INHERITS", "IMPORTS", "EXPOSES"]:
+            for rel_type in ["INHERITS", "IMPORTS", "EXPOSES", "PUBLISHES"]:
                 if rel_type in other_relations:
                     combined_other_relations[rel_type].extend(other_relations[rel_type])
                     
@@ -1942,7 +1942,7 @@ def process_package(package_name: str, version: Optional[str] = None):
             continue
     
     # Deduplicate other_relations
-    for rel_type in ["INHERITS", "IMPORTS", "EXPOSES"]:
+    for rel_type in ["INHERITS", "IMPORTS", "EXPOSES", "PUBLISHES"]:
         combined_other_relations[rel_type] = list(set(combined_other_relations[rel_type]))
     
     logging.info(f"Completed processing package '{pkg_name}': "

@@ -398,7 +398,7 @@ class COMStore(Neo4jPropertyGraphStore):
 
         # Use a cypher query to return all IMMEDIATE children of the parent entity, sorted by similarity to the query
         sort_and_return_children_query = """
-            MATCH (parent {name: $parent_name})-[:HAS_SUBMODULE|HAS_CLASS|HAS_METHOD|HAS_FUNCTION|EXPOSES]->(child)
+            MATCH (parent {name: $parent_name})-[:HAS_SUBMODULE|HAS_CLASS|HAS_METHOD|HAS_FUNCTION|EXPOSES|PUBLISHES]->(child)
             WHERE child.embedding IS NOT NULL
             WITH parent, child,
                 vector.similarity.cosine(child.embedding, $query_vector) AS similarity
@@ -932,18 +932,18 @@ class COMStore(Neo4jPropertyGraphStore):
         self._process_other_relations()
 
         # Handle inherited methods
-        self._handle_inherited_methods(module_name)
+        self._handle_inherited_methods()
 
         # Set the shortest call paths for all nodes in the module
         self._set_shortest_call_paths(module_name)
 
     def _add_other_relations_as_properties(self, other_relations: Dict[str, List[Tuple]]):
         """
-        Add INHERITS and IMPORTS relations as properties to the respective nodes.
+        Add INHERITS, IMPORTS, EXPOSES, and PUBLISHES relations as properties to the respective nodes.
         Now works with (content_hash, ExternalEntityRef) tuples.
 
         Args:
-            other_relations (Dict[str, List[Tuple]]): Dictionary containing INHERITS and IMPORTS relations.
+            other_relations (Dict[str, List[Tuple]]): Dictionary containing INHERITS, IMPORTS, EXPOSES, and PUBLISHES relations.
                 Each tuple is (from_content_hash, ExternalEntityRef)
         """
         from ..com_extractor import ExternalEntityRef
@@ -951,6 +951,7 @@ class COMStore(Neo4jPropertyGraphStore):
         inherits_relations = other_relations.get("INHERITS", [])
         imports_relations = other_relations.get("IMPORTS", [])
         exposes_relations = other_relations.get("EXPOSES", [])
+        publishes_relations = other_relations.get("PUBLISHES", [])
         
         # Convert (name, ExternalEntityRef) tuples to (name, target_info_dict) for INHERITS
         # INHERITS uses entity name (not content_hash) as key since it's class-level
@@ -993,6 +994,18 @@ class COMStore(Neo4jPropertyGraphStore):
             else:
                 exposes_processed.append((from_hash, to_ref))
         
+        publishes_processed = []
+        for from_hash, to_ref in publishes_relations:
+            if isinstance(to_ref, ExternalEntityRef):
+                target_info = {
+                    "name": to_ref.name,
+                    "version": to_ref.version,
+                    "content_hash": to_ref.content_hash
+                }
+                publishes_processed.append((from_hash, json.dumps(target_info)))
+            else:
+                publishes_processed.append((from_hash, to_ref))
+        
         add_inherits_query = (
             """
             UNWIND $inherits_relations AS rel
@@ -1014,9 +1027,17 @@ class COMStore(Neo4jPropertyGraphStore):
             SET m.EXPOSES = apoc.coll.toSet(coalesce(m.EXPOSES, []) + [rel[1]])
             """
         )
+        add_publishes_query = (
+            """
+            UNWIND $publishes_relations AS rel
+            MATCH (m {content_hash: rel[0]})
+            SET m.PUBLISHES = apoc.coll.toSet(coalesce(m.PUBLISHES, []) + [rel[1]])
+            """
+        )
         self.structured_query(add_inherits_query, {"inherits_relations": inherits_processed})
         self.structured_query(add_imports_query, {"imports_relations": imports_processed})
         self.structured_query(add_exposes_query, {"exposes_relations": exposes_processed})
+        self.structured_query(add_publishes_query, {"publishes_relations": publishes_processed})
 
     def _process_other_relations(self):
         """
@@ -1095,6 +1116,31 @@ class COMStore(Neo4jPropertyGraphStore):
             SET m.EXPOSES = [info IN m.EXPOSES WHERE NOT info IN processedExposes]
             """
         )
+        
+        # Process PUBLISHES with version-aware and content_hash matching
+        process_publishes_query = (
+            """
+            MATCH (m:MODULE|ROOT_MODULE)
+            WHERE m.PUBLISHES IS NOT NULL
+            UNWIND m.PUBLISHES AS publishedInfo
+            WITH m, publishedInfo,
+                 CASE WHEN publishedInfo STARTS WITH '{'
+                      THEN apoc.convert.fromJsonMap(publishedInfo)
+                      ELSE {name: publishedInfo, version: null, content_hash: null}
+                 END AS publishedData
+            // Try to match by content_hash first (if available), then by name+version
+            OPTIONAL MATCH (e)
+            WHERE (publishedData.content_hash IS NOT NULL AND e.content_hash = publishedData.content_hash)
+               OR (e.name = publishedData.name AND (publishedData.version IS NULL
+                   OR ('version_' + replace(replace(replace(publishedData.version, '.', '_'), ':', '_'), '-', '_')) IN labels(e)))
+            WITH m, publishedInfo, e
+            WHERE e IS NOT NULL
+            MERGE (m)-[:PUBLISHES]->(e)
+            WITH m, COLLECT(publishedInfo) AS processedPublishes
+            SET m.PUBLISHES = [info IN m.PUBLISHES WHERE NOT info IN processedPublishes]
+            """
+        )
+        
         cleanup_empty_INHERITS_query = (
             """
             MATCH (n)
@@ -1116,9 +1162,24 @@ class COMStore(Neo4jPropertyGraphStore):
             REMOVE n.EXPOSES
             """
         )
+        cleanup_empty_PUBLISHES_query = (
+            """
+            MATCH (n)
+            WHERE n.PUBLISHES IS NOT NULL AND size(n.PUBLISHES) = 0
+            REMOVE n.PUBLISHES
+            """
+        )
         add_names_to_EXPOSES_rels_query = (
             """
             MATCH (n)-[r:EXPOSES]->(m)
+            WHERE r.name IS NULL
+            SET r.name = n.name + "." + m.__name__
+            RETURN count(r)
+            """
+        )
+        add_names_to_PUBLISHES_rels_query = (
+            """
+            MATCH (n)-[r:PUBLISHES]->(m)
             WHERE r.name IS NULL
             SET r.name = n.name + "." + m.__name__
             RETURN count(r)
@@ -1128,10 +1189,13 @@ class COMStore(Neo4jPropertyGraphStore):
         self.structured_query(process_inherits_query)
         self.structured_query(process_imports_query)
         self.structured_query(process_exposes_query)
+        self.structured_query(process_publishes_query)
         self.structured_query(cleanup_empty_INHERITS_query)
         self.structured_query(cleanup_empty_IMPORTS_query)
         self.structured_query(cleanup_empty_EXPOSES_query)
+        self.structured_query(cleanup_empty_PUBLISHES_query)
         self.structured_query(add_names_to_EXPOSES_rels_query)
+        self.structured_query(add_names_to_PUBLISHES_rels_query)
 
     def _set_shortest_call_paths(self, module_name: str):
         """
@@ -1144,12 +1208,12 @@ class COMStore(Neo4jPropertyGraphStore):
         set_shortest_call_paths_query = (
             """
 // Phase 1: Find all nodes reachable from the root module via structural relationships.
-MATCH (end:MODULE|FUNCTION|CLASS|METHOD)<-[:HAS_SUBMODULE|HAS_CLASS|HAS_METHOD|HAS_FUNCTION|EXPOSES*]-(root:ROOT_MODULE {name: $module_name})
+MATCH (end:MODULE|FUNCTION|CLASS|METHOD)<-[:HAS_SUBMODULE|HAS_CLASS|HAS_METHOD|HAS_FUNCTION|EXPOSES|PUBLISHES*]-(root:ROOT_MODULE {name: $module_name})
 WITH root, collect(end) AS endNodes
 
 // Phase 2: Use spanningTree to get ordered paths from the root outwards (BFS).
 CALL apoc.path.spanningTree(root, {
-    relationshipFilter: 'HAS_SUBMODULE>|HAS_CLASS>|HAS_METHOD>|HAS_FUNCTION>|EXPOSES>',
+    relationshipFilter: 'HAS_SUBMODULE>|HAS_CLASS>|HAS_METHOD>|HAS_FUNCTION>|EXPOSES>|PUBLISHES>',
     endNodes: endNodes
 })
 YIELD path
@@ -1181,12 +1245,9 @@ RETURN count(targetNode) AS numPathsSet
         while numPathsSet > 0:
             numPathsSet = self.structured_query(set_shortest_call_paths_query, {"module_name": module_name})[0]["numPathsSet"]
 
-    def _handle_inherited_methods(self, module_name: str):
+    def _handle_inherited_methods(self):
         """
         Create HAS_METHOD relations for inherited methods for all classes in the specified module.
-
-        Args:
-            module_name (str): The name of the module.
         """
         handle_inheritance_query = (
             """
