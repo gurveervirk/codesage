@@ -1,13 +1,12 @@
 import os
 import sys
-from typing import List, Optional
 from mcp.server.fastmcp import FastMCP
 
 # Add the backend directory to the Python path
 backend_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
 sys.path.insert(0, backend_path)
 
-from lib_sage.com_store import COMStore
+from lib_sage.com_store import COMStore, COMStoreTools
 from config import config
 
 # Initialize FastMCP server
@@ -20,36 +19,38 @@ com_store = COMStore(
     password=config.NEO4J_PASSWORD,
     database="neo4j"
 )
+# Initialize COMStoreTools with the COMStore instance
+com_store_tools = COMStoreTools(com_store)
 
-server.tool()(com_store.get_version_diff)
-server.tool()(com_store.library_map)
+server.tool()(com_store_tools.get_version_diff)
+server.tool()(com_store_tools.library_map)
 
-@server.tool(description=com_store.search_definitions.__doc__)
+@server.tool(description=com_store_tools.search_definitions.__doc__)
 def search_definitions(
     parent_entity_name: str,
     search_terms,
     page: int = 1,
     page_size: int = 10
 ):
-    return com_store.search_definitions(
+    return com_store_tools.search_definitions(
         parent_entity_name,
         search_terms,
         page,
         page_size
     )
 
-@server.tool(description=com_store.list_libraries.__doc__)
+@server.tool(description=com_store_tools.list_libraries.__doc__)
 def list_libraries(
     search_terms = None
 ):
-    return com_store.list_libraries(
+    return com_store_tools.list_libraries(
         search_terms
     )
 
-@server.tool(description=com_store.get_definitions.__doc__)
+@server.tool(description=com_store_tools.get_definitions.__doc__)
 def get_definitions(
     search_terms
 ):
-    return com_store.get_definitions(
+    return com_store_tools.get_definitions(
         search_terms
     )
