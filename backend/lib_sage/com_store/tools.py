@@ -403,8 +403,8 @@ OPTIONAL MATCH (e1:METHOD|FUNCTION|CLASS)
 WHERE e1.name = entity_name OR e1.shortest_call_path = entity_name
 WITH entity_name, collect(e1)[0] AS direct_match
 
-// Phase 2: If no direct match was found, try the fallback search via the EXPOSES relationship
-OPTIONAL MATCH ()-[r:EXPOSES]->(e2:METHOD|FUNCTION|CLASS)
+// Phase 2: If no direct match was found, try the fallback search via the EXPOSES or PUBLISHES relationship
+OPTIONAL MATCH ()-[r:EXPOSES|PUBLISHES]->(e2:METHOD|FUNCTION|CLASS)
 WHERE direct_match IS NULL AND r.name = entity_name
 WITH entity_name, direct_match, collect(e2)[0] AS exposed_match
 
@@ -440,7 +440,7 @@ OPTIONAL MATCH (c1:CLASS)
 WHERE c1.name = class_path OR c1.shortest_call_path = class_path
 WITH entity_name, class_path, method_name, collect(c1)[0] AS class_direct_match
 
-OPTIONAL MATCH ()-[r:EXPOSES]->(c2:CLASS)
+OPTIONAL MATCH ()-[r:EXPOSES|PUBLISHES]->(c2:CLASS)
 WHERE class_direct_match IS NULL AND r.name = class_path
 WITH entity_name, method_name, class_direct_match, collect(c2)[0] AS class_exposed_match
 
@@ -642,7 +642,7 @@ RETURN apoc.map.fromPairs(
         MATCH (parent {name: $parent_entity_name})
         
         // Find all children recursively using variable-length path
-        MATCH (parent)-[:HAS_SUBMODULE|HAS_CLASS|HAS_METHOD|HAS_FUNCTION*]->(child)
+        MATCH (parent)-[:HAS_SUBMODULE|HAS_CLASS|HAS_METHOD|HAS_FUNCTION|PUBLISHES*]->(child)
         WHERE child.__name__ =~ $search_pattern
         
         // Get distinct children to avoid duplicates from multiple paths
