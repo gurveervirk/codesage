@@ -429,9 +429,6 @@ def get_unused_imports(module_name: str, imported_names: Set[str]) -> Set[str]:
             if any(full_name.endswith(name) for name in unused_names):
                  unused_imports.add(full_name)
 
-        if module_name == "pytest":
-            logging.info("Found these:", unused_imports)
-
         return unused_imports
     except Exception as e:
         logging.error(f"Error getting unused imports for {module_name}: {e}")
@@ -1251,27 +1248,12 @@ def process_member(
             obj_path = get_fully_qualified_name(obj)
 
         if not obj_path.startswith(root_module_path + "."):
-            if parent_entity and parent_entity.label in {"ROOT_MODULE", "MODULE"}:
-                # Detect version for external imports
-                import_version = _get_entity_version(obj_path)
-                import_ref = ExternalEntityRef(name=obj_path, version=import_version)
-                other_relations["IMPORTS"].add((parent_entity.content_hash, import_ref))
             return [], []
 
         if obj_path in processed_paths:
-            if parent_entity and parent_entity.label in {"ROOT_MODULE", "MODULE"}:
-                # Internal import - use content_hash for from_entity
-                import_version = version  # Use module version for internal imports
-                import_ref = ExternalEntityRef(name=obj_path, version=import_version)
-                other_relations["IMPORTS"].add((parent_entity.content_hash, import_ref))
             return [], []
 
         if not obj_path.startswith(parent_entity.name + "."):
-            if parent_entity and parent_entity.label in {"ROOT_MODULE", "MODULE"}:
-                # Detect version for external imports
-                import_version = _get_entity_version(obj_path)
-                import_ref = ExternalEntityRef(name=obj_path, version=import_version)
-                other_relations["IMPORTS"].add((parent_entity.content_hash, import_ref))
             return [], []
 
         sub_entities, sub_relations = traverse_recursive(
@@ -1288,24 +1270,12 @@ def process_member(
         obj_path = get_fully_qualified_name(obj)
 
         if not obj_path.startswith(root_module_path + "."):
-            if parent_entity and parent_entity.label in {"ROOT_MODULE", "MODULE"}:
-                import_version = _get_entity_version(obj_path)
-                import_ref = ExternalEntityRef(name=obj_path, version=import_version)
-                other_relations["IMPORTS"].add((parent_entity.content_hash, import_ref))
             return [], []
 
         if obj_path in processed_paths:
-            if parent_entity and parent_entity.label in {"ROOT_MODULE", "MODULE"}:
-                import_version = version
-                import_ref = ExternalEntityRef(name=obj_path, version=import_version)
-                other_relations["IMPORTS"].add((parent_entity.content_hash, import_ref))
             return [], []
 
         elif not obj_path.startswith(parent_entity.name + "."):
-            if parent_entity and parent_entity.label in {"ROOT_MODULE", "MODULE"}:
-                import_version = _get_entity_version(obj_path)
-                import_ref = ExternalEntityRef(name=obj_path, version=import_version)
-                other_relations["IMPORTS"].add((parent_entity.content_hash, import_ref))
             return [], []
 
         else:
@@ -1597,6 +1567,103 @@ def traverse_recursive(
 
     return entities, relations
 
+def _process_import_statements(import_statements: str, root_module_name: str, entity_content_hash: str, other_relations: Dict[str, Set[Tuple]]) -> Dict:
+    """
+    Process import statements from source code and extract import details.
+    Also populates other_relations with EXPOSES entries for imports.
+    
+    Returns a dictionary with the following structure:
+    {
+        "modules": {
+            "module_name": {
+                "version": "x.y.z" or None,
+                "entities": [
+                    {"name": "entity_name", "fqn": "module.entity", "alias": "alias_name" or None, "used": True/False},
+                    ...
+                ]
+            },
+            ...
+        }
+    }
+    
+    Args:
+        import_statements (str): String containing all import statements
+        root_module_name (str): Name of the root module being processed (to filter out internal imports)
+        entity_content_hash (str): Content hash of the entity being processed
+        other_relations (Dict): Dictionary to populate with EXPOSES relationships
+    
+    Returns:
+        Dict: Dictionary containing structured import information
+    """
+    import_details = {"modules": {}}
+    imported_entities: Set[str] = set()  # Track all imported entity FQNs for unused detection
+    
+    if not import_statements:
+        return import_details
+    
+    try:
+        tree = ast.parse(import_statements)
+        
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                # Handle: import module [as alias]
+                for alias in node.names:
+                    module_name = alias.name
+                    
+                    # Get version for the module
+                    module_version = _get_entity_version(module_name)
+                    
+                    if module_name not in import_details["modules"]:
+                        import_details["modules"][module_name] = {
+                            "version": module_version,
+                            "entities": []
+                        }
+                    
+                    # For "import module", the module itself is the entity
+                    entity_info = {
+                        "name": module_name.split(".")[-1],
+                        "fqn": module_name,
+                        "alias": alias.asname,
+                        "used": None  # Will be determined later
+                    }
+                    import_details["modules"][module_name]["entities"].append(entity_info)
+                    imported_entities.add(module_name)
+            
+            elif isinstance(node, ast.ImportFrom):
+                # Handle: from module import entity [as alias]
+                if not node.module:
+                    continue
+                
+                module_name = node.module
+                
+                # Get version for the module (not for each entity)
+                module_version = _get_entity_version(module_name)
+                
+                if module_name not in import_details["modules"]:
+                    import_details["modules"][module_name] = {
+                        "version": module_version,
+                        "entities": []
+                    }
+                
+                # Process each imported entity
+                for alias in node.names:
+                    entity_name = alias.name
+                    entity_fqn = f"{module_name}.{entity_name}"
+                    
+                    entity_info = {
+                        "name": entity_name,
+                        "fqn": entity_fqn,
+                        "alias": alias.asname,
+                        "used": None  # Will be determined later
+                    }
+                    import_details["modules"][module_name]["entities"].append(entity_info)
+                    imported_entities.add(entity_fqn)
+    
+    except Exception as e:
+        logging.warning(f"Error processing import statements: {e}")
+    
+    return import_details, imported_entities
+
 def process_module(module_name: str, version: Optional[str] = None):
     """
     Process a module or object recursively.
@@ -1613,7 +1680,7 @@ def process_module(module_name: str, version: Optional[str] = None):
     entities: List[Entity] = []
     relations: List[Relationship] = []
     processed_paths: Set[str] = set()
-    other_relations: Dict[str, Set[Tuple]] = {"INHERITS": set(), "IMPORTS": set(), "EXPOSES": set(), "PUBLISHES": set()}
+    other_relations: Dict[str, Set[Tuple]] = {"INHERITS": set(), "EXPOSES": set(), "PUBLISHES": set()}
 
     module_object = importlib.import_module(name_only)
 
@@ -1635,63 +1702,6 @@ def process_module(module_name: str, version: Optional[str] = None):
     
     root_entity = Entity(module_object.__name__, labels, properties)
     entities.append(root_entity)
-
-    # Process ROOT_MODULE's direct imports
-    # Extract imports from the root module's source using AST
-    try:
-        tree = ast.parse(source)
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                for alias in node.names:
-                    try:
-                        imported_module = importlib.import_module(alias.name)
-                        imported_path = imported_module.__name__
-                        # Only track external imports (not within the same root module)
-                        if not imported_path.startswith(module_object.__name__ + "."):
-                            import_version = _get_entity_version(imported_path)
-                            import_ref = ExternalEntityRef(name=imported_path, version=import_version)
-                            other_relations["IMPORTS"].add((root_entity.content_hash, import_ref))
-                    except Exception as e:
-                        logging.debug(f"Could not process import {alias.name}: {e}")
-            elif isinstance(node, ast.ImportFrom):
-                if node.module:
-                    try:
-                        # Resolve the module being imported from
-                        from_module = node.module
-                        imported_module = importlib.import_module(from_module)
-                        
-                        # Process each imported name
-                        for alias in node.names:
-                            try:
-                                imported_obj = getattr(imported_module, alias.name)
-                                if inspect.ismodule(imported_obj):
-                                    imported_path = imported_obj.__name__
-                                elif inspect.isclass(imported_obj) or inspect.isfunction(imported_obj):
-                                    imported_path = get_fully_qualified_name(imported_obj)
-                                else:
-                                    # For other objects, construct the path
-                                    imported_path = f"{from_module}.{alias.name}"
-                                
-                                # Only track external imports
-                                if not imported_path.startswith(module_object.__name__ + "."):
-                                    import_version = _get_entity_version(imported_path)
-                                    import_ref = ExternalEntityRef(name=imported_path, version=import_version)
-                                    other_relations["IMPORTS"].add((root_entity.content_hash, import_ref))
-                            except AttributeError:
-                                # Attribute doesn't exist, still track it
-                                imported_path = f"{from_module}.{alias.name}"
-                                if not imported_path.startswith(module_object.__name__ + "."):
-                                    import_version = _get_entity_version(imported_path)
-                                    import_ref = ExternalEntityRef(name=imported_path, version=import_version)
-                                    other_relations["IMPORTS"].add((root_entity.content_hash, import_ref))
-                            except Exception as e:
-                                logging.debug(f"Could not process import {alias.name} from {from_module}: {e}")
-                    except Exception as e:
-                        logging.debug(f"Could not process import from {node.module}: {e}")
-    except Exception as e:
-        logging.warning(f"Error parsing imports from root module source: {e}")
-
-    logging.warning('Extracted IMPORTS for ' + module_name + ' as follows: ' + str(other_relations['IMPORTS']))
 
     # Get all sub-modules using `find_submodules_importlib_resources` and process them
     submodules: set = find_submodules_importlib_resources(module_object.__name__)
@@ -1752,67 +1762,8 @@ def process_module(module_name: str, version: Optional[str] = None):
     for entity in entities:
         hash_to_entity[entity.content_hash] = entity
     
-    # Convert IMPORTS to EXPOSES for unused imports
-    # Now working with (content_hash, ExternalEntityRef) tuples
-    imported_relations = other_relations["IMPORTS"]
-    updated_imported_relations: Set[Tuple[str, ExternalEntityRef]] = set()
-    module_hash_to_imports: Dict[str, Set[str]] = {}
-
-    for from_hash, to_ref in imported_relations:
-        # Get the entity name for unused import detection
-        from_entity = hash_to_entity.get(from_hash)
-        if not from_entity:
-            continue
-            
-        full_module_path = from_entity.name
-
-        if full_module_path not in module_hash_to_imports:
-            module_hash_to_imports[full_module_path] = set()
-
-        module_hash_to_imports[full_module_path].add(to_ref.name)
-
-    for module_name_key, imports in module_hash_to_imports.items():
-        unused_imports = get_unused_imports(module_name_key, imports)
-        used_imports = set(imports) - set(unused_imports)
-
-        # Find the entity for this module
-        module_entity = next((e for e in entities if e.name == module_name_key), None)
-        if not module_entity:
-            continue
-            
-        for unused_import in unused_imports:
-            # Find the original ExternalEntityRef for this import
-            for from_hash, to_ref in imported_relations:
-                if from_hash == module_entity.content_hash and to_ref.name == unused_import:
-                    other_relations["EXPOSES"].add((from_hash, to_ref))
-                    break
-
-        for used_import in used_imports:
-            # Find the original ExternalEntityRef for this import
-            for from_hash, to_ref in imported_relations:
-                if from_hash == module_entity.content_hash and to_ref.name == used_import:
-                    updated_imported_relations.add((from_hash, to_ref))
-                    break
-
-    other_relations["IMPORTS"] = updated_imported_relations
-
     cleaned_exposed_relations: Set[Tuple[str, ExternalEntityRef]] = set()
     cleaned_publishes_relations: Set[Tuple[str, ExternalEntityRef]] = set()
-    cleaned_imports_relations: Set[Tuple[str, ExternalEntityRef]] = set()
-
-    # Clean up IMPORTS relations
-    for from_hash, to_ref in other_relations["IMPORTS"]:
-        from_entity = hash_to_entity.get(from_hash)
-        if not from_entity:
-            continue
-            
-        to_entity_ancestor_path = ".".join(to_ref.name.split(".")[:-1])
-        if to_entity_ancestor_path == from_entity.name:
-            continue
-        elif to_ref.name.startswith(module_object.__name__):
-            other_relations["EXPOSES"].add((from_hash, to_ref))
-        else:
-            cleaned_imports_relations.add((from_hash, to_ref))
 
     # Clean up EXPOSED relations and separate PUBLISHES relations
     for from_hash, to_ref in other_relations["EXPOSES"]:
@@ -1850,7 +1801,7 @@ def process_module(module_name: str, version: Optional[str] = None):
 
         cleaned_import_aliases: List[Tuple[str, str]] = []
         for key, value in entity.properties.get("import_as_aliases", []):
-            # Check if this alias is in EXPOSES, PUBLISHES, or IMPORTS using content_hash
+            # Check if this alias is in EXPOSES or PUBLISHES using content_hash
             found = False
             for from_hash, to_ref in other_relations["EXPOSES"]:
                 if from_hash == entity.content_hash and to_ref.name == key:
@@ -1861,19 +1812,61 @@ def process_module(module_name: str, version: Optional[str] = None):
                     if from_hash == entity.content_hash and to_ref.name == key:
                         found = True
                         break
-            if not found:
-                for from_hash, to_ref in other_relations["IMPORTS"]:
-                    if from_hash == entity.content_hash and to_ref.name == key:
-                        found = True
-                        break
             if found:
                 cleaned_import_aliases.append((key, value))
         if cleaned_import_aliases:
             entity.properties["import_as_aliases"] = cleaned_import_aliases
 
-    other_relations["EXPOSES"] = list(cleaned_exposed_relations)
-    other_relations["PUBLISHES"] = list(cleaned_publishes_relations)
-    other_relations["IMPORTS"] = list(cleaned_imports_relations)
+    # Process import_statements for all MODULE and ROOT_MODULE entities
+    # to populate import_details property and determine unused imports for EXPOSES
+    for entity in entities:
+        if entity.label not in ("ROOT_MODULE", "MODULE"):
+            continue
+        
+        import_statements = entity.properties.get("import_statements", "")
+        if not import_statements:
+            continue
+        
+        # Process import statements and get imported entities
+        import_details, imported_entities = _process_import_statements(
+            import_statements, 
+            module_object.__name__,
+            entity.content_hash,
+            other_relations
+        )
+        
+        if not imported_entities:
+            continue
+        
+        # Determine which imports are unused
+        entity_module_name = entity.name
+        unused_imports = get_unused_imports(entity_module_name, imported_entities)
+        used_imports = imported_entities - unused_imports
+        
+        # Update the "used" status in import_details
+        for module_name, module_info in import_details["modules"].items():
+            for entity_info in module_info["entities"]:
+                entity_fqn = entity_info["fqn"]
+                if entity_fqn in used_imports:
+                    entity_info["used"] = True
+                elif entity_fqn in unused_imports:
+                    entity_info["used"] = False
+                    # Add to EXPOSES relationships only for internal unused imports
+                    if entity_fqn.startswith(module_object.__name__ + "."):
+                        # Internal import that's unused -> EXPOSES
+                        import_version = module_info["version"]
+                        import_ref = ExternalEntityRef(name=entity_fqn, version=import_version)
+                        other_relations["EXPOSES"].add((entity.content_hash, import_ref))
+                    # External unused imports are just tracked in properties
+                    # (PUBLISHES is handled separately in the cleanup section)
+        
+        # Store the processed import details
+        if import_details:
+            entity.properties["import_details"] = import_details
+
+    # Convert sets to lists for final output
+    other_relations["EXPOSES"] = list(other_relations["EXPOSES"])
+    other_relations["PUBLISHES"] = list(other_relations["PUBLISHES"])
     other_relations["INHERITS"] = list(other_relations["INHERITS"])
 
     logging.info(f"Processed {len(entities)} entities and {len(relations)} relations in {module_object.__name__}.")
@@ -1907,17 +1900,17 @@ def process_package(package_name: str, version: Optional[str] = None):
             logging.info(f"Package '{pkg_name}' installed successfully.")
         except subprocess.CalledProcessError as e:
             logging.error(f"Failed to install package '{pkg_name}': {e}")
-            return [], [], {"INHERITS": [], "IMPORTS": [], "EXPOSES": [], "PUBLISHES": []}
+            return [], [], {"INHERITS": [], "EXPOSES": [], "PUBLISHES": []}
     
     top_level_modules = get_top_level_modules_for_package(pkg_name)
     if not top_level_modules:
         logging.error(f"Package '{pkg_name}' not found after installation.")
-        return [], [], {"INHERITS": [], "IMPORTS": [], "EXPOSES": [], "PUBLISHES": []}
+        return [], [], {"INHERITS": [], "EXPOSES": [], "PUBLISHES": []}
     
     # Process all top-level modules and combine results
     all_entities: List[Entity] = []
     all_relations: List[Relationship] = []
-    combined_other_relations: Dict[str, List] = {"INHERITS": [], "IMPORTS": [], "EXPOSES": [], "PUBLISHES": []}
+    combined_other_relations: Dict[str, List] = {"INHERITS": [], "EXPOSES": [], "PUBLISHES": []}
     
     logging.info(f"Processing package '{pkg_name}' with {len(top_level_modules)} top-level module(s): {top_level_modules}")
     
@@ -1930,7 +1923,7 @@ def process_package(package_name: str, version: Optional[str] = None):
             all_relations.extend(relations)
             
             # Combine other_relations
-            for rel_type in ["INHERITS", "IMPORTS", "EXPOSES", "PUBLISHES"]:
+            for rel_type in ["INHERITS", "EXPOSES", "PUBLISHES"]:
                 if rel_type in other_relations:
                     combined_other_relations[rel_type].extend(other_relations[rel_type])
                     
@@ -1942,7 +1935,7 @@ def process_package(package_name: str, version: Optional[str] = None):
             continue
     
     # Deduplicate other_relations
-    for rel_type in ["INHERITS", "IMPORTS", "EXPOSES", "PUBLISHES"]:
+    for rel_type in ["INHERITS", "EXPOSES", "PUBLISHES"]:
         combined_other_relations[rel_type] = list(set(combined_other_relations[rel_type]))
     
     logging.info(f"Completed processing package '{pkg_name}': "

@@ -31,7 +31,7 @@ class COMStore(Neo4jPropertyGraphStore):
 
     Schema:
     - Nodes: MODULE, CLASS, METHOD
-    - Relationships: HAS_CLASS, HAS_METHOD, INHERITS, IMPORTS
+    - Relationships: HAS_CLASS, HAS_METHOD, INHERITS, EXPOSES, PUBLISHES
     """
     stores_text: bool = True
     flat_metadata: bool = True
@@ -596,10 +596,10 @@ class COMStore(Neo4jPropertyGraphStore):
         if embed_nodes:
             self._embed_nodes()
 
-        # Add INHERITS and IMPORTS relations as properties to the respective nodes
+        # Add INHERITS, EXPOSES, and PUBLISHES relations as properties to the respective nodes
         self._add_other_relations_as_properties(other_relations)
 
-        # Process INHERITS and IMPORTS relations
+        # Process INHERITS, EXPOSES, and PUBLISHES relations
         self._process_other_relations()
 
         # Handle inherited methods
@@ -610,17 +610,16 @@ class COMStore(Neo4jPropertyGraphStore):
 
     def _add_other_relations_as_properties(self, other_relations: Dict[str, List[Tuple]]):
         """
-        Add INHERITS, IMPORTS, EXPOSES, and PUBLISHES relations as properties to the respective nodes.
+        Add INHERITS, EXPOSES, and PUBLISHES relations as properties to the respective nodes.
         Now works with (content_hash, ExternalEntityRef) tuples.
 
         Args:
-            other_relations (Dict[str, List[Tuple]]): Dictionary containing INHERITS, IMPORTS, EXPOSES, and PUBLISHES relations.
+            other_relations (Dict[str, List[Tuple]]): Dictionary containing INHERITS, EXPOSES, and PUBLISHES relations.
                 Each tuple is (from_content_hash, ExternalEntityRef)
         """
         from ..com_extractor import ExternalEntityRef
         
         inherits_relations = other_relations.get("INHERITS", [])
-        imports_relations = other_relations.get("IMPORTS", [])
         exposes_relations = other_relations.get("EXPOSES", [])
         publishes_relations = other_relations.get("PUBLISHES", [])
         
@@ -640,19 +639,7 @@ class COMStore(Neo4jPropertyGraphStore):
                 # Legacy format: just name
                 inherits_processed.append((from_name, to_ref))
         
-        # Convert (content_hash, ExternalEntityRef) tuples to (content_hash, target_info_dict) for IMPORTS/EXPOSES
-        imports_processed = []
-        for from_hash, to_ref in imports_relations:
-            if isinstance(to_ref, ExternalEntityRef):
-                target_info = {
-                    "name": to_ref.name,
-                    "version": to_ref.version,
-                    "content_hash": to_ref.content_hash
-                }
-                imports_processed.append((from_hash, json.dumps(target_info)))
-            else:
-                imports_processed.append((from_hash, to_ref))
-        
+        # Convert (content_hash, ExternalEntityRef) tuples to (content_hash, target_info_dict) for EXPOSES/PUBLISHES
         exposes_processed = []
         for from_hash, to_ref in exposes_relations:
             if isinstance(to_ref, ExternalEntityRef):
@@ -684,13 +671,6 @@ class COMStore(Neo4jPropertyGraphStore):
             SET c.INHERITS = apoc.coll.toSet(coalesce(c.INHERITS, []) + [rel[1]])
             """
         )
-        add_imports_query = (
-            """
-            UNWIND $imports_relations AS rel
-            MATCH (e {content_hash: rel[0]})
-            SET e.IMPORTS = apoc.coll.toSet(coalesce(e.IMPORTS, []) + [rel[1]])
-            """
-        )
         add_exposes_query = (
             """
             UNWIND $exposes_relations AS rel
@@ -706,15 +686,14 @@ class COMStore(Neo4jPropertyGraphStore):
             """
         )
         self.structured_query(add_inherits_query, {"inherits_relations": inherits_processed})
-        self.structured_query(add_imports_query, {"imports_relations": imports_processed})
         self.structured_query(add_exposes_query, {"exposes_relations": exposes_processed})
         self.structured_query(add_publishes_query, {"publishes_relations": publishes_processed})
 
     def _process_other_relations(self):
         """
-        Execute Cypher queries to create relations on existing nodes with INHERITS, IMPORTS and EXPOSES properties.
+        Execute Cypher queries to create relations on existing nodes with INHERITS and EXPOSES properties.
         Now handles version-aware matching using JSON-encoded target information.
-        Clear info from the INHERITS, IMPORTS and EXPOSES property arrays of the nodes if the relations could be created successfully.
+        Clear info from the INHERITS and EXPOSES property arrays of the nodes if the relations could be created successfully.
         """
         # Process INHERITS with version-aware matching
         process_inherits_query = (
@@ -737,30 +716,6 @@ class COMStore(Neo4jPropertyGraphStore):
             WITH c, COLLECT(parentInfo) AS processedParents
             SET c.INHERITS = [info IN c.INHERITS WHERE NOT info IN processedParents]
             SET c.NEW_INHERIT_RELS = processedParents
-            """
-        )
-        
-        # Process IMPORTS with version-aware and content_hash matching
-        process_imports_query = (
-            """
-            MATCH (e1)
-            WHERE e1.IMPORTS IS NOT NULL
-            UNWIND e1.IMPORTS AS importInfo
-            WITH e1, importInfo,
-                 CASE WHEN importInfo STARTS WITH '{'
-                      THEN apoc.convert.fromJsonMap(importInfo)
-                      ELSE {name: importInfo, version: null, content_hash: null}
-                 END AS importData
-            // Try to match by content_hash first (if available), then by name+version
-            OPTIONAL MATCH (e2)
-            WHERE (importData.content_hash IS NOT NULL AND e2.content_hash = importData.content_hash)
-               OR (e2.name = importData.name AND (importData.version IS NULL 
-                   OR ('version_' + replace(replace(replace(importData.version, '.', '_'), ':', '_'), '-', '_')) IN labels(e2)))
-            WITH e1, importInfo, e2
-            WHERE e2 IS NOT NULL
-            MERGE (e1)-[:IMPORTS]->(e2)
-            WITH e1, COLLECT(importInfo) AS processedImports
-            SET e1.IMPORTS = [info IN e1.IMPORTS WHERE NOT info IN processedImports]
             """
         )
         
@@ -819,13 +774,6 @@ class COMStore(Neo4jPropertyGraphStore):
             REMOVE n.INHERITS
             """
         )
-        cleanup_empty_IMPORTS_query = (
-            """
-            MATCH (n)
-            WHERE n.IMPORTS IS NOT NULL AND size(n.IMPORTS) = 0
-            REMOVE n.IMPORTS
-            """
-        )
         cleanup_empty_EXPOSES_query = (
             """
             MATCH (n)
@@ -858,11 +806,9 @@ class COMStore(Neo4jPropertyGraphStore):
         )
 
         self.structured_query(process_inherits_query)
-        self.structured_query(process_imports_query)
         self.structured_query(process_exposes_query)
         self.structured_query(process_publishes_query)
         self.structured_query(cleanup_empty_INHERITS_query)
-        self.structured_query(cleanup_empty_IMPORTS_query)
         self.structured_query(cleanup_empty_EXPOSES_query)
         self.structured_query(cleanup_empty_PUBLISHES_query)
         self.structured_query(add_names_to_EXPOSES_rels_query)
