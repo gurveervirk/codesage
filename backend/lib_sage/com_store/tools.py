@@ -262,15 +262,25 @@ class COMStoreTools:
         """
         retrieve_node_by_name_query = (
             """
-            MATCH (n:METHOD|FUNCTION|CLASS|MODULE {name: $name})
-            RETURN n.name AS name
+            // Phase 1: Try direct match by node name
+            OPTIONAL MATCH (n1:METHOD|FUNCTION|CLASS|MODULE {name: $name})
+            WITH collect(n1)[0] AS direct_match
+            
+            // Phase 2: If no direct match, try EXPOSES/PUBLISHES relationship name
+            OPTIONAL MATCH ()-[r:EXPOSES|PUBLISHES]->(n2:METHOD|FUNCTION|CLASS|MODULE)
+            WHERE direct_match IS NULL AND r.name = $name
+            WITH direct_match, collect(n2)[0] AS exposed_match
+            
+            // Return the first non-null match
+            WITH COALESCE(direct_match, exposed_match) AS found_node
+            RETURN found_node.name AS name
             """
         )
 
         # Execute the query to retrieve the node by name
         retrieved_node = self.store.structured_query(retrieve_node_by_name_query, {"name": name})
 
-        if retrieved_node:
+        if retrieved_node and retrieved_node[0]["name"]:
             data = {
                 "exact_match": retrieved_node[0]["name"],
                 "best_matches": [],
@@ -331,13 +341,23 @@ class COMStoreTools:
         for name in names:
             retrieve_node_by_name_query = (
                 """
-                MATCH (n:METHOD|FUNCTION|CLASS|MODULE {name: $name})
-                RETURN n.name AS name
+                // Phase 1: Try direct match by node name
+                OPTIONAL MATCH (n1:METHOD|FUNCTION|CLASS|MODULE {name: $name})
+                WITH collect(n1)[0] AS direct_match
+                
+                // Phase 2: If no direct match, try EXPOSES/PUBLISHES relationship name
+                OPTIONAL MATCH ()-[r:EXPOSES|PUBLISHES]->(n2:METHOD|FUNCTION|CLASS|MODULE)
+                WHERE direct_match IS NULL AND r.name = $name
+                WITH direct_match, collect(n2)[0] AS exposed_match
+                
+                // Return the first non-null match
+                WITH COALESCE(direct_match, exposed_match) AS found_node
+                RETURN found_node.name AS name
                 """
             )
             retrieved_node = self.store.structured_query(retrieve_node_by_name_query, {"name": name})
 
-            if retrieved_node:
+            if retrieved_node and retrieved_node[0]["name"]:
                 results.append({
                     "query_name": name,
                     "exact_match": retrieved_node[0]["name"],
@@ -638,12 +658,38 @@ RETURN apoc.map.fromPairs(
         search_pattern = "|".join(all_search_patterns)
         
         query = """
-        // Find the parent entity
-        MATCH (parent {name: $parent_entity_name})
+        // Phase 1: Find the parent entity by direct name match
+        OPTIONAL MATCH (parent1 {name: $parent_entity_name})
+        WITH collect(parent1)[0] AS direct_parent
+        
+        // Phase 2: If no direct match, try EXPOSES/PUBLISHES relationship name
+        OPTIONAL MATCH ()-[r:EXPOSES|PUBLISHES]->(parent2)
+        WHERE direct_parent IS NULL AND r.name = $parent_entity_name
+        WITH direct_parent, collect(parent2)[0] AS exposed_parent
+        
+        // Combine results - use whichever parent was found
+        WITH COALESCE(direct_parent, exposed_parent) AS parent
         
         // Find all children recursively using variable-length path
-        MATCH (parent)-[:HAS_SUBMODULE|HAS_CLASS|HAS_METHOD|HAS_FUNCTION|PUBLISHES*]->(child)
-        WHERE child.__name__ =~ $search_pattern
+        // Match 1: Search by child.__name__ and PUBLISHES relationship name
+        MATCH path = (parent)-[:HAS_SUBMODULE|HAS_CLASS|HAS_METHOD|HAS_FUNCTION|PUBLISHES*]->(child)
+        WHERE child.__name__ =~ $search_pattern 
+           OR ANY(rel IN relationships(path) WHERE type(rel) = 'PUBLISHES' AND rel.name =~ $search_pattern)
+        
+        WITH DISTINCT child, parent
+        
+        // Match 2a: Direct EXPOSES relationships from parent
+        OPTIONAL MATCH (parent)-[direct_exp:EXPOSES]->(direct_exposed_child)
+        WHERE direct_exp.name =~ $search_pattern
+        
+        // Match 2b: Indirect EXPOSES relationships in parent's tree
+        OPTIONAL MATCH (parent)-[:HAS_SUBMODULE|HAS_CLASS|HAS_METHOD|HAS_FUNCTION|PUBLISHES*]->(intermediate)-[exp:EXPOSES]->(exposed_child)
+        WHERE exp.name =~ $search_pattern
+        
+        // Combine all matches
+        WITH collect(DISTINCT child) + collect(DISTINCT direct_exposed_child) + collect(DISTINCT exposed_child) AS all_children
+        UNWIND all_children AS child
+        WHERE child IS NOT NULL
         
         // Get distinct children to avoid duplicates from multiple paths
         WITH DISTINCT child
@@ -771,8 +817,19 @@ RETURN apoc.map.fromPairs(
         get_definitions_query = """
             UNWIND $entity_names AS entity_name
             
-            // Try to match the entity by name
-            OPTIONAL MATCH (end {name: entity_name})
+            // Phase 1: Try to match the entity by name directly
+            OPTIONAL MATCH (end1 {name: entity_name})
+            WITH entity_name, collect(end1)[0] AS direct_match
+            
+            // Phase 2: If no direct match, try EXPOSES/PUBLISHES relationship name
+            OPTIONAL MATCH ()-[r:EXPOSES|PUBLISHES]->(end2)
+            WHERE direct_match IS NULL AND r.name = entity_name
+            WITH entity_name, direct_match, collect(end2)[0] AS exposed_match
+            
+            // Combine results from both phases
+            WITH entity_name, COALESCE(direct_match, exposed_match) AS end
+            
+            // Get __init__ for CLASS entities
             OPTIONAL MATCH (end:CLASS)-[:HAS_METHOD]->(init {__name__: "__init__"})
             WHERE "CLASS" IN labels(end)
             
