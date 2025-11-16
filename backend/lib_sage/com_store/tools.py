@@ -405,6 +405,7 @@ class COMStoreTools:
     def get_signatures(self, entity_names: List[str]) -> str:
         """
         Get signatures for multiple entities.
+        Now traverses to SIGNATURE property entities instead of accessing inline properties.
 
         Args:
             entity_names (List[str]): List of entity names.
@@ -480,10 +481,14 @@ RETURN method AS method_match;
 // Combine results from all phases.
 WITH entity_name, COALESCE(found_entity, value.method_match) AS final_entity
 
-// Phase 4: Get the signature, with special handling for CLASS nodes.
+// Phase 4: Get the signature from SIGNATURE property entity
 // If the final_entity is a CLASS, we OPTIONALLY look for its `__init__` method.
-OPTIONAL MATCH (final_entity)-[:HAS_METHOD]->(init:METHOD {__name__: "__init__"})
+OPTIONAL MATCH (final_entity)-[:HAS_METHOD]->(init:METHOD {__name__: "__init__"})-[:HAS_SIGNATURE]->(init_sig:SIGNATURE)
 WHERE "CLASS" IN labels(final_entity)
+
+// Get signature for METHOD/FUNCTION entities
+OPTIONAL MATCH (final_entity)-[:HAS_SIGNATURE]->(entity_sig:SIGNATURE)
+WHERE final_entity IS NOT NULL AND NOT "CLASS" IN labels(final_entity)
 
 // Final Projection: Build the result map using a CASE statement for conditional logic.
 RETURN apoc.map.fromPairs(
@@ -493,11 +498,10 @@ RETURN apoc.map.fromPairs(
       WHEN final_entity IS NULL THEN NULL
       ELSE {
         signature: CASE
-          // If a class was found, use the __init__ method's signature.
-          // If the class has no __init__, `init.signature` will correctly be null.
-          WHEN "CLASS" IN labels(final_entity) THEN init.signature
-          // For METHOD, FUNCTION, use the entity's own signature.
-          ELSE final_entity.signature
+          // If a class was found, use the __init__ method's signature from SIGNATURE entity.
+          WHEN "CLASS" IN labels(final_entity) THEN init_sig.value
+          // For METHOD, FUNCTION, use the entity's own signature from SIGNATURE entity.
+          ELSE entity_sig.value
         END,
         type: [label IN labels(final_entity) WHERE label IN ["CLASS", "FUNCTION", "METHOD"]][0]
       }
@@ -694,21 +698,23 @@ RETURN apoc.map.fromPairs(
         // Get distinct children to avoid duplicates from multiple paths
         WITH DISTINCT child
         
-        // For CLASS entities, optionally get their __init__ method signature
-        OPTIONAL MATCH (child)-[:HAS_METHOD]->(init:METHOD {__name__: "__init__"})
-        WHERE "CLASS" IN labels(child)
+        // Get SIGNATURE property entities
+        OPTIONAL MATCH (child)-[:HAS_SIGNATURE]->(child_sig:SIGNATURE)
+        
+        // For CLASS entities, optionally get their __init__ method and its signature
+        OPTIONAL MATCH (child:CLASS)-[:HAS_METHOD]->(init:METHOD {__name__: "__init__"})-[:HAS_SIGNATURE]->(init_sig:SIGNATURE)
         
         // Build complete result set with all data
-        WITH child, init,
+        WITH child, init_sig, child_sig,
             child.name AS fqn,
             child.shortest_call_path AS api_path,
             [label IN labels(child) WHERE label IN ['FUNCTION', 'CLASS', 'METHOD', 'MODULE', 'ROOT_MODULE']][0] AS definition_type,
             labels(child) AS all_labels,
             CASE
                 // For CLASS, use __init__ signature if available
-                WHEN "CLASS" IN labels(child) AND init IS NOT NULL THEN init.signature
-                // For others, use their own signature
-                WHEN child.signature IS NOT NULL THEN child.signature
+                WHEN "CLASS" IN labels(child) AND init_sig IS NOT NULL THEN init_sig.value
+                // For others, use their own signature from SIGNATURE property entity
+                WHEN child_sig IS NOT NULL THEN child_sig.value
                 ELSE child.__name__
             END AS signature
         ORDER BY fqn
@@ -797,6 +803,7 @@ RETURN apoc.map.fromPairs(
     def get_definitions(self, entity_names: List[str]) -> str:
         """
         Get definition information for one or more entities.
+        Now traverses to property entities (DOCSTRING, SIGNATURE, RESOLVED_SIGNATURE) instead of accessing inline properties.
 
         Args:
             entity_names (List[str]): List of entity names (can be a single entity or multiple).
@@ -829,26 +836,35 @@ RETURN apoc.map.fromPairs(
             // Combine results from both phases
             WITH entity_name, COALESCE(direct_match, exposed_match) AS end
             
+            // Get property entities for the found entity
+            OPTIONAL MATCH (end)-[:HAS_DOCSTRING]->(docstring:DOCSTRING)
+            OPTIONAL MATCH (end)-[:HAS_SIGNATURE]->(signature:SIGNATURE)
+            OPTIONAL MATCH (end)-[:HAS_RESOLVED_SIGNATURE]->(resolved_sig:RESOLVED_SIGNATURE)
+            
             // Get __init__ for CLASS entities
             OPTIONAL MATCH (end:CLASS)-[:HAS_METHOD]->(init {__name__: "__init__"})
+            OPTIONAL MATCH (init)-[:HAS_SIGNATURE]->(init_sig:SIGNATURE)
+            OPTIONAL MATCH (init)-[:HAS_RESOLVED_SIGNATURE]->(init_resolved_sig:RESOLVED_SIGNATURE)
             WHERE "CLASS" IN labels(end)
             
-            WITH entity_name, end, init
+            WITH entity_name, end, docstring, signature, resolved_sig, init, init_sig, init_resolved_sig
             RETURN 
                 entity_name AS query_name,
                 CASE WHEN end IS NOT NULL THEN end.name ELSE "" END AS fqn,
-                CASE WHEN end IS NOT NULL THEN end.doc ELSE "" END AS docstring,
+                CASE WHEN end IS NOT NULL THEN docstring.value ELSE "" END AS docstring,
                 CASE WHEN end IS NOT NULL THEN labels(end) ELSE [] END AS all_labels,
                 CASE WHEN end IS NOT NULL THEN end.shortest_call_path ELSE "" END AS api_path,
                 CASE 
                     WHEN end IS NULL THEN ""
-                    WHEN "CLASS" IN labels(end) AND init IS NOT NULL THEN init.signature
-                    ELSE end.signature
+                    WHEN "CLASS" IN labels(end) AND init_sig IS NOT NULL THEN init_sig.value
+                    WHEN signature IS NOT NULL THEN signature.value
+                    ELSE ""
                 END AS signature,
                 CASE 
                     WHEN end IS NULL THEN ""
-                    WHEN "CLASS" IN labels(end) AND init IS NOT NULL THEN init.resolved_signature
-                    ELSE end.resolved_signature
+                    WHEN "CLASS" IN labels(end) AND init_resolved_sig IS NOT NULL THEN init_resolved_sig.value
+                    WHEN resolved_sig IS NOT NULL THEN resolved_sig.value
+                    ELSE ""
                 END AS resolved_sig,
                 end IS NOT NULL AS found
         """
@@ -1051,7 +1067,7 @@ RETURN apoc.map.fromPairs(
                 new_version_label = f"version_{new_version.replace('.', '_').replace(':', '_').replace('-', '_')}"
                 new_version_display = new_version
             
-            # Query to get both versions' hierarchies
+            # Query to get both versions' hierarchies with their SIGNATURE property entities
             query = """
             // Get old version hierarchy
             MATCH (old_root {name: $parent_entity})
@@ -1069,29 +1085,40 @@ RETURN apoc.map.fromPairs(
             })
             YIELD nodes AS new_nodes, relationships AS new_rels
             
+            // Process old nodes with signatures
+            WITH old_nodes, old_rels, new_nodes, new_rels
+            UNWIND old_nodes AS old_n
+            OPTIONAL MATCH (old_n)-[:HAS_SIGNATURE]->(old_sig:SIGNATURE)
+            WITH collect({
+                id: id(old_n),
+                name: old_n.name,
+                __name__: old_n.__name__,
+                shortest_call_path: old_n.shortest_call_path,
+                labels: labels(old_n),
+                signature: old_sig.value,
+                content_hash: old_n.content_hash
+            }) AS old_all_nodes, old_rels, new_nodes, new_rels
+            
+            // Process new nodes with signatures
+            UNWIND new_nodes AS new_n
+            OPTIONAL MATCH (new_n)-[:HAS_SIGNATURE]->(new_sig:SIGNATURE)
+            WITH old_all_nodes, old_rels, new_rels, collect({
+                id: id(new_n),
+                name: new_n.name,
+                __name__: new_n.__name__,
+                shortest_call_path: new_n.shortest_call_path,
+                labels: labels(new_n),
+                signature: new_sig.value,
+                content_hash: new_n.content_hash
+            }) AS new_all_nodes
+            
             RETURN 
-                [n IN old_nodes | {
-                    id: id(n),
-                    name: n.name,
-                    __name__: n.__name__,
-                    shortest_call_path: n.shortest_call_path,
-                    labels: labels(n),
-                    signature: n.signature,
-                    content_hash: n.content_hash
-                }] AS old_all_nodes,
+                old_all_nodes,
                 [r IN old_rels | {
                     from_id: id(startNode(r)),
                     to_id: id(endNode(r))
                 }] AS old_all_relationships,
-                [n IN new_nodes | {
-                    id: id(n),
-                    name: n.name,
-                    __name__: n.__name__,
-                    shortest_call_path: n.shortest_call_path,
-                    labels: labels(n),
-                    signature: n.signature,
-                    content_hash: n.content_hash
-                }] AS new_all_nodes,
+                new_all_nodes,
                 [r IN new_rels | {
                     from_id: id(startNode(r)),
                     to_id: id(endNode(r))

@@ -46,21 +46,28 @@ def _sanitize_labels(labels: List[str]) -> List[str]:
 
 def _compute_content_hash(props: Dict) -> str:
     """
-    Calculate content hash for an entity based on source, signature, resolved_signature, and decorators.
-    This must match the logic used throughout the system for consistency.
+    Calculate content hash for an entity based on its properties.
+    
+    For regular entities (METHOD, FUNCTION, CLASS, MODULE):
+        Uses name + __name__ as the primary identifier (signatures/source are in separate entities)
+    
+    For property entities (SIGNATURE, SOURCE, DOCSTRING, etc.):
+        Uses the 'value' property which contains the actual content
     """
-    src = str(props.get("source", ""))
-    sig = str(props.get("signature", ""))
-    rsig = str(props.get("resolved_signature", ""))
-    dec = ",".join(props.get("decorators", []) or [])
+    # For property entities, hash their value
+    if "value" in props:
+        value = str(props.get("value", ""))
+        h = hashlib.sha256()
+        h.update(value.encode("utf-8", errors="ignore"))
+        return h.hexdigest()
+    
+    # For regular entities, use name and __name__
+    name = str(props.get("name", ""))
+    dunder_name = str(props.get("__name__", ""))
     h = hashlib.sha256()
-    h.update(src.encode("utf-8", errors="ignore"))
+    h.update(name.encode("utf-8", errors="ignore"))
     h.update(b"|::|")
-    h.update(sig.encode("utf-8", errors="ignore"))
-    h.update(b"|::|")
-    h.update(rsig.encode("utf-8", errors="ignore"))
-    h.update(b"|::|")
-    h.update(dec.encode("utf-8", errors="ignore"))
+    h.update(dunder_name.encode("utf-8", errors="ignore"))
     return h.hexdigest()
 
 

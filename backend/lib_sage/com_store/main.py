@@ -150,6 +150,37 @@ class COMStore(Neo4jPropertyGraphStore):
         """
         self.database_query(method_index_query)
 
+        # Create full-text indices for property entity types
+        signature_index_query = """
+        CREATE FULLTEXT INDEX signature_index IF NOT EXISTS FOR (n:`SIGNATURE`) ON EACH [n.`name`]
+        """
+        self.database_query(signature_index_query)
+
+        resolved_signature_index_query = """
+        CREATE FULLTEXT INDEX resolved_signature_index IF NOT EXISTS FOR (n:`RESOLVED_SIGNATURE`) ON EACH [n.`name`]
+        """
+        self.database_query(resolved_signature_index_query)
+
+        docstring_index_query = """
+        CREATE FULLTEXT INDEX docstring_index IF NOT EXISTS FOR (n:`DOCSTRING`) ON EACH [n.`name`]
+        """
+        self.database_query(docstring_index_query)
+
+        source_index_query = """
+        CREATE FULLTEXT INDEX source_index IF NOT EXISTS FOR (n:`SOURCE`) ON EACH [n.`name`]
+        """
+        self.database_query(source_index_query)
+
+        decorator_details_index_query = """
+        CREATE FULLTEXT INDEX decorator_details_index IF NOT EXISTS FOR (n:`DECORATOR_DETAILS`) ON EACH [n.`name`]
+        """
+        self.database_query(decorator_details_index_query)
+
+        import_details_index_query = """
+        CREATE FULLTEXT INDEX import_details_index IF NOT EXISTS FOR (n:`IMPORT_DETAILS`) ON EACH [n.`name`]
+        """
+        self.database_query(import_details_index_query)
+
         # Create vector indices
         root_module_vector_index_query = """
         CREATE VECTOR INDEX root_module_vector_index IF NOT EXISTS
@@ -865,6 +896,7 @@ RETURN count(targetNode) AS numPathsSet
     def _handle_inherited_methods(self):
         """
         Create HAS_METHOD relations for inherited methods for all classes in the specified module.
+        Now handles methods with SIGNATURE property entities instead of inline signature properties.
         """
         handle_inheritance_query = (
             """
@@ -899,9 +931,14 @@ WHERE
         OR
         // Rule 3: PUBLIC/PROTECTED methods are overridden by NAME AND SIGNATURE.
         // Inherit if it's NOT a Dunder AND the child has no method with the same name and signature.
+        // Now we need to traverse to the SIGNATURE property entity to get the signature value.
         (
             NOT 'DUNDER' IN labels(member) AND
-            NOT EXISTS { MATCH (child)-[:HAS_METHOD]->({__name__: member.__name__, signature: member.signature}) }
+            NOT EXISTS { 
+                MATCH (child)-[:HAS_METHOD]->(childMethod {__name__: member.__name__})-[:HAS_SIGNATURE]->(childSig:SIGNATURE),
+                      (member)-[:HAS_SIGNATURE]->(memberSig:SIGNATURE)
+                WHERE childSig.value = memberSig.value
+            }
         )
     )
 
@@ -912,6 +949,9 @@ WITH child, collect(DISTINCT member) AS members
 UNWIND members AS member
 MERGE (child)-[:HAS_METHOD]->(member)
 
+// Phase 5: Report the results.
+WITH DISTINCT child, collect(member) AS members
+RETURN child.name AS ChildClass, size(members) AS TotalParentMembersLabeled
 // Phase 5: Report the results.
 WITH DISTINCT child, collect(member) AS members
 RETURN child.name AS ChildClass, size(members) AS TotalParentMembersLabeled
@@ -935,6 +975,7 @@ RETURN child.name AS ChildClass, size(members) AS TotalParentMembersLabeled
     def _embed_nodes(self):
         """
         Embed newly created nodes.
+        Excludes property entity types (SIGNATURE, RESOLVED_SIGNATURE, DOCSTRING, SOURCE, DECORATOR_DETAILS, IMPORT_DETAILS).
         """
         retrieve_new_nodes = (
             """
@@ -942,6 +983,12 @@ RETURN child.name AS ChildClass, size(members) AS TotalParentMembersLabeled
             WHERE NOT e:INTERNAL
             AND NOT e:PRIVATE
             AND NOT e:DUNDER
+            AND NOT e:SIGNATURE
+            AND NOT e:RESOLVED_SIGNATURE
+            AND NOT e:DOCSTRING
+            AND NOT e:SOURCE
+            AND NOT e:DECORATOR_DETAILS
+            AND NOT e:IMPORT_DETAILS
             AND e.embedding IS NULL
             RETURN
             e.id AS name,
@@ -966,10 +1013,17 @@ RETURN child.name AS ChildClass, size(members) AS TotalParentMembersLabeled
             entity_nodes.append(entity_node)
             summary = entity_node.properties.get("summary", "")
     
+            # For MODULE, ROOT_MODULE, and CLASS, fetch docstring from DOCSTRING property entity
             if node["type"] in ("ROOT_MODULE", "MODULE", "CLASS"):
-                docstring = self._get_docstring(entity_node.properties.get("source", ""))
-                if docstring is not None and len(docstring) > 0:
-                    summary += f"\n\nDocstring:\n{docstring}"
+                docstring_query = """
+                MATCH (e {name: $name})-[:HAS_DOCSTRING]->(d:DOCSTRING)
+                RETURN d.value AS docstring
+                """
+                docstring_result = self.structured_query(docstring_query, {"name": node["name"]})
+                if docstring_result and docstring_result[0].get("docstring"):
+                    docstring = docstring_result[0]["docstring"]
+                    if docstring and len(docstring) > 0:
+                        summary += f"\n\nDocstring:\n{docstring}"
         
             summaries.append(summary)
 

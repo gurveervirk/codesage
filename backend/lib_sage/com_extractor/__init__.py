@@ -93,23 +93,70 @@ def _visibility_label(name: str) -> str:
     return "PUBLIC"
 
 
-def _get_decorators_from_source(src: str) -> List[str]:
+def _get_decorators_from_source(src: str) -> List[Dict[str, Any]]:
+    """
+    Extract decorators from source code with their arguments.
+    
+    Returns:
+        List of dicts with 'name' and 'args' keys
+        Example: [{'name': 'staticmethod', 'args': None}, {'name': 'app.route', 'args': "('/api')"}]
+    """
     try:
         tree = ast.parse(src)
         fn_node = None
         for node in tree.body:
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 fn_node = node
                 break
         if not fn_node:
             return []
-        decos: List[str] = []
+        
+        decos: List[Dict[str, Any]] = []
         for d in fn_node.decorator_list:
             try:
-                decos.append(ast.unparse(d))  # type: ignore[attr-defined]
+                # Parse the full decorator expression
+                full_expr = ast.unparse(d)  # type: ignore[attr-defined]
+                
+                # Check if it's a call (has arguments)
+                if isinstance(d, ast.Call):
+                    # Extract the decorator name (the function being called)
+                    if isinstance(d.func, ast.Name):
+                        name = d.func.id
+                    elif isinstance(d.func, ast.Attribute):
+                        parts = []
+                        cur = d.func
+                        while isinstance(cur, ast.Attribute):
+                            parts.append(cur.attr)
+                            cur = cur.value
+                        if isinstance(cur, ast.Name):
+                            parts.append(cur.id)
+                        name = ".".join(reversed(parts))
+                    else:
+                        name = full_expr
+                    
+                    # Extract arguments (everything after the name)
+                    args = full_expr[len(name):]  # Gets the '(...)' part
+                    decos.append({'name': name, 'args': args})
+                else:
+                    # No arguments, just the decorator name
+                    if isinstance(d, ast.Name):
+                        name = d.id
+                    elif isinstance(d, ast.Attribute):
+                        parts = []
+                        cur = d
+                        while isinstance(cur, ast.Attribute):
+                            parts.append(cur.attr)
+                            cur = cur.value
+                        if isinstance(cur, ast.Name):
+                            parts.append(cur.id)
+                        name = ".".join(reversed(parts))
+                    else:
+                        name = full_expr
+                    decos.append({'name': name, 'args': None})
             except Exception:
+                # Fallback for unparseable decorators
                 if isinstance(d, ast.Name):
-                    decos.append(d.id)
+                    decos.append({'name': d.id, 'args': None})
                 elif isinstance(d, ast.Attribute):
                     parts = []
                     cur = d
@@ -118,19 +165,80 @@ def _get_decorators_from_source(src: str) -> List[str]:
                         cur = cur.value
                     if isinstance(cur, ast.Name):
                         parts.append(cur.id)
-                    decos.append(".".join(reversed(parts)))
+                    decos.append({'name': ".".join(reversed(parts)), 'args': None})
                 else:
-                    decos.append(type(d).__name__)
+                    decos.append({'name': type(d).__name__, 'args': None})
         return decos
     except Exception:
         return []
 
 
-def get_function_method_labels(func: Callable, name: str, parent_obj: Optional[Any] = None) -> Tuple[List[str], List[str]]:
+def _resolve_decorator_path(
+    decorator_name: str,
+    import_statements: str,
+    import_as_aliases: List[Tuple[str, str]],
+    current_module_path: str
+) -> Optional[str]:
+    """
+    Resolve a decorator name to its imported path.
+    
+    Args:
+        decorator_name: The decorator name (e.g., 'app.route', 'dataclass')
+        import_statements: Raw import statements from the source
+        import_as_aliases: List of (full_path, alias) tuples
+        current_module_path: Full path of current module (for relative imports)
+    
+    Returns:
+        Resolved path or None if builtin/unresolvable
+    """
+    # Builtin decorators don't need resolution
+    BUILTINS = {'staticmethod', 'classmethod', 'property', 'abstractmethod'}
+    if decorator_name in BUILTINS:
+        return None
+    
+    # Parse the decorator name to get the base (first part before any dots)
+    base_name = decorator_name.split('.')[0]
+    
+    # Check import aliases first (e.g., 'app' -> 'flask.Flask')
+    for full_path, alias in import_as_aliases:
+        if alias == base_name:
+            # Replace the base with the full path
+            remaining = decorator_name[len(base_name):]
+            return full_path + remaining
+    
+    # Try to find in import statements
+    try:
+        tree = ast.parse(import_statements)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                module = node.module or ""
+                for alias in node.names:
+                    # Check if this import matches our base name
+                    imported_name = alias.asname if alias.asname else alias.name
+                    if imported_name == base_name:
+                        # Found it! Build the full path
+                        full_path = f"{module}.{alias.name}" if module else alias.name
+                        remaining = decorator_name[len(base_name):]
+                        return full_path + remaining
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    imported_name = alias.asname if alias.asname else alias.name
+                    if imported_name == base_name:
+                        # Direct import
+                        remaining = decorator_name[len(base_name):]
+                        return alias.name + remaining
+    except Exception as e:
+        logging.debug(f"Failed to resolve decorator {decorator_name}: {e}")
+    
+    # If not found in imports, might be defined in current module
+    return f"{current_module_path}.{decorator_name}"
+
+
+def get_function_method_labels(func: Callable, name: str, parent_obj: Optional[Any] = None) -> Tuple[List[str], List[Dict[str, Any]]]:
     """
     Determine extra labels (ASYNC, GENERATOR, PROPERTY, CLASSMETHOD, STATICMETHOD) and decorators list.
     Also add visibility label.
-    Returns (labels, decorators)
+    Returns (labels, decorators) where decorators is a list of dicts with 'name' and 'args'
     """
     labels: List[str] = []
     # Async / generator
@@ -153,17 +261,19 @@ def get_function_method_labels(func: Callable, name: str, parent_obj: Optional[A
             pass
 
     # Decorators from source
-    decorators: List[str] = []
+    decorators: List[Dict[str, Any]] = []
     try:
         src = safe_get_source(func)
         decorators = _get_decorators_from_source(src)
         # Also map common decorator names to labels if descriptor wasn't detected
-        if "property" in decorators and "PROPERTY" not in labels:
-            labels.append("PROPERTY")
-        if "staticmethod" in decorators and "STATICMETHOD" not in labels:
-            labels.append("STATICMETHOD")
-        if "classmethod" in decorators and "CLASSMETHOD" not in labels:
-            labels.append("CLASSMETHOD")
+        for deco in decorators:
+            deco_name = deco['name']
+            if deco_name == "property" and "PROPERTY" not in labels:
+                labels.append("PROPERTY")
+            if deco_name == "staticmethod" and "STATICMETHOD" not in labels:
+                labels.append("STATICMETHOD")
+            if deco_name == "classmethod" and "CLASSMETHOD" not in labels:
+                labels.append("CLASSMETHOD")
     except Exception:
         pass
 
@@ -174,6 +284,188 @@ def get_function_method_labels(func: Callable, name: str, parent_obj: Optional[A
 def _is_dunder(name: str) -> bool:
     """Return True if name is a Python dunder like __init__ (starts and ends with __)."""
     return len(name) >= 4 and name.startswith("__") and name.endswith("__")
+
+
+def _create_property_entity(
+    parent_name: str,
+    property_type: str,
+    value: Any,
+    version: Optional[str] = None
+) -> Entity:
+    """
+    Create a property entity (SIGNATURE, SOURCE, DOCSTRING, etc.).
+    
+    Args:
+        parent_name: Full name of the parent entity
+        property_type: Type of property (e.g., 'SIGNATURE', 'SOURCE', 'DOCSTRING')
+        value: The property value (string or dict for complex types)
+        version: Version label if applicable
+    
+    Returns:
+        Entity object for the property
+    """
+    import json
+    
+    # Create a unique name for the property entity
+    name = f"{parent_name}::{property_type}"
+    
+    labels = [property_type]
+    if version:
+        labels.append(f"version:{version}")
+    
+    # Store value as string (JSON for complex types)
+    if isinstance(value, (dict, list)):
+        value_str = json.dumps(value, sort_keys=True)
+    else:
+        value_str = str(value) if value is not None else ""
+    
+    properties = {"value": value_str}
+    
+    return Entity(name=name, labels=labels, properties=properties)
+
+
+def _resolve_decorator_details(
+    decorators: List[Dict[str, Any]],
+    import_statements: str,
+    import_as_aliases: List[Tuple[str, str]],
+    import_details: Optional[Dict],
+    current_module_path: str
+) -> List[Dict[str, Any]]:
+    """
+    Resolve decorators to their full paths and versions.
+    
+    Args:
+        decorators: List of decorator dicts with 'name' and 'args'
+        import_statements: Raw import statements
+        import_as_aliases: List of (full_path, alias) tuples
+        import_details: Parsed import details with version info
+        current_module_path: Current module path for local decorators
+        
+    Returns:
+        List of decorator dicts with added 'resolved_path' and 'version'
+    """
+    resolved_decorators = []
+    
+    for deco in decorators:
+        deco_name = deco['name']
+        deco_args = deco.get('args')
+        
+        # Try to resolve the decorator path
+        resolved_path = _resolve_decorator_path(
+            deco_name, import_statements, import_as_aliases, current_module_path
+        )
+        
+        # Try to get version if resolved to an external module
+        version = None
+        if resolved_path and import_details:
+            # Extract root module from resolved path
+            root_module = resolved_path.split('.')[0]
+            # Look for version in import_details
+            modules_dict = import_details.get('modules', {})
+            if root_module in modules_dict:
+                version = modules_dict[root_module].get('version')
+        
+        resolved_decorators.append({
+            'name': deco_name,
+            'args': deco_args,
+            'resolved_path': resolved_path,
+            'version': version
+        })
+    
+    return resolved_decorators
+
+
+def _create_property_entities_and_relations(
+    parent_entity: Entity,
+    source_code: str,
+    docstring: str,
+    signature: Optional[str],
+    resolved_signature: Optional[str],
+    decorators: List[Dict[str, Any]],
+    import_details: Optional[Dict],
+    version: Optional[str],
+) -> Tuple[List[Entity], List[Relationship]]:
+    """
+    Create property entities and their relationships to a parent entity.
+    
+    Args:
+        parent_entity: The parent entity (METHOD, FUNCTION, CLASS, MODULE, etc.)
+        source_code: Source code string
+        docstring: Docstring string
+        signature: Raw signature string (for METHOD/FUNCTION/CLASS)
+        resolved_signature: Type-resolved signature string
+        decorators: List of decorator dicts with 'name', 'args', 'resolved_path', 'version'
+        import_details: Import details dict (for MODULE/ROOT_MODULE)
+        version: Version string
+        
+    Returns:
+        Tuple of (property_entities, property_relationships)
+    """
+    prop_entities: List[Entity] = []
+    prop_relations: List[Relationship] = []
+    
+    # SOURCE entity
+    if source_code:
+        source_entity = _create_property_entity(
+            parent_entity.name, "SOURCE", source_code, version
+        )
+        prop_entities.append(source_entity)
+        prop_relations.append(
+            Relationship(parent_entity, source_entity, "HAS_SOURCE", {})
+        )
+    
+    # DOCSTRING entity
+    if docstring:
+        docstring_entity = _create_property_entity(
+            parent_entity.name, "DOCSTRING", docstring, version
+        )
+        prop_entities.append(docstring_entity)
+        prop_relations.append(
+            Relationship(parent_entity, docstring_entity, "HAS_DOCSTRING", {})
+        )
+    
+    # SIGNATURE entity (for METHOD/FUNCTION/CLASS)
+    if signature:
+        signature_entity = _create_property_entity(
+            parent_entity.name, "SIGNATURE", signature, version
+        )
+        prop_entities.append(signature_entity)
+        prop_relations.append(
+            Relationship(parent_entity, signature_entity, "HAS_SIGNATURE", {})
+        )
+    
+    # RESOLVED_SIGNATURE entity
+    if resolved_signature:
+        resolved_sig_entity = _create_property_entity(
+            parent_entity.name, "RESOLVED_SIGNATURE", resolved_signature, version
+        )
+        prop_entities.append(resolved_sig_entity)
+        prop_relations.append(
+            Relationship(parent_entity, resolved_sig_entity, "HAS_RESOLVED_SIGNATURE", {})
+        )
+    
+    # DECORATOR_DETAILS entity (if decorators exist)
+    if decorators:
+        decorator_details = {"decorators": decorators}
+        decorator_entity = _create_property_entity(
+            parent_entity.name, "DECORATOR_DETAILS", decorator_details, version
+        )
+        prop_entities.append(decorator_entity)
+        prop_relations.append(
+            Relationship(parent_entity, decorator_entity, "HAS_DECORATOR_DETAILS", {})
+        )
+    
+    # IMPORT_DETAILS entity (for MODULE/ROOT_MODULE)
+    if import_details:
+        import_entity = _create_property_entity(
+            parent_entity.name, "IMPORT_DETAILS", import_details, version
+        )
+        prop_entities.append(import_entity)
+        prop_relations.append(
+            Relationship(parent_entity, import_entity, "HAS_IMPORT_DETAILS", {})
+        )
+    
+    return prop_entities, prop_relations
 
 def _owner_class_of_callable(func: Callable) -> Optional[type]:
     """Try to recover the owning class for a method/function by walking its qualname within the module."""
@@ -1211,6 +1503,157 @@ def get_top_level_module(package_name: str) -> str:
     
     return modules[0]
 
+
+def _process_callable_with_overloads(
+    obj: Any,
+    name: str,
+    obj_path: str,
+    entity_type: Literal["FUNCTION", "METHOD"],
+    parent_entity: Entity,
+    root_module_path: str,
+    version: Optional[str],
+    parent_obj: Optional[Any] = None,
+) -> Tuple[List[Entity], List[Relationship]]:
+    """
+    Process a callable (function or method) and its overloads, creating property entities.
+    
+    Args:
+        obj: The callable object (function or method)
+        name: Name of the callable
+        obj_path: Fully qualified path of the callable
+        entity_type: Either "FUNCTION" or "METHOD"
+        parent_entity: Parent entity (MODULE, ROOT_MODULE, or CLASS)
+        root_module_path: Root module path for decorator resolution
+        version: Version label if applicable
+        parent_obj: Parent object (for decorator resolution)
+        
+    Returns:
+        Tuple of (entities_list, relationships_list)
+    """
+    entities: List[Entity] = []
+    relations: List[Relationship] = []
+    
+    # Get source, docstring, labels, and decorators
+    source_code = safe_get_source(obj)
+    docstring = safe_get_docstring(obj)
+    extra_labels, decorators = get_function_method_labels(obj, name, parent_obj=parent_obj)
+    
+    # Overload detection
+    overloads: List[Callable] = []
+    try:
+        overloads = get_overloads(obj) or []
+    except Exception:
+        overloads = []
+    
+    # Build labels
+    labels = [entity_type] + (extra_labels or [])
+    if overloads:
+        labels.append("OVERLOADED")
+    if _is_dunder(obj.__name__):
+        labels.append("DUNDER")
+    if version:
+        labels.append(f"version:{version}")
+    
+    # Collect signature variants
+    raw_sig = str(inspect.signature(obj))
+    resolved_sig = str(get_typed_signature(obj, include_overloads=False))
+    
+    # Create main entity with minimal properties
+    main_entity = Entity(
+        obj_path,
+        labels,
+        {
+            "__name__": obj.__name__,
+        }
+    )
+    entities.append(main_entity)
+    
+    # Add relationship to parent
+    if parent_entity:
+        rel_type = "HAS_FUNCTION" if entity_type == "FUNCTION" else "HAS_METHOD"
+        relations.append(Relationship(parent_entity, main_entity, rel_type, {}))
+    
+    # Resolve decorators (partial resolution for now, will be enhanced when MODULE context available)
+    resolved_decorators = _resolve_decorator_details(
+        decorators, "", [], None, root_module_path
+    )
+    
+    # Create property entities for main callable
+    prop_entities, prop_relations = _create_property_entities_and_relations(
+        main_entity,
+        source_code,
+        docstring,
+        raw_sig,
+        resolved_sig,
+        resolved_decorators,
+        None,  # No import_details for functions/methods
+        version
+    )
+    entities.extend(prop_entities)
+    relations.extend(prop_relations)
+    
+    # Process overloads
+    if overloads:
+        for idx, ov in enumerate(overloads, start=1):
+            try:
+                ov_src = safe_get_source(ov)
+            except Exception:
+                ov_src = ""
+            ov_doc = safe_get_docstring(ov)
+            ov_extra_labels, ov_decorators = get_function_method_labels(ov, name, parent_obj=parent_obj)
+            
+            # Build overload labels
+            ov_labels = [entity_type, "OVERLOAD"] + (ov_extra_labels or [])
+            if _is_dunder(obj.__name__):
+                ov_labels.append("DUNDER")
+            if version:
+                ov_labels.append(f"version:{version}")
+            
+            # Get overload signatures
+            ov_sig_raw = str(inspect.signature(ov)) if hasattr(ov, "__call__") or inspect.isfunction(ov) else "<unavailable>"
+            try:
+                ov_sig_res = str(get_typed_signature(ov, include_overloads=False))
+            except Exception:
+                ov_sig_res = ov_sig_raw
+            
+            # Create overload entity with minimal properties
+            ov_entity = Entity(
+                obj_path,
+                ov_labels,
+                {
+                    "__name__": getattr(ov, "__name__", name),
+                },
+            )
+            entities.append(ov_entity)
+            
+            # Add relationships
+            if parent_entity:
+                rel_type = "HAS_FUNCTION" if entity_type == "FUNCTION" else "HAS_METHOD"
+                relations.append(Relationship(parent_entity, ov_entity, rel_type, {}))
+            relations.append(Relationship(main_entity, ov_entity, "HAS_OVERLOAD", {}))
+            
+            # Resolve decorators for overload
+            ov_resolved_decorators = _resolve_decorator_details(
+                ov_decorators, "", [], None, root_module_path
+            )
+            
+            # Create property entities for overload
+            ov_prop_entities, ov_prop_relations = _create_property_entities_and_relations(
+                ov_entity,
+                ov_src,
+                ov_doc,
+                ov_sig_raw,
+                ov_sig_res,
+                ov_resolved_decorators,
+                None,
+                version
+            )
+            entities.extend(ov_prop_entities)
+            relations.extend(ov_prop_relations)
+    
+    return entities, relations
+
+
 def process_member(
     name: str,
     obj: Any,
@@ -1281,75 +1724,12 @@ def process_member(
         else:
             processed_paths.add(obj_path)
 
-        source_code = safe_get_source(obj)
-        docstring = safe_get_docstring(obj)
-        extra_labels, decorators = get_function_method_labels(obj, name, parent_obj=parent_obj)
-        # Overload detection
-        overloads: List[Callable] = []
-        try:
-            overloads = get_overloads(obj) or []
-        except Exception:
-            overloads = []
-        labels = ["FUNCTION"] + (extra_labels or [])
-        if overloads:
-            labels.append("OVERLOADED")
-        if _is_dunder(obj.__name__):
-            labels.append("DUNDER")
-        if version:
-            labels.append(f"version:{version}")
-        # Collect signature variants
-        raw_sig = str(inspect.signature(obj))
-        resolved_sig = str(get_typed_signature(obj, include_overloads=False))
-        function_entity = Entity(
-            obj_path,
-            labels,
-            {
-                "source": source_code,
-                "__name__": obj.__name__,
-                "signature": raw_sig,
-                "resolved_signature": resolved_sig,
-                "docstring": docstring,
-                "decorators": decorators,
-            }
+        # Use helper to process function and its overloads
+        func_entities, func_relations = _process_callable_with_overloads(
+            obj, name, obj_path, "FUNCTION", parent_entity, root_module_path, version, parent_obj
         )
-        entities.append(function_entity)
-        if parent_entity:
-            relations.append(Relationship(parent_entity, function_entity, "HAS_FUNCTION", {}))
-        # Create individual overload entities
-        if overloads:
-            for idx, ov in enumerate(overloads, start=1):
-                try:
-                    ov_src = safe_get_source(ov)
-                except Exception:
-                    ov_src = ""
-                ov_doc = safe_get_docstring(ov)
-                ov_extra_labels, ov_decorators = get_function_method_labels(ov, name, parent_obj=parent_obj)
-                ov_labels = ["FUNCTION", "OVERLOAD"] + (ov_extra_labels or [])
-                if _is_dunder(obj.__name__):
-                    ov_labels.append("DUNDER")
-                if version:
-                    ov_labels.append(f"version:{version}")
-                ov_sig_raw = str(inspect.signature(ov)) if hasattr(ov, "__call__") or inspect.isfunction(ov) else "<unavailable>"
-                try:
-                    ov_sig_res = str(get_typed_signature(ov, include_overloads=False))
-                except Exception:
-                    ov_sig_res = ov_sig_raw
-                ov_entity = Entity(
-                    obj_path,
-                    ov_labels,
-                    {
-                        "source": ov_src,
-                        "__name__": getattr(ov, "__name__", name),
-                        "signature": ov_sig_raw,
-                        "resolved_signature": ov_sig_res,
-                        "docstring": ov_doc,
-                        "decorators": ov_decorators,
-                    },
-                )
-                entities.append(ov_entity)
-                if parent_entity:
-                    relations.append(Relationship(parent_entity, ov_entity, "HAS_FUNCTION", {}))
-                relations.append(Relationship(function_entity, ov_entity, "HAS_OVERLOAD", {}))
+        entities.extend(func_entities)
+        relations.extend(func_relations)
 
     elif parent_entity.label == "CLASS" and (inspect.ismethod(obj) or inspect.isfunction(obj)):
         obj_path = get_fully_qualified_name(obj)
@@ -1362,75 +1742,12 @@ def process_member(
         else:
             processed_paths.add(obj_path)
 
-        source_code = safe_get_source(obj)
-        docstring = safe_get_docstring(obj)
-        extra_labels, decorators = get_function_method_labels(obj, name, parent_obj=parent_obj)
-        # Overload detection
-        overloads: List[Callable] = []
-        try:
-            overloads = get_overloads(obj) or []
-        except Exception:
-            overloads = []
-        labels = ["METHOD"] + (extra_labels or [])
-        if overloads:
-            labels.append("OVERLOADED")
-        if _is_dunder(obj.__name__):
-            labels.append("DUNDER")
-        if version:
-            labels.append(f"version:{version}")
-        # Collect signature variants
-        raw_sig = str(inspect.signature(obj))
-        resolved_sig = str(get_typed_signature(obj, include_overloads=False))
-        method_entity = Entity(
-            obj_path,
-            labels,
-            {
-                "source": source_code,
-                "__name__": obj.__name__,
-                "signature": raw_sig,
-                "resolved_signature": resolved_sig,
-                "docstring": docstring,
-                "decorators": decorators,
-            }
+        # Use helper to process method and its overloads
+        method_entities, method_relations = _process_callable_with_overloads(
+            obj, name, obj_path, "METHOD", parent_entity, root_module_path, version, parent_obj
         )
-        entities.append(method_entity)
-        if parent_entity:
-            relations.append(Relationship(parent_entity, method_entity, "HAS_METHOD", {}))
-        # Create individual overload entities for methods
-        if overloads:
-            for idx, ov in enumerate(overloads, start=1):
-                try:
-                    ov_src = safe_get_source(ov)
-                except Exception:
-                    ov_src = ""
-                ov_doc = safe_get_docstring(ov)
-                ov_extra_labels, ov_decorators = get_function_method_labels(ov, name, parent_obj=parent_obj)
-                ov_labels = ["METHOD", "OVERLOAD"] + (ov_extra_labels or [])
-                if _is_dunder(obj.__name__):
-                    ov_labels.append("DUNDER")
-                if version:
-                    ov_labels.append(f"version:{version}")
-                ov_sig_raw = str(inspect.signature(ov)) if hasattr(ov, "__call__") or inspect.isfunction(ov) else "<unavailable>"
-                try:
-                    ov_sig_res = str(get_typed_signature(ov, include_overloads=False))
-                except Exception:
-                    ov_sig_res = ov_sig_raw
-                ov_entity = Entity(
-                    obj_path,
-                    ov_labels,
-                    {
-                        "source": ov_src,
-                        "__name__": getattr(ov, "__name__", name),
-                        "signature": ov_sig_raw,
-                        "resolved_signature": ov_sig_res,
-                        "docstring": ov_doc,
-                        "decorators": ov_decorators,
-                    },
-                )
-                entities.append(ov_entity)
-                if parent_entity:
-                    relations.append(Relationship(parent_entity, ov_entity, "HAS_METHOD", {}))
-                relations.append(Relationship(method_entity, ov_entity, "HAS_OVERLOAD", {}))
+        entities.extend(method_entities)
+        relations.extend(method_relations)
 
     return entities, relations
 
@@ -1474,16 +1791,8 @@ def traverse_recursive(
 
     source = safe_get_source(obj)
     docstring = safe_get_docstring(obj)
-    properties = {
-        "source": source,
-        "__name__": obj.__name__,
-        "docstring": docstring
-    }
-
-    if inspect.ismodule(obj):
-        properties["import_statements"] = get_import_statements(source)
-        properties["import_as_aliases"] = get_import_as_aliases(source, obj_path)
-
+    
+    # Build labels
     labels = [entity_type]
     if version:
         labels.append(f"version:{version}")
@@ -1492,8 +1801,48 @@ def traverse_recursive(
         if _is_dunder(obj.__name__):
             labels.append("DUNDER")
 
-    entity = Entity(obj_path, labels, properties)
+    # Create main entity with minimal properties
+    entity = Entity(obj_path, labels, {"__name__": obj.__name__})
     entities.append(entity)
+    
+    # Prepare import_details for MODULE entities
+    import_details = None
+    if inspect.ismodule(obj):
+        import_statements = get_import_statements(source)
+        import_as_aliases = get_import_as_aliases(source, obj_path)
+        # Process import statements to get structured import_details
+        import_details, _ = _process_import_statements(import_statements)
+        # Store import_statements and aliases for decorator resolution (temporary, will be in property entity)
+        entity.properties["import_statements"] = import_statements
+        entity.properties["import_as_aliases"] = import_as_aliases
+    
+    # For CLASS entities, get decorators
+    decorators = []
+    if entity_type == "CLASS":
+        # Extract decorators from source
+        decorators = _get_decorators_from_source(source)
+    
+    # Resolve decorators (will need parent's import context for proper resolution)
+    resolved_decorators = []
+    if decorators:
+        # For now, pass empty context - will be enhanced when we propagate import context
+        resolved_decorators = _resolve_decorator_details(
+            decorators, "", [], None, root_module_path
+        )
+    
+    # Create property entities
+    prop_entities, prop_relations = _create_property_entities_and_relations(
+        entity,
+        source,
+        docstring,
+        None,
+        None,
+        resolved_decorators,  # Only for CLASS
+        import_details,  # Only for MODULE
+        version
+    )
+    entities.extend(prop_entities)
+    relations.extend(prop_relations)
 
     if inspect.isclass(obj):
         for base in obj.__bases__:
@@ -1565,9 +1914,15 @@ def traverse_recursive(
         entities.extend(sub_entities)
         relations.extend(sub_relations)
 
+    # Clean up temporary import properties used for decorator resolution
+    if "import_statements" in entity.properties:
+        del entity.properties["import_statements"]
+    if "import_as_aliases" in entity.properties:
+        del entity.properties["import_as_aliases"]
+
     return entities, relations
 
-def _process_import_statements(import_statements: str, root_module_name: str, entity_content_hash: str, other_relations: Dict[str, Set[Tuple]]) -> Dict:
+def _process_import_statements(import_statements: str) -> Dict:
     """
     Process import statements from source code and extract import details.
     Also populates other_relations with EXPOSES entries for imports.
@@ -1688,20 +2043,36 @@ def process_module(module_name: str, version: Optional[str] = None):
     docstring = safe_get_docstring(module_object)
     all_import_statements = get_import_statements(source)
     import_as_aliases = get_import_as_aliases(source, module_object.__name__)
-    properties = {
-        "source": source,
-        "docstring": docstring,
-        "__name__": module_object.__name__,
-        "import_statements": all_import_statements,
-        "import_as_aliases": import_as_aliases
-    }
-
+    
+    # Process import statements to get structured import_details
+    import_details, _ = _process_import_statements(all_import_statements)
+    
     labels = ["ROOT_MODULE"]
     if version:
         labels.append(f"version:{version}")
     
-    root_entity = Entity(module_object.__name__, labels, properties)
+    # Create main entity with minimal properties
+    root_entity = Entity(module_object.__name__, labels, {"__name__": module_object.__name__})
+    
+    # Store import info temporarily for decorator resolution (will be removed after children are processed)
+    root_entity.properties["import_statements"] = all_import_statements
+    root_entity.properties["import_as_aliases"] = import_as_aliases
+    
     entities.append(root_entity)
+    
+    # Create property entities for ROOT_MODULE
+    prop_entities, prop_relations = _create_property_entities_and_relations(
+        root_entity,
+        source,
+        docstring,
+        None,  # No signature for modules
+        None,  # No resolved signature for modules
+        [],  # No decorators for modules
+        import_details,
+        version
+    )
+    entities.extend(prop_entities)
+    relations.extend(prop_relations)
 
     # Get all sub-modules using `find_submodules_importlib_resources` and process them
     submodules: set = find_submodules_importlib_resources(module_object.__name__)
@@ -1756,6 +2127,12 @@ def process_module(module_name: str, version: Optional[str] = None):
         )
         entities.extend(sub_entities)
         relations.extend(sub_relations)
+
+    # Clean up temporary import properties from root_entity used for decorator resolution
+    if "import_statements" in root_entity.properties:
+        del root_entity.properties["import_statements"]
+    if "import_as_aliases" in root_entity.properties:
+        del root_entity.properties["import_as_aliases"]
 
     # Build mapping from content_hash to entity for lookups
     hash_to_entity: Dict[str, Entity] = {}
@@ -1828,12 +2205,7 @@ def process_module(module_name: str, version: Optional[str] = None):
             continue
         
         # Process import statements and get imported entities
-        import_details, imported_entities = _process_import_statements(
-            import_statements, 
-            module_object.__name__,
-            entity.content_hash,
-            other_relations
-        )
+        import_details, imported_entities = _process_import_statements(import_statements)
         
         if not imported_entities:
             continue
@@ -1858,7 +2230,6 @@ def process_module(module_name: str, version: Optional[str] = None):
                         import_ref = ExternalEntityRef(name=entity_fqn, version=import_version)
                         other_relations["EXPOSES"].add((entity.content_hash, import_ref))
                     # External unused imports are just tracked in properties
-                    # (PUBLISHES is handled separately in the cleanup section)
         
         # Store the processed import details
         if import_details:
