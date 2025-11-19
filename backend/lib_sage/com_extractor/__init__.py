@@ -1661,7 +1661,6 @@ def _process_callable_with_overloads(
             if parent_entity:
                 rel_type = "HAS_FUNCTION" if entity_type == "FUNCTION" else "HAS_METHOD"
                 relations.append(Relationship(parent_entity, ov_entity, rel_type, {}))
-            relations.append(Relationship(main_entity, ov_entity, "HAS_OVERLOAD", {}))
             
             # Resolve decorators for overload
             ov_resolved_decorators = _resolve_decorator_details(
