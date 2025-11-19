@@ -93,6 +93,32 @@ def _visibility_label(name: str) -> str:
     return "PUBLIC"
 
 
+def _normalize_signature(signature_str: str) -> str:
+    """
+    Normalize a signature string by removing memory addresses from object representations.
+    
+    This fixes issues where function/lambda objects in default parameters include memory
+    addresses (e.g., '<function <lambda> at 0x104432980>'), which change between runs
+    and cause incorrect duplicate detection.
+    
+    Args:
+        signature_str: Raw signature string from inspect.signature()
+    
+    Returns:
+        Normalized signature with memory addresses removed
+    
+    Examples:
+        '(fin, fout, delim="\\n", callback=<function <lambda> at 0x104432980>)'
+        -> '(fin, fout, delim="\\n", callback=<function <lambda>>)'
+        
+        '(x=<MyClass object at 0x7f8b8c6d4e80>)'
+        -> '(x=<MyClass object>)'
+    """
+    pattern = r' at 0x[0-9a-fA-F]+>'
+    normalized = re.sub(pattern, '>', signature_str)
+    return normalized
+
+
 def _get_decorators_from_source(src: str) -> List[Dict[str, Any]]:
     """
     Extract decorators from source code with their arguments.
@@ -734,13 +760,15 @@ def safe_get_source(obj) -> str:
     try:
         return inspect.getsource(obj)
     except (OSError, TypeError):
-        return f"# Representation:\n{repr(obj)}"
+        # Normalize repr to remove memory addresses
+        return f"# Representation:\n{_normalize_signature(repr(obj))}"
     
 def safe_get_docstring(obj) -> str:
     try:
         return inspect.getdoc(obj) or ""
     except (OSError, TypeError):
-        return f"# Representation:\n{repr(obj)}"
+        # Normalize repr to remove memory addresses
+        return f"# Representation:\n{_normalize_signature(repr(obj))}"
     
 def find_submodules_importlib_resources(module_name: str) -> set[str]:
     """
@@ -1554,9 +1582,9 @@ def _process_callable_with_overloads(
     if version:
         labels.append(f"version:{version}")
     
-    # Collect signature variants
-    raw_sig = str(inspect.signature(obj))
-    resolved_sig = str(get_typed_signature(obj, include_overloads=False))
+    # Collect signature variants (normalized to remove memory addresses)
+    raw_sig = _normalize_signature(str(inspect.signature(obj)))
+    resolved_sig = _normalize_signature(str(get_typed_signature(obj, include_overloads=False)))
     
     # Create main entity with minimal properties
     main_entity = Entity(
@@ -1609,10 +1637,13 @@ def _process_callable_with_overloads(
             if version:
                 ov_labels.append(f"version:{version}")
             
-            # Get overload signatures
-            ov_sig_raw = str(inspect.signature(ov)) if hasattr(ov, "__call__") or inspect.isfunction(ov) else "<unavailable>"
+            # Get overload signatures (normalized to remove memory addresses)
+            if hasattr(ov, "__call__") or inspect.isfunction(ov):
+                ov_sig_raw = _normalize_signature(str(inspect.signature(ov)))
+            else:
+                ov_sig_raw = "<unavailable>"
             try:
-                ov_sig_res = str(get_typed_signature(ov, include_overloads=False))
+                ov_sig_res = _normalize_signature(str(get_typed_signature(ov, include_overloads=False)))
             except Exception:
                 ov_sig_res = ov_sig_raw
             
