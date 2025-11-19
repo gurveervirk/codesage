@@ -952,9 +952,6 @@ MERGE (child)-[:HAS_METHOD]->(member)
 // Phase 5: Report the results.
 WITH DISTINCT child, collect(member) AS members
 RETURN child.name AS ChildClass, size(members) AS TotalParentMembersLabeled
-// Phase 5: Report the results.
-WITH DISTINCT child, collect(member) AS members
-RETURN child.name AS ChildClass, size(members) AS TotalParentMembersLabeled
             """
         )
         self.structured_query(handle_inheritance_query)
