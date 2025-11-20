@@ -743,7 +743,8 @@ class COMStore(Neo4jPropertyGraphStore):
                OR ('version_' + replace(replace(replace(parentData.version, '.', '_'), ':', '_'), '-', '_')) IN labels(p)
             WITH c, parentInfo, p, parentData
             WHERE p IS NOT NULL
-            MERGE (c)-[:INHERITS]->(p)
+            MERGE (c)-[r:INHERITS]->(p)
+            SET r.versions = apoc.coll.toSet(coalesce(r.versions, []) + [lbl IN labels(c) WHERE lbl STARTS WITH 'version_'])
             WITH c, COLLECT(parentInfo) AS processedParents
             SET c.INHERITS = [info IN c.INHERITS WHERE NOT info IN processedParents]
             SET c.NEW_INHERIT_RELS = processedParents
@@ -947,7 +948,8 @@ WHERE
 // Due to MRO, we will later refine this to only take the first one found.
 WITH child, collect(DISTINCT member) AS members
 UNWIND members AS member
-MERGE (child)-[:HAS_METHOD]->(member)
+MERGE (child)-[r:HAS_METHOD]->(member)
+SET r.versions = apoc.coll.toSet(coalesce(r.versions, []) + [lbl IN labels(child) WHERE lbl STARTS WITH 'version_'])
 
 // Phase 5: Report the results.
 WITH DISTINCT child, collect(member) AS members
