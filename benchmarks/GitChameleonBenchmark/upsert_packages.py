@@ -19,6 +19,7 @@ import sys
 import os
 import shutil
 import logging
+import argparse
 from pathlib import Path
 from typing import Dict, List, Optional
 from dotenv import load_dotenv
@@ -47,45 +48,24 @@ def load_version_info(version_info_path: Path) -> Dict:
         return json.load(f)
 
 
-def select_library(library_versions: Dict[str, List[str]]) -> Optional[str]:
+def show_packages(library_versions: Dict[str, List[str]]) -> None:
     """
-    Allow user to select a library from the list.
+    Display all available packages with their version counts.
     
     Args:
         library_versions: Dict mapping library names to lists of versions
-    
-    Returns:
-        Selected library name or None if cancelled
     """
-    # Get unique library names (already keys in the dict)
     libraries = sorted(library_versions.keys())
     
     print("\n" + "="*60)
     print("Available Libraries:")
     print("="*60)
     for i, lib in enumerate(libraries, 1):
-        # Count versions for this library
         versions = library_versions[lib]
         print(f"{i:3d}. {lib} ({len(versions)} version(s))")
-    
-    print("\n0. Process ALL libraries")
     print("="*60)
-    
-    while True:
-        try:
-            choice = input("\nSelect library number (or 0 for all, q to quit): ").strip()
-            if choice.lower() == 'q':
-                return None
-            
-            choice_num = int(choice)
-            if choice_num == 0:
-                return "ALL"
-            elif 1 <= choice_num <= len(libraries):
-                return libraries[choice_num - 1]
-            else:
-                print(f"Invalid choice. Please enter a number between 0 and {len(libraries)}")
-        except ValueError:
-            print("Invalid input. Please enter a number or 'q' to quit.")
+    print(f"\nTotal: {len(libraries)} libraries")
+    print("="*60 + "\n")
 
 
 def get_library_versions(
@@ -439,6 +419,52 @@ def process_library_version(
 
 def main():
     """Main function."""
+    # Setup argument parser
+    parser = argparse.ArgumentParser(
+        description="Process library versions from GitChameleon dataset and upload to Neo4j",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  %(prog)s --show-packages              # Show all available packages
+  %(prog)s --library numpy              # Process all versions of numpy
+  %(prog)s --library numpy --version 1.19.0  # Process specific version
+  %(prog)s --all                        # Process all libraries and versions
+  %(prog)s --library torch --keep-venv  # Keep virtual environment after processing
+        """
+    )
+    
+    parser.add_argument(
+        '--show-packages',
+        action='store_true',
+        help='Display all available packages and exit'
+    )
+    
+    parser.add_argument(
+        '--library',
+        type=str,
+        help='Library name to process (e.g., numpy, torch)'
+    )
+    
+    parser.add_argument(
+        '--version',
+        type=str,
+        help='Specific version to process (requires --library)'
+    )
+    
+    parser.add_argument(
+        '--all',
+        action='store_true',
+        help='Process all libraries and versions'
+    )
+    
+    parser.add_argument(
+        '--keep-venv',
+        action='store_true',
+        help='Keep virtual environments after processing (for debugging)'
+    )
+    
+    args = parser.parse_args()
+    
     # Determine paths
     script_dir = Path(__file__).parent
     codesage_root = script_dir.parent.parent
@@ -469,14 +495,70 @@ def main():
         logger.info("The version_info.json file may be empty or have an incorrect structure")
         return 1
     
-    # Select library
-    selected_library = select_library(library_versions_dict)
-    if selected_library is None:
-        logger.info("Processing cancelled by user")
+    # Handle --show-packages
+    if args.show_packages:
+        show_packages(library_versions_dict)
         return 0
     
+    # Validate arguments
+    if args.version and not args.library:
+        parser.error("--version requires --library to be specified")
+    
+    if not args.library and not args.all:
+        parser.error("Must specify either --library, --all, or --show-packages")
+    
+    if args.library and args.all:
+        parser.error("Cannot specify both --library and --all")
+    
+    # Validate library exists
+    if args.library and args.library not in library_versions_dict:
+        logger.error(f"Library '{args.library}' not found in version_info.json")
+        logger.info(f"Use --show-packages to see available libraries")
+        return 1
+    
+    # Validate version exists
+    if args.version:
+        available_versions = library_versions_dict[args.library]
+        if args.version not in available_versions:
+            logger.error(f"Version '{args.version}' not found for library '{args.library}'")
+            logger.info(f"Available versions: {', '.join(available_versions)}")
+            return 1
+    
+    # Determine what to process
+    if args.all:
+        selected_library = "ALL"
+        logger.info(f"Processing ALL libraries ({len(library_versions_dict)} libraries)")
+    else:
+        selected_library = args.library
+        if args.version:
+            logger.info(f"Processing {selected_library}=={args.version}")
+        else:
+            version_count = len(library_versions_dict[selected_library])
+            logger.info(f"Processing all versions of {selected_library} ({version_count} versions)")
+    
     # Get versions to process
-    versions_to_process = get_library_versions(selected_library, library_versions_dict, lib_with_deps_dict)
+    if args.library and args.version:
+        # Process single specific version
+        lib_ver_key = f"{args.library}=={args.version}"
+        deps_list = lib_with_deps_dict.get(lib_ver_key, [])
+        
+        parsed_deps = []
+        for dep_string in deps_list:
+            if dep_string:
+                for dep in dep_string.split():
+                    if "==" in dep:
+                        pkg, ver = dep.split("==", 1)
+                        parsed_deps.append({"package": pkg, "version": ver})
+                    else:
+                        parsed_deps.append({"package": dep, "version": None})
+        
+        versions_to_process = [{
+            "library": args.library,
+            "version": args.version,
+            "additional_dependencies": parsed_deps
+        }]
+    else:
+        versions_to_process = get_library_versions(selected_library, library_versions_dict, lib_with_deps_dict)
     
     logger.info(f"Will process {len(versions_to_process)} library version(s)")
     
@@ -523,7 +605,7 @@ def main():
             work_dir=work_dir,
             codesage_root=codesage_root,
             neo4j_config=neo4j_config,
-            keep_venv=False
+            keep_venv=args.keep_venv
         ):
             successful += 1
         else:
