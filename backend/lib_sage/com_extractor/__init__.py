@@ -2049,18 +2049,177 @@ def _process_import_statements(import_statements: str) -> Dict:
     
     return import_details, imported_entities
 
-def process_module(module_name: str, version: Optional[str] = None):
+
+def _process_single_external_class(
+    class_fqn: str,
+    version: Optional[str],
+    root_module_name: str,
+    processed_classes: Set[str]
+) -> Tuple[List[Entity], List[Relationship], Dict[str, Set[Tuple]]]:
+    """
+    Process a single external class and its members (methods, subclasses).
+    Does not process the entire module tree.
+    
+    Args:
+        class_fqn (str): Fully qualified name of the class (e.g., "pydantic.BaseModel")
+        version (Optional[str]): Version of the class's module
+        root_module_name (str): Root module name to avoid processing internal classes
+        processed_classes (Set[str]): Set of already processed class FQNs to avoid cycles
+    
+    Returns:
+        Tuple of (entities, relations, other_relations) for the class and its members
+    """
+    entities: List[Entity] = []
+    relations: List[Relationship] = []
+    other_relations: Dict[str, Set[Tuple]] = {"INHERITS": set(), "EXPOSES": set(), "PUBLISHES": set()}
+    
+    # Skip if already processed
+    class_key = f"{class_fqn}@{version}" if version else class_fqn
+    if class_key in processed_classes:
+        return entities, relations, other_relations
+    
+    processed_classes.add(class_key)
+    
+    # Skip if it's from the current root module
+    if class_fqn.startswith(root_module_name + "."):
+        return entities, relations, other_relations
+    
+    logging.info(f"Processing external class: {class_fqn} (version: {version or 'latest'})")
+    
+    try:
+        # Import the module containing the class
+        module_name = ".".join(class_fqn.split(".")[:-1])
+        class_name = class_fqn.split(".")[-1]
+        
+        try:
+            module = importlib.import_module(module_name)
+        except ImportError as e:
+            logging.warning(f"Could not import module {module_name} for class {class_fqn}: {e}")
+            return entities, relations, other_relations
+        
+        # Get the class object
+        if not hasattr(module, class_name):
+            logging.warning(f"Class {class_name} not found in module {module_name}")
+            return entities, relations, other_relations
+        
+        cls = getattr(module, class_name)
+        
+        if not inspect.isclass(cls):
+            logging.warning(f"{class_fqn} is not a class")
+            return entities, relations, other_relations
+        
+        # Process the class using traverse_recursive (which handles CLASS entities)
+        processed_paths: Set[str] = set()
+        class_entities, class_relations = traverse_recursive(
+            cls,
+            class_fqn.split('.')[0],  # Use the class's root module as root_module_path
+            processed_paths,
+            other_relations,
+            version=version
+        )
+        
+        entities.extend(class_entities)
+        relations.extend(class_relations)
+        
+        logging.info(f"Extracted {len(class_entities)} entities from external class {class_fqn}")
+        
+    except Exception as e:
+        logging.error(f"Error processing external class {class_fqn}: {e}")
+        import traceback
+        logging.error(traceback.format_exc())
+    
+    return entities, relations, other_relations
+
+
+def _process_external_parent_classes(
+    inherits_relations: Set[Tuple],
+    processed_external_classes: Set[str],
+    current_module_name: str
+) -> Tuple[List[Entity], List[Relationship]]:
+    """
+    Recursively process external parent classes from INHERITS relationships.
+    Only processes the specific classes and their members, not entire modules.
+    
+    Args:
+        inherits_relations (Set[Tuple]): Set of (child_name, ExternalEntityRef) tuples
+        current_version (Optional[str]): Version of current module
+        processed_external_classes (Set[str]): Set of already processed external class keys
+        current_module_name (str): Name of the current module being processed
+    
+    Returns:
+        Tuple of (entities, relations) for all external parent classes
+    """
+    all_external_entities: List[Entity] = []
+    all_external_relations: List[Relationship] = []
+    
+    # Extract unique external parent classes
+    external_classes_to_process: List[Tuple[str, Optional[str]]] = []
+    
+    for _, parent_ref in inherits_relations:
+        if not isinstance(parent_ref, ExternalEntityRef):
+            continue
+        
+        # Get the parent class FQN
+        parent_fqn = parent_ref.name
+        parent_root_module = parent_fqn.split('.')[0]
+        
+        # Skip if it's the same module we're currently processing
+        if parent_root_module == current_module_name.split('.')[0]:
+            continue
+        
+        parent_version = parent_ref.version
+        class_key = f"{parent_fqn}@{parent_version}" if parent_version else parent_fqn
+        
+        # Skip if already processed
+        if class_key in processed_external_classes:
+            continue
+        
+        external_classes_to_process.append((parent_fqn, parent_version))
+    
+    # Process each external parent class
+    for ext_class_fqn, ext_version in external_classes_to_process:
+        ext_entities, ext_relations, ext_other_relations = _process_single_external_class(
+            ext_class_fqn,
+            ext_version,
+            current_module_name.split('.')[0],
+            processed_external_classes
+        )
+        
+        all_external_entities.extend(ext_entities)
+        all_external_relations.extend(ext_relations)
+        
+        # Recursively process any parent classes that this external class inherits from
+        if ext_other_relations["INHERITS"]:
+            recursive_entities, recursive_relations = _process_external_parent_classes(
+                ext_other_relations["INHERITS"],
+                processed_external_classes,
+                current_module_name
+            )
+            all_external_entities.extend(recursive_entities)
+            all_external_relations.extend(recursive_relations)
+    
+    return all_external_entities, all_external_relations
+
+
+def process_module(module_name: str, version: Optional[str] = None, include_external_parents: bool = True, _processed_external_classes: Optional[Set[str]] = None):
     """
     Process a module or object recursively.
 
     Args:
         module_name (str): Module name or object.
+        version (Optional[str]): Version of the module.
+        include_external_parents (bool): Whether to recursively process external parent classes.
+        _processed_external_classes (Optional[Set[str]]): Internal tracking of processed external classes to avoid cycles.
 
     Returns:
         Tuple[List[Entity], List[Relation], Dict]: List of entities, list of relations, and other relations.
     """
     name_only, parsed_version = _parse_name_and_version(module_name, version)
     version = parsed_version
+
+    # Initialize tracking set for external classes if not provided (top-level call)
+    if _processed_external_classes is None:
+        _processed_external_classes = set()
 
     entities: List[Entity] = []
     relations: List[Relationship] = []
@@ -2264,6 +2423,16 @@ def process_module(module_name: str, version: Optional[str] = None):
         # Store the processed import details
         if import_details:
             entity.properties["import_details"] = import_details
+
+    # Process external parent classes recursively if enabled
+    if include_external_parents:
+        external_entities, external_relations = _process_external_parent_classes(
+            other_relations["INHERITS"],
+            _processed_external_classes,
+            module_object.__name__
+        )
+        entities.extend(external_entities)
+        relations.extend(external_relations)
 
     # Convert sets to lists for final output
     other_relations["EXPOSES"] = list(other_relations["EXPOSES"])

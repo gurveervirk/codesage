@@ -13,6 +13,7 @@ from .utils import check_if_not_null
 import logging
 import neo4j
 import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 logging.basicConfig(level=logging.INFO)
 BASE_ENTITY_LABEL = "__Entity__"
@@ -69,6 +70,7 @@ class COMStore(Neo4jPropertyGraphStore):
         refresh_schema: bool = True,
         sanitize_query_output: bool = True,
         enhanced_schema: bool = False,
+        max_workers: Optional[int] = None,
         **neo4j_kwargs: Any,
     ) -> None:
         self.index_name = index_name
@@ -78,6 +80,8 @@ class COMStore(Neo4jPropertyGraphStore):
         self.text_node_property = text_node_property
         self.retrieval_query = retrieval_query
         self.database = database
+        # Number of worker threads for parallel upserts (None = sequential, 4-8 recommended for parallel)
+        self.max_workers = max_workers
         super().__init__(
             username,
             password,
@@ -108,13 +112,14 @@ class COMStore(Neo4jPropertyGraphStore):
     def create_required_indices(self) -> None:
         """
         This method constructs Cypher queries and executes them to create:
-        1. 5 full-text indices in Neo4j:
+        1. Composite indices on (name, content_hash) for all entity types - CRITICAL for MERGE performance
+        2. 5 full-text indices in Neo4j:
             - one for ROOT_MODULE entities on 'name' and 'source' properties.
             - one for MODULE entities on 'name' and 'source' properties.
             - one for FUNCTION entities on 'name' and 'source' properties.
             - one for CLASS entities on 'name' and 'source' properties.
             - one for METHOD entities on 'name' and 'source' properties.
-        2. 5 vector indices:
+        3. 5 vector indices:
             - one for ROOT_MODULE entities on the 'embedding' property.
             - one for FUNCTION entities on the 'embedding' property.
             - one for MODULE entities on the 'embedding' property.
@@ -123,6 +128,27 @@ class COMStore(Neo4jPropertyGraphStore):
 
         It uses the IF NOT EXISTS clause to avoid errors if the indices already exist.
         """
+
+        # Create composite indices on (name, content_hash) for MERGE optimization
+        # These are CRITICAL for performance when using MERGE with both properties
+        composite_indices = [
+            "CREATE INDEX root_module_composite_idx IF NOT EXISTS FOR (n:ROOT_MODULE) ON (n.name, n.content_hash)",
+            "CREATE INDEX module_composite_idx IF NOT EXISTS FOR (n:MODULE) ON (n.name, n.content_hash)",
+            "CREATE INDEX function_composite_idx IF NOT EXISTS FOR (n:FUNCTION) ON (n.name, n.content_hash)",
+            "CREATE INDEX class_composite_idx IF NOT EXISTS FOR (n:CLASS) ON (n.name, n.content_hash)",
+            "CREATE INDEX method_composite_idx IF NOT EXISTS FOR (n:METHOD) ON (n.name, n.content_hash)",
+            "CREATE INDEX signature_composite_idx IF NOT EXISTS FOR (n:SIGNATURE) ON (n.name, n.content_hash)",
+            "CREATE INDEX resolved_signature_composite_idx IF NOT EXISTS FOR (n:RESOLVED_SIGNATURE) ON (n.name, n.content_hash)",
+            "CREATE INDEX docstring_composite_idx IF NOT EXISTS FOR (n:DOCSTRING) ON (n.name, n.content_hash)",
+            "CREATE INDEX source_composite_idx IF NOT EXISTS FOR (n:SOURCE) ON (n.name, n.content_hash)",
+            "CREATE INDEX decorator_details_composite_idx IF NOT EXISTS FOR (n:DECORATOR_DETAILS) ON (n.name, n.content_hash)",
+            "CREATE INDEX import_details_composite_idx IF NOT EXISTS FOR (n:IMPORT_DETAILS) ON (n.name, n.content_hash)",
+        ]
+        
+        for query in composite_indices:
+            self.database_query(query)
+        
+        logging.info("Created composite indices for MERGE optimization")
 
         # Create full-text indices
         root_module_index_query = """
@@ -410,11 +436,28 @@ class COMStore(Neo4jPropertyGraphStore):
             data = session.run(neo4j.Query(text=query), params)
             return [r.data() for r in data]
     
+    def _execute_query_in_session(self, query: str, params: Dict[str, Any]) -> Any:
+        """
+        Thread-safe helper to execute a query in its own session.
+        Used for parallel execution where each thread needs its own session.
+        
+        Args:
+            query (str): The Cypher query to execute
+            params (Dict[str, Any]): Query parameters
+            
+        Returns:
+            Query results
+        """
+        with self._driver.session(database=self.database) as session:
+            result = session.run(query, params)
+            return [r.data() for r in result]
+    
     def upsert_nodes(self, nodes: List[Entity]) -> None:
         """
         Override parent's upsert_nodes to work directly with Entity models.
         This method uses name and content_hash for MERGE operations.
         Entity already has content_hash computed and labels sanitized.
+        Supports optional parallel execution via max_workers parameter.
         
         Args:
             nodes: List of Entity objects to upsert
@@ -457,25 +500,49 @@ class COMStore(Neo4jPropertyGraphStore):
                 "properties": properties
             })
         
-        if entity_dicts:
-            for index in range(0, len(entity_dicts), CHUNK_SIZE):
-                chunked_params = entity_dicts[index : index + CHUNK_SIZE]
-                self.structured_query(
-                    """
-                    UNWIND $data AS row
-                    // Use name and content_hash for MERGE to support versioning
-                    MERGE (e {name: row.name, content_hash: row.properties.content_hash})
-                    // Set all properties
-                    SET e += apoc.map.clean(row.properties, [], [])
-                    SET e.name = row.name
-                    WITH e, row
-                    // Add all labels from the entity
-                    CALL apoc.create.addLabels(e, row.labels)
-                    YIELD node
-                    RETURN count(node)
-                    """,
-                    param_map={"data": chunked_params},
-                )
+        if not entity_dicts:
+            return
+        
+        # Prepare the upsert query
+        upsert_query = """
+            UNWIND $data AS row
+            // MERGE only on indexed composite key (name, content_hash)
+            // This leverages the composite index for maximum performance
+            MERGE (e {name: row.name, content_hash: row.properties.content_hash})
+            // ON CREATE: Set all properties and add labels
+            ON CREATE SET e += apoc.map.clean(row.properties, [], [])
+            // ON MATCH: Update properties (in case source code changed)
+            ON MATCH SET e += apoc.map.clean(row.properties, [], [])
+            WITH e, row
+            // Add all labels from the entity (idempotent operation)
+            CALL apoc.create.addLabels(e, row.labels)
+            YIELD node
+            RETURN count(node)
+        """
+        
+        # Split into chunks
+        chunks = [entity_dicts[i:i + CHUNK_SIZE] for i in range(0, len(entity_dicts), CHUNK_SIZE)]
+        
+        # Parallel execution if max_workers is set
+        if self.max_workers and self.max_workers > 1:
+            logging.info(f"Upserting {len(entity_dicts)} nodes in parallel with {self.max_workers} workers")
+            with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+                # Submit all chunks as parallel tasks
+                futures = [
+                    executor.submit(self._execute_query_in_session, upsert_query, {"data": chunk})
+                    for chunk in chunks
+                ]
+                # Wait for all to complete and handle any errors
+                for future in as_completed(futures):
+                    try:
+                        future.result()
+                    except Exception as e:
+                        logging.error(f"Error in parallel node upsert: {e}")
+                        raise
+        else:
+            # Sequential execution (original behavior)
+            for chunk in chunks:
+                self.structured_query(upsert_query, param_map={"data": chunk})
     
     def upsert_relations(self, relations: List[Relationship]) -> None:
         """
@@ -546,56 +613,82 @@ class COMStore(Neo4jPropertyGraphStore):
         
         logging.info(f"Upserting {len(params)} relationships: {relation_type_counts}")
         
-        for index in range(0, len(params), CHUNK_SIZE):
-            chunked_params = params[index : index + CHUNK_SIZE]
+        # Prepare the upsert query
+        upsert_rel_query = """
+            UNWIND $data AS row
             
-            try:
-                result = self.structured_query(
-                    """
-                    UNWIND $data AS row
-                    
-                    // Match source by name, content_hash, and version label
-                    // content_hash ensures we match the EXACT entity (critical for overloads)
-                    CALL {
-                        WITH row
-                        MATCH (source {name: row.source_name, content_hash: row.source_content_hash})
-                        WHERE row.source_version_label IS NULL OR row.source_version_label IN labels(source)
-                        RETURN source
-                        LIMIT 1
-                    }
-                    
-                    // Match target by name, content_hash, and version label
-                    CALL {
-                        WITH row
-                        MATCH (target {name: row.target_name, content_hash: row.target_content_hash})
-                        WHERE row.target_version_label IS NULL OR row.target_version_label IN labels(target)
-                        RETURN target
-                        LIMIT 1
-                    }
-                    
-                    // Only proceed if both nodes were found
-                    WITH source, target, row
-                    WHERE source IS NOT NULL AND target IS NOT NULL
-                    
-                    // Create or update the relationship
-                    CALL apoc.merge.relationship(source, row.label, {}, row.properties, target) 
-                    YIELD rel
-                    RETURN row.label AS rel_type, count(rel) AS created_count
-                    """,
-                    param_map={"data": chunked_params},
-                )
+            // Phase 1: Match source by composite index (name, content_hash)
+            // Composite index makes this VERY fast
+            CALL {
+                WITH row
+                MATCH (source {name: row.source_name, content_hash: row.source_content_hash})
+                WHERE row.source_version_label IS NULL OR row.source_version_label IN labels(source)
+                RETURN id(source) AS source_id
+                LIMIT 1
+            }
+            
+            // Phase 2: Match target by composite index (name, content_hash)
+            CALL {
+                WITH row
+                MATCH (target {name: row.target_name, content_hash: row.target_content_hash})
+                WHERE row.target_version_label IS NULL OR row.target_version_label IN labels(target)
+                RETURN id(target) AS target_id
+                LIMIT 1
+            }
+            
+            // Only proceed if both nodes were found
+            WITH source_id, target_id, row
+            WHERE source_id IS NOT NULL AND target_id IS NOT NULL
+            
+            // Phase 3: Create relationship using node IDs (fastest approach)
+            MATCH (source) WHERE id(source) = source_id
+            MATCH (target) WHERE id(target) = target_id
+            CALL apoc.merge.relationship(source, row.label, {}, row.properties, target) 
+            YIELD rel
+            RETURN row.label AS rel_type, count(rel) AS created_count
+        """
+        
+        # Split into chunks
+        chunks = [params[i:i + CHUNK_SIZE] for i in range(0, len(params), CHUNK_SIZE)]
+        
+        # Parallel execution if max_workers is set
+        if self.max_workers and self.max_workers > 1:
+            logging.info(f"Upserting relationships in parallel with {self.max_workers} workers")
+            with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+                # Submit all chunks as parallel tasks
+                futures = [
+                    executor.submit(self._execute_query_in_session, upsert_rel_query, {"data": chunk})
+                    for chunk in chunks
+                ]
+                # Wait for all to complete and handle any errors
+                for i, future in enumerate(as_completed(futures)):
+                    try:
+                        result = future.result()
+                        if result:
+                            for r in result:
+                                logging.info(f"Created {r.get('created_count', 0)} {r.get('rel_type', 'unknown')} relationships")
+                    except Exception as e:
+                        logging.error(f"Error in parallel relationship upsert chunk {i}: {e}")
+                        raise
+        else:
+            # Sequential execution (original behavior)
+            for index in range(0, len(params), CHUNK_SIZE):
+                chunked_params = params[index : index + CHUNK_SIZE]
                 
-                # Log results for debugging
-                if result:
-                    for r in result:
-                        logging.info(f"Created {r.get('created_count', 0)} {r.get('rel_type', 'unknown')} relationships")
-                        
-            except Exception as e:
-                logging.error(f"Error upserting relationship chunk {index}-{index+CHUNK_SIZE}: {e}")
-                # Try to identify which relationships failed
-                for param in chunked_params[:5]:  # Log first 5 for debugging
-                    logging.error(f"Failed relationship example: {param['label']} from {param['source_name']} to {param['target_name']}")
-                raise
+                try:
+                    result = self.structured_query(upsert_rel_query, param_map={"data": chunked_params})
+                    
+                    # Log results for debugging
+                    if result:
+                        for r in result:
+                            logging.info(f"Created {r.get('created_count', 0)} {r.get('rel_type', 'unknown')} relationships")
+                            
+                except Exception as e:
+                    logging.error(f"Error upserting relationship chunk {index}-{index+CHUNK_SIZE}: {e}")
+                    # Try to identify which relationships failed
+                    for param in chunked_params[:5]:  # Log first 5 for debugging
+                        logging.error(f"Failed relationship example: {param['label']} from {param['source_name']} to {param['target_name']}")
+                    raise
 
     def upsert_to_neo4j(
             self, 
@@ -745,9 +838,11 @@ class COMStore(Neo4jPropertyGraphStore):
             WHERE p IS NOT NULL
             MERGE (c)-[r:INHERITS]->(p)
             SET r.versions = apoc.coll.toSet(coalesce(r.versions, []) + [lbl IN labels(c) WHERE lbl STARTS WITH 'version_'])
-            WITH c, COLLECT(parentInfo) AS processedParents
-            SET c.INHERITS = [info IN c.INHERITS WHERE NOT info IN processedParents]
-            SET c.NEW_INHERIT_RELS = processedParents
+            // Store parent content_hash for precise matching in inherited methods
+            WITH c, COLLECT(p.content_hash) AS parentContentHashes
+            SET c.NEW_INHERITED_ENTITIES = parentContentHashes
+            // Clear the INHERITS property array after processing
+            REMOVE c.INHERITS
             """
         )
         
@@ -898,22 +993,30 @@ RETURN count(targetNode) AS numPathsSet
         """
         Create HAS_METHOD relations for inherited methods for all classes in the specified module.
         Now handles methods with SIGNATURE property entities instead of inline signature properties.
+        Uses content_hash for precise version-aware parent matching.
+        
+        This method runs iteratively to handle inheritance chains:
+        - Class C inherits from B, B inherits from A
+        - First iteration: B gets methods from A, C gets methods from B
+        - Second iteration: C gets newly inherited methods from B (that B got from A)
+        - Continues until no new methods are inherited (fixed-point)
         """
         handle_inheritance_query = (
             """
 // Phase 1: Find classes marked for an inheritance update.
 MATCH (child:CLASS)
-WHERE child.NEW_INHERIT_RELS IS NOT NULL
-WITH child, child.NEW_INHERIT_RELS AS parentNames
+WHERE child.NEW_INHERITED_ENTITIES IS NOT NULL
+WITH child, child.NEW_INHERITED_ENTITIES AS parentContentHashes
 
 // Clean up the trigger property to prevent re-processing.
-REMOVE child.NEW_INHERIT_RELS
+REMOVE child.NEW_INHERITED_ENTITIES
 
 // Phase 2: Iterate through all methods from all parents.
-// It is CRITICAL that `parentNames` is sorted in the correct Method Resolution Order (MRO).
-WITH child, parentNames
-UNWIND parentNames AS parentName
-MATCH (parent:CLASS {name: parentName})-[:HAS_METHOD]->(member)
+// It is CRITICAL that `parentContentHashes` is sorted in the correct Method Resolution Order (MRO).
+// Using content_hash ensures we match the exact version of the parent class.
+WITH child, parentContentHashes
+UNWIND parentContentHashes AS parentContentHash
+MATCH (parent:CLASS {content_hash: parentContentHash})-[:HAS_METHOD]->(member)
 
 // Phase 3: Filter the methods based on the correct inheritance and override rules.
 WHERE
@@ -951,12 +1054,46 @@ UNWIND members AS member
 MERGE (child)-[r:HAS_METHOD]->(member)
 SET r.versions = apoc.coll.toSet(coalesce(r.versions, []) + [lbl IN labels(child) WHERE lbl STARTS WITH 'version_'])
 
-// Phase 5: Report the results.
-WITH DISTINCT child, collect(member) AS members
-RETURN child.name AS ChildClass, size(members) AS TotalParentMembersLabeled
+// Phase 5: Report the results and mark children for propagation.
+// If we added new methods to a child that is also a parent, mark its children for re-processing.
+WITH DISTINCT child, collect(member) AS newMembers
+WHERE size(newMembers) > 0
+WITH child, newMembers
+OPTIONAL MATCH (grandchild:CLASS)-[:INHERITS]->(child)
+WHERE grandchild IS NOT NULL
+WITH child, newMembers, collect(DISTINCT child.content_hash) AS childContentHashes, collect(DISTINCT grandchild) AS grandchildren
+// Set NEW_INHERITED_ENTITIES on grandchildren to trigger propagation
+FOREACH (gc IN grandchildren |
+    SET gc.NEW_INHERITED_ENTITIES = CASE 
+        WHEN gc.NEW_INHERITED_ENTITIES IS NULL THEN childContentHashes
+        ELSE gc.NEW_INHERITED_ENTITIES + childContentHashes
+    END
+)
+RETURN child.name AS ChildClass, size(newMembers) AS TotalParentMembersLabeled, size(grandchildren) AS GrandchildrenMarked
             """
         )
-        self.structured_query(handle_inheritance_query)
+        
+        # Run iteratively until no more inheritance propagation occurs
+        # This handles inheritance chains: A -> B -> C -> D...
+        max_iterations = 100  # Safety limit to prevent infinite loops
+        iteration = 0
+        
+        while iteration < max_iterations:
+            iteration += 1
+            result = self.structured_query(handle_inheritance_query)
+            
+            if not result or all(r.get('TotalParentMembersLabeled', 0) == 0 for r in result):
+                # No new methods inherited, we've reached a fixed point
+                logging.info(f"Inheritance propagation completed after {iteration} iteration(s)")
+                break
+            
+            # Log progress
+            total_inherited = sum(r.get('TotalParentMembersLabeled', 0) for r in result)
+            total_marked = sum(r.get('GrandchildrenMarked', 0) for r in result)
+            logging.info(f"Iteration {iteration}: {total_inherited} methods inherited, {total_marked} grandchildren marked for propagation")
+        
+        if iteration >= max_iterations:
+            logging.warning(f"Inheritance propagation stopped after {max_iterations} iterations (possible circular inheritance)")
 
     def _remove_empty_values(self, input_dict):
         """
