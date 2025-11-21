@@ -27,9 +27,11 @@ from dotenv import load_dotenv
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / 'backend'))
 
 try:
-    from lib_sage.com_store import COMStore
+    from lib_sage.com_store import COMStore as _COMStore
+    COMStore = _COMStore
 except ImportError:
     COMStore = None  # Placeholder if import fails
+    _COMStore = None
 
 # Configure logging
 logging.basicConfig(
@@ -37,6 +39,32 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# Global COMStore instance
+_com_store = None
+
+
+def init_com_store(neo4j_config: Dict):
+    """Initialize or return the global COMStore instance."""
+    global _com_store
+    if _com_store is None:
+        logger.info(f"Initializing COMStore connection to {neo4j_config.get('url')}")
+        _com_store = COMStore(
+            username=neo4j_config.get('username', 'neo4j'),
+            password=neo4j_config.get('password', 'password'),
+            url=neo4j_config.get('url', 'bolt://localhost:7687'),
+            database=neo4j_config.get('database', 'neo4j'),
+        )
+    return _com_store
+
+
+def close_com_store():
+    """Close the global COMStore connection."""
+    global _com_store
+    if _com_store is not None:
+        logger.info("Closing COMStore connection")
+        _com_store._driver.close()
+        _com_store = None
 
 
 def load_version_info(version_info_path: Path) -> Dict:
@@ -286,6 +314,50 @@ except Exception as e:
             results_path.unlink()
 
 
+def check_version_exists(
+    library: str,
+    version: str,
+    neo4j_config: Dict
+) -> bool:
+    """
+    Check if a library version already exists in Neo4j.
+    
+    Args:
+        library: Library name
+        version: Library version
+        neo4j_config: Neo4j connection configuration
+    
+    Returns:
+        True if the version exists, False otherwise
+    """
+    try:
+        # Use global COMStore instance
+        store = init_com_store(neo4j_config)
+        
+        # Sanitize version label
+        version_label = f"version_{version.replace('.', '_').replace(':', '_').replace('-', '_')}"
+        
+        # Query to check if ROOT_MODULE with this library name and version exists
+        check_query = """
+        MATCH (root:ROOT_MODULE {name: $library_name})
+        WHERE $version_label IN labels(root)
+        RETURN count(root) > 0 AS exists
+        """
+        
+        result = store.structured_query(check_query, {
+            "library_name": library,
+            "version_label": version_label
+        })
+        
+        exists = result[0]['exists'] if result else False
+        
+        return exists
+        
+    except Exception as e:
+        logger.error(f"Error checking if {library}=={version} exists: {e}")
+        return False
+
+
 def upload_to_neo4j(
     entities: List,
     relations: List,
@@ -309,16 +381,8 @@ def upload_to_neo4j(
         True if successful, False otherwise
     """
     try:
-        logger.info(f"Connecting to Neo4j at {neo4j_config.get('url', 'default')}")
-        
-        # Create COMStore instance
-        store = COMStore(
-            username=neo4j_config.get('username', 'neo4j'),
-            password=neo4j_config.get('password', 'password'),
-            url=neo4j_config.get('url', 'bolt://localhost:7687'),
-            database=neo4j_config.get('database', 'neo4j'),
-            # refresh_schema=False  # Skip schema refresh to avoid issues with existing data
-        )
+        # Use global COMStore instance
+        store = init_com_store(neo4j_config)
         
         # Upload to Neo4j
         logger.info(f"Uploading {len(entities)} entities to Neo4j for {library}=={version}")
@@ -346,7 +410,8 @@ def process_library_version(
     work_dir: Path,
     codesage_root: Path,
     neo4j_config: Dict,
-    keep_venv: bool = False
+    keep_venv: bool = False,
+    skip_existing: bool = True
 ) -> bool:
     """
     Process a single library version.
@@ -359,10 +424,18 @@ def process_library_version(
         codesage_root: Path to CodeSage root
         neo4j_config: Neo4j configuration
         keep_venv: Whether to keep the venv after processing
+        skip_existing: Whether to skip versions that already exist in Neo4j
     
     Returns:
         True if successful, False otherwise
     """
+    # Check if version already exists in database
+    if skip_existing:
+        logger.info(f"Checking if {library}=={version} already exists in database...")
+        if check_version_exists(library, version, neo4j_config):
+            logger.info(f"⊙ Skipping {library}=={version} - already exists in database")
+            return True  # Return True since it's already processed
+    
     venv_path = work_dir / f"venv_{library}_{version.replace('.', '_')}"
     
     try:
@@ -430,6 +503,7 @@ Examples:
   %(prog)s --library numpy --version 1.19.0  # Process specific version
   %(prog)s --all                        # Process all libraries and versions
   %(prog)s --library torch --keep-venv  # Keep virtual environment after processing
+  %(prog)s --library numpy --force      # Force re-processing even if already in DB
         """
     )
     
@@ -461,6 +535,19 @@ Examples:
         '--keep-venv',
         action='store_true',
         help='Keep virtual environments after processing (for debugging)'
+    )
+    
+    parser.add_argument(
+        '--skip-existing',
+        action='store_true',
+        default=True,
+        help='Skip library versions that already exist in the database (default: True)'
+    )
+    
+    parser.add_argument(
+        '--force',
+        action='store_true',
+        help='Force processing even if version exists (overrides --skip-existing)'
     )
     
     args = parser.parse_args()
@@ -588,6 +675,15 @@ Examples:
     # Process each version
     successful = 0
     failed = 0
+    skipped = 0
+    
+    # Determine skip_existing behavior
+    skip_existing = args.skip_existing and not args.force
+    
+    if skip_existing:
+        logger.info("Will skip versions that already exist in the database")
+    else:
+        logger.info("Will process all versions, even if they already exist")
     
     for i, lib_version in enumerate(versions_to_process, 1):
         library = lib_version['library']
@@ -598,6 +694,13 @@ Examples:
         logger.info(f"Processing {i}/{len(versions_to_process)}: {library}=={version}")
         logger.info(f"{'='*60}")
         
+        # Check if already exists before full processing
+        if skip_existing and check_version_exists(library, version, neo4j_config):
+            logger.info(f"⊙ Skipping {library}=={version} - already exists in database")
+            skipped += 1
+            successful += 1  # Count as successful since it's already in DB
+            continue
+        
         if process_library_version(
             library=library,
             version=version,
@@ -605,7 +708,8 @@ Examples:
             work_dir=work_dir,
             codesage_root=codesage_root,
             neo4j_config=neo4j_config,
-            keep_venv=args.keep_venv
+            keep_venv=args.keep_venv,
+            skip_existing=False  # Already checked above
         ):
             successful += 1
         else:
@@ -617,8 +721,13 @@ Examples:
     logger.info(f"PROCESSING COMPLETE")
     logger.info(f"{'='*60}")
     logger.info(f"Successful: {successful}/{len(versions_to_process)}")
+    if skipped > 0:
+        logger.info(f"Skipped (already in DB): {skipped}/{len(versions_to_process)}")
     logger.info(f"Failed: {failed}/{len(versions_to_process)}")
     logger.info(f"{'='*60}")
+    
+    # Close the global COMStore connection
+    close_com_store()
     
     return 0 if failed == 0 else 1
 

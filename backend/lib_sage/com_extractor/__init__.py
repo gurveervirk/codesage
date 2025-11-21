@@ -2134,7 +2134,8 @@ def _process_single_external_class(
 def _process_external_parent_classes(
     inherits_relations: Set[Tuple],
     processed_external_classes: Set[str],
-    current_module_name: str
+    current_module_name: str,
+    all_other_relations: Optional[Dict[str, List[Tuple]]] = None
 ) -> Tuple[List[Entity], List[Relationship]]:
     """
     Recursively process external parent classes from INHERITS relationships.
@@ -2142,9 +2143,9 @@ def _process_external_parent_classes(
     
     Args:
         inherits_relations (Set[Tuple]): Set of (child_name, ExternalEntityRef) tuples
-        current_version (Optional[str]): Version of current module
         processed_external_classes (Set[str]): Set of already processed external class keys
         current_module_name (str): Name of the current module being processed
+        all_other_relations (Optional[Dict[str, List[Tuple]]]): Accumulator for INHERITS/EXPOSES/PUBLISHES from external classes
     
     Returns:
         Tuple of (entities, relations) for all external parent classes
@@ -2188,12 +2189,19 @@ def _process_external_parent_classes(
         all_external_entities.extend(ext_entities)
         all_external_relations.extend(ext_relations)
         
+        # Accumulate other_relations from external classes if accumulator provided
+        if all_other_relations is not None:
+            for rel_type in ["INHERITS", "EXPOSES", "PUBLISHES"]:
+                if rel_type in ext_other_relations:
+                    all_other_relations[rel_type].extend(list(ext_other_relations[rel_type]))
+        
         # Recursively process any parent classes that this external class inherits from
         if ext_other_relations["INHERITS"]:
             recursive_entities, recursive_relations = _process_external_parent_classes(
                 ext_other_relations["INHERITS"],
                 processed_external_classes,
-                current_module_name
+                current_module_name,
+                all_other_relations  # Pass accumulator through recursion
             )
             all_external_entities.extend(recursive_entities)
             all_external_relations.extend(recursive_relations)
@@ -2429,7 +2437,8 @@ def process_module(module_name: str, version: Optional[str] = None, include_exte
         external_entities, external_relations = _process_external_parent_classes(
             other_relations["INHERITS"],
             _processed_external_classes,
-            module_object.__name__
+            module_object.__name__,
+            other_relations  # Pass other_relations to accumulate INHERITS from external classes
         )
         entities.extend(external_entities)
         relations.extend(external_relations)

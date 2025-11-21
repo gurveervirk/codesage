@@ -147,8 +147,6 @@ class COMStore(Neo4jPropertyGraphStore):
         
         for query in composite_indices:
             self.database_query(query)
-        
-        logging.info("Created composite indices for MERGE optimization")
 
         # Create full-text indices
         root_module_index_query = """
