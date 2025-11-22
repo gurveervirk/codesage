@@ -2,7 +2,6 @@ from backend.config import config
 from fastapi import APIRouter, HTTPException, Request
 from backend.routes.models import ChangeModelRequest
 from llama_index.core.settings import Settings
-from llama_index.llms.ollama import Ollama
 from llama_index.llms.google_genai import GoogleGenAI
 
 # from utils.gemini_with_rate_limits import GeminiWithRateLimits as Gemini
@@ -32,7 +31,7 @@ async def available_models(request: Request):
 )
 async def change_models(request: Request, payload: ChangeModelRequest):
     """
-    Alters the active LLM based on provider ('Gemini', 'Ollama', or 'OpenAI') and model ID.
+    Alters the active LLM based on provider ('Gemini', or 'OpenAI') and model ID.
     """
     try:
         provider = payload.provider
@@ -46,13 +45,6 @@ async def change_models(request: Request, payload: ChangeModelRequest):
                 model=model_id
             )
             request.app.state.current_model = f"Gemini::{model_id}"
-        elif provider == "Ollama":
-            Settings.llm = Ollama(
-                model=model_id,
-                request_timeout=120.0,
-                base_url="http://localhost:11434"
-            )
-            request.app.state.current_model = f"Ollama::{model_id}"
         elif provider == "OpenAI":
             # Uncomment and configure OpenAI when available
             # Settings.llm = OpenAI(model=model_id, api_key=config.OPENAI_API_KEY, temperature=1)
