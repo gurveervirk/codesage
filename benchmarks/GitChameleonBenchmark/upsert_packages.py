@@ -429,13 +429,6 @@ def process_library_version(
     Returns:
         True if successful, False otherwise
     """
-    # Check if version already exists in database
-    if skip_existing:
-        logger.info(f"Checking if {library}=={version} already exists in database...")
-        if check_version_exists(library, version, neo4j_config):
-            logger.info(f"⊙ Skipping {library}=={version} - already exists in database")
-            return True  # Return True since it's already processed
-    
     venv_path = work_dir / f"venv_{library}_{version.replace('.', '_')}"
     
     try:
