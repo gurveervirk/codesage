@@ -410,8 +410,7 @@ def process_library_version(
     work_dir: Path,
     codesage_root: Path,
     neo4j_config: Dict,
-    keep_venv: bool = False,
-    skip_existing: bool = True
+    keep_venv: bool = False
 ) -> bool:
     """
     Process a single library version.
