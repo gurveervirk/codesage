@@ -700,8 +700,7 @@ Examples:
             work_dir=work_dir,
             codesage_root=codesage_root,
             neo4j_config=neo4j_config,
-            keep_venv=args.keep_venv,
-            skip_existing=False  # Already checked above
+            keep_venv=args.keep_venv
         ):
             successful += 1
         else:
