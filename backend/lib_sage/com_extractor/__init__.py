@@ -1984,7 +1984,7 @@ def _process_import_statements(import_statements: str) -> Dict:
     imported_entities: Set[str] = set()  # Track all imported entity FQNs for unused detection
     
     if not import_statements:
-        return import_details
+        return import_details, imported_entities
     
     try:
         tree = ast.parse(import_statements)
