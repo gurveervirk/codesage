@@ -7,7 +7,7 @@ from llama_index.core.graph_stores.types import (
     EntityNode
 )
 from llama_index.core import Settings
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 from ..com_extractor import Entity, Relationship
 from .utils import check_if_not_null
 import logging
@@ -268,7 +268,7 @@ class COMStore(Neo4jPropertyGraphStore):
         self.database_query(general_fts_query)
 
     def query_vector_index(
-        self, index_name: str, query: str | List[float], top_k: int = 10,
+        self, index_name: str, query: Union[str, List[float]], top_k: int = 10,
         **kwargs: Any
     ) -> List[Dict]:
         """
@@ -346,7 +346,7 @@ class COMStore(Neo4jPropertyGraphStore):
     def similarity_search_without_index(
         self,
         labels: List[str],
-        query: str | List[float],
+        query: Union[str, List[float]],
         top_k: int = 10,
         **kwargs: Any,
     ) -> List[Dict]:
