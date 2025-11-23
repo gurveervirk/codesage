@@ -507,9 +507,7 @@ class COMStore(Neo4jPropertyGraphStore):
             MERGE (e {name: row.name, content_hash: row.properties.content_hash})
             ON CREATE SET e += apoc.map.clean(row.properties, [], [])
             WITH e, row
-            CALL apoc.create.addLabels(e, row.labels)
-            YIELD node
-            RETURN count(node)
+            CALL apoc.create.addLabels(e, row.labels) YIELD node
         """
         
         # Split into chunks
@@ -534,7 +532,9 @@ class COMStore(Neo4jPropertyGraphStore):
         else:
             # Sequential execution (original behavior)
             for chunk in chunks:
+                logging.info(f"Upserting chunk of {len(chunk)} nodes")
                 self.structured_query(upsert_query, param_map={"data": chunk})
+                logging.info(f"Upserted {len(chunk)} nodes")
     
     def upsert_relations(self, relations: List[Relationship]) -> None:
         """
@@ -644,6 +644,7 @@ class COMStore(Neo4jPropertyGraphStore):
                 chunked_params = params[index : index + CHUNK_SIZE]
                 
                 try:
+                    logging.info(f"Upserting relationship chunk {index}-{index+CHUNK_SIZE} with {len(chunked_params)} relationships")
                     result = self.structured_query(upsert_rel_query, param_map={"data": chunked_params})
                     
                     # Log results for debugging
