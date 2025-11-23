@@ -146,7 +146,7 @@ def get_library_versions(
 
 def create_venv(venv_path: Path) -> bool:
     """
-    Create a virtual environment.
+    Create a virtual environment using Python 3.9.
     
     Args:
         venv_path: Path where the venv should be created
@@ -155,9 +155,34 @@ def create_venv(venv_path: Path) -> bool:
         True if successful, False otherwise
     """
     try:
-        logger.info(f"Creating virtual environment at {venv_path}")
+        # Try to find Python 3.9 executable
+        python39_candidates = ["python3.9", "python3"]
+        python39_exe = None
+        
+        for candidate in python39_candidates:
+            try:
+                result = subprocess.run(
+                    [candidate, "--version"],
+                    capture_output=True,
+                    text=True,
+                    check=True
+                )
+                version_output = result.stdout.strip()
+                if "Python 3.9" in version_output:
+                    python39_exe = candidate
+                    logger.info(f"Found Python 3.9: {version_output}")
+                    break
+            except (subprocess.CalledProcessError, FileNotFoundError):
+                continue
+        
+        if not python39_exe:
+            logger.error("Python 3.9 not found. Please install Python 3.9")
+            logger.error("Tried: " + ", ".join(python39_candidates))
+            return False
+        
+        logger.info(f"Creating virtual environment at {venv_path} using {python39_exe}")
         subprocess.run(
-            [sys.executable, "-m", "venv", str(venv_path)],
+            [python39_exe, "-m", "venv", str(venv_path)],
             check=True,
             capture_output=True
         )

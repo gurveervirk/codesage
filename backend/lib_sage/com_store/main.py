@@ -129,23 +129,24 @@ class COMStore(Neo4jPropertyGraphStore):
         It uses the IF NOT EXISTS clause to avoid errors if the indices already exist.
         """
 
-        # Create composite indices on (name, content_hash) for MERGE optimization
-        # These are CRITICAL for performance when using MERGE with both properties
-        composite_indices = [
-            "CREATE INDEX root_module_composite_idx IF NOT EXISTS FOR (n:ROOT_MODULE) ON (n.name, n.content_hash)",
-            "CREATE INDEX module_composite_idx IF NOT EXISTS FOR (n:MODULE) ON (n.name, n.content_hash)",
-            "CREATE INDEX function_composite_idx IF NOT EXISTS FOR (n:FUNCTION) ON (n.name, n.content_hash)",
-            "CREATE INDEX class_composite_idx IF NOT EXISTS FOR (n:CLASS) ON (n.name, n.content_hash)",
-            "CREATE INDEX method_composite_idx IF NOT EXISTS FOR (n:METHOD) ON (n.name, n.content_hash)",
-            "CREATE INDEX signature_composite_idx IF NOT EXISTS FOR (n:SIGNATURE) ON (n.name, n.content_hash)",
-            "CREATE INDEX resolved_signature_composite_idx IF NOT EXISTS FOR (n:RESOLVED_SIGNATURE) ON (n.name, n.content_hash)",
-            "CREATE INDEX docstring_composite_idx IF NOT EXISTS FOR (n:DOCSTRING) ON (n.name, n.content_hash)",
-            "CREATE INDEX source_composite_idx IF NOT EXISTS FOR (n:SOURCE) ON (n.name, n.content_hash)",
-            "CREATE INDEX decorator_details_composite_idx IF NOT EXISTS FOR (n:DECORATOR_DETAILS) ON (n.name, n.content_hash)",
-            "CREATE INDEX import_details_composite_idx IF NOT EXISTS FOR (n:IMPORT_DETAILS) ON (n.name, n.content_hash)",
+        # Create composite uniqueness constraints on (name, content_hash) for MERGE optimization
+        # These are CRITICAL for performance and data integrity when using MERGE with both properties
+        # Constraints automatically create indexes AND guarantee uniqueness
+        composite_constraints = [
+            "CREATE CONSTRAINT root_module_unique IF NOT EXISTS FOR (n:ROOT_MODULE) REQUIRE (n.name, n.content_hash) IS UNIQUE",
+            "CREATE CONSTRAINT module_unique IF NOT EXISTS FOR (n:MODULE) REQUIRE (n.name, n.content_hash) IS UNIQUE",
+            "CREATE CONSTRAINT function_unique IF NOT EXISTS FOR (n:FUNCTION) REQUIRE (n.name, n.content_hash) IS UNIQUE",
+            "CREATE CONSTRAINT class_unique IF NOT EXISTS FOR (n:CLASS) REQUIRE (n.name, n.content_hash) IS UNIQUE",
+            "CREATE CONSTRAINT method_unique IF NOT EXISTS FOR (n:METHOD) REQUIRE (n.name, n.content_hash) IS UNIQUE",
+            "CREATE CONSTRAINT signature_unique IF NOT EXISTS FOR (n:SIGNATURE) REQUIRE (n.name, n.content_hash) IS UNIQUE",
+            "CREATE CONSTRAINT resolved_signature_unique IF NOT EXISTS FOR (n:RESOLVED_SIGNATURE) REQUIRE (n.name, n.content_hash) IS UNIQUE",
+            "CREATE CONSTRAINT docstring_unique IF NOT EXISTS FOR (n:DOCSTRING) REQUIRE (n.name, n.content_hash) IS UNIQUE",
+            "CREATE CONSTRAINT source_unique IF NOT EXISTS FOR (n:SOURCE) REQUIRE (n.name, n.content_hash) IS UNIQUE",
+            "CREATE CONSTRAINT decorator_details_unique IF NOT EXISTS FOR (n:DECORATOR_DETAILS) REQUIRE (n.name, n.content_hash) IS UNIQUE",
+            "CREATE CONSTRAINT import_details_unique IF NOT EXISTS FOR (n:IMPORT_DETAILS) REQUIRE (n.name, n.content_hash) IS UNIQUE",
         ]
         
-        for query in composite_indices:
+        for query in composite_constraints:
             self.database_query(query)
 
         # Create full-text indices
@@ -501,18 +502,11 @@ class COMStore(Neo4jPropertyGraphStore):
         if not entity_dicts:
             return
         
-        # Prepare the upsert query
         upsert_query = """
             UNWIND $data AS row
-            // MERGE only on indexed composite key (name, content_hash)
-            // This leverages the composite index for maximum performance
             MERGE (e {name: row.name, content_hash: row.properties.content_hash})
-            // ON CREATE: Set all properties and add labels
             ON CREATE SET e += apoc.map.clean(row.properties, [], [])
-            // ON MATCH: Update properties (in case source code changed)
-            ON MATCH SET e += apoc.map.clean(row.properties, [], [])
             WITH e, row
-            // Add all labels from the entity (idempotent operation)
             CALL apoc.create.addLabels(e, row.labels)
             YIELD node
             RETURN count(node)
@@ -568,82 +562,58 @@ class COMStore(Neo4jPropertyGraphStore):
                     serialized_props[key] = value
             return {k: v for k, v in serialized_props.items() if v is not None}
         
-        def _extract_version_label(labels: List[str]) -> Optional[str]:
-            """Extract and sanitize version label from entity labels"""
+        def _extract_entity_type_label(labels: List[str]) -> Optional[str]:
+            """Extract primary entity type label (ROOT_MODULE, MODULE, CLASS, etc.)"""
+            entity_types = {'ROOT_MODULE', 'MODULE', 'FUNCTION', 'CLASS', 'METHOD', 
+                          'SIGNATURE', 'RESOLVED_SIGNATURE', 'DOCSTRING', 'SOURCE', 
+                          'DECORATOR_DETAILS', 'IMPORT_DETAILS'}
             for label in labels or []:
-                if isinstance(label, str) and label.startswith("version:"):
-                    # Sanitize for Neo4j
-                    return label.replace(":", "_").replace(".", "_").replace("-", "_")
+                if label in entity_types:
+                    return label
             return None
         
         params = []
         relation_type_counts = {}
         
         for r in relations:
-            # Get source and target entity names directly
             source_name = r.from_entity.name
             target_name = r.to_entity.name
-            
-            # Use content_hash from Entity (already computed in com_extractor)
             source_content_hash = r.from_entity.content_hash
             target_content_hash = r.to_entity.content_hash
             
-            # Extract version labels from entities
-            source_version_label = _extract_version_label(r.from_entity.labels)
-            target_version_label = _extract_version_label(r.to_entity.labels)
+            source_label = _extract_entity_type_label(r.from_entity.labels)
+            target_label = _extract_entity_type_label(r.to_entity.labels)
             
-            # Serialize properties
             properties = _serialize_nested_collections(r.properties or {})
             
-            # Track relationship types for debugging
             relation_type_counts[r.label] = relation_type_counts.get(r.label, 0) + 1
             
             params.append({
                 "source_name": source_name,
                 "source_content_hash": source_content_hash,
-                "source_version_label": source_version_label,
+                "source_label": source_label,
                 "target_name": target_name,
                 "target_content_hash": target_content_hash,
-                "target_version_label": target_version_label,
+                "target_label": target_label,
                 "label": r.label,
                 "properties": properties
             })
         
         logging.info(f"Upserting {len(params)} relationships: {relation_type_counts}")
         
-        # Prepare the upsert query
         upsert_rel_query = """
             UNWIND $data AS row
-            
-            // Phase 1: Match source by composite index (name, content_hash)
-            // Composite index makes this VERY fast
-            CALL {
-                WITH row
-                MATCH (source {name: row.source_name, content_hash: row.source_content_hash})
-                WHERE row.source_version_label IS NULL OR row.source_version_label IN labels(source)
-                RETURN id(source) AS source_id
-                LIMIT 1
-            }
-            
-            // Phase 2: Match target by composite index (name, content_hash)
-            CALL {
-                WITH row
-                MATCH (target {name: row.target_name, content_hash: row.target_content_hash})
-                WHERE row.target_version_label IS NULL OR row.target_version_label IN labels(target)
-                RETURN id(target) AS target_id
-                LIMIT 1
-            }
-            
-            // Only proceed if both nodes were found
-            WITH source_id, target_id, row
-            WHERE source_id IS NOT NULL AND target_id IS NOT NULL
-            
-            // Phase 3: Create relationship using node IDs (fastest approach)
-            MATCH (source) WHERE id(source) = source_id
-            MATCH (target) WHERE id(target) = target_id
-            CALL apoc.merge.relationship(source, row.label, {}, row.properties, target) 
-            YIELD rel
-            RETURN row.label AS rel_type, count(rel) AS created_count
+            CALL apoc.cypher.run(
+              'MATCH (source:' + row.source_label + ' {name: $source_name, content_hash: $source_content_hash}) 
+               MATCH (target:' + row.target_label + ' {name: $target_name, content_hash: $target_content_hash})
+               MERGE (source)-[r:' + row.label + ']->(target)
+               SET r += $properties
+               RETURN row.label as rel_type, 1 as created_count',
+              {source_name: row.source_name, source_content_hash: row.source_content_hash,
+               target_name: row.target_name, target_content_hash: row.target_content_hash,
+               properties: row.properties, label: row.label}
+            ) YIELD value
+            RETURN value.rel_type AS rel_type, value.created_count AS created_count
         """
         
         # Split into chunks
@@ -836,10 +806,8 @@ class COMStore(Neo4jPropertyGraphStore):
             WHERE p IS NOT NULL
             MERGE (c)-[r:INHERITS]->(p)
             SET r.versions = apoc.coll.toSet(coalesce(r.versions, []) + [lbl IN labels(c) WHERE lbl STARTS WITH 'version_'])
-            // Store parent content_hash for precise matching in inherited methods
-            WITH c, COLLECT(p.content_hash) AS parentContentHashes
-            SET c.NEW_INHERITED_ENTITIES = parentContentHashes
-            // Clear the INHERITS property array after processing
+            WITH c, COLLECT({name: p.name, content_hash: p.content_hash}) AS parentInfo
+            SET c.NEW_INHERITED_ENTITIES = [p IN parentInfo | p.name + '::' + p.content_hash]
             REMOVE c.INHERITS
             """
         )
@@ -946,46 +914,49 @@ class COMStore(Neo4jPropertyGraphStore):
         Args:
             module_name (str): The name of the module.
         """
-        # Set the shortest call paths for all nodes in the module tree (recursively)
         set_shortest_call_paths_query = (
             """
-// Phase 1: Find all nodes reachable from the root module via structural relationships.
 MATCH (end:MODULE|FUNCTION|CLASS|METHOD)<-[:HAS_SUBMODULE|HAS_CLASS|HAS_METHOD|HAS_FUNCTION|EXPOSES|PUBLISHES*]-(root:ROOT_MODULE {name: $module_name})
 WITH root, collect(end) AS endNodes
 
-// Phase 2: Use spanningTree to get ordered paths from the root outwards (BFS).
 CALL apoc.path.spanningTree(root, {
     relationshipFilter: 'HAS_SUBMODULE>|HAS_CLASS>|HAS_METHOD>|HAS_FUNCTION>|EXPOSES>|PUBLISHES>',
     endNodes: endNodes
 })
 YIELD path
 
-// Phase 3: Deconstruct the path to get the target and its immediate parent.
 WITH nodes(path) AS nodesInPath
-// Ensure the path has at least a parent and a child.
 WHERE size(nodesInPath) > 1
 WITH
     LAST(nodesInPath) AS targetNode,
     nodesInPath[-2] AS parentNode
 
-// Phase 4: Only process nodes that do not have a path set yet.
 WHERE targetNode.shortest_call_path IS NULL
 
-// Phase 5: Set the shortest_call_path based on the parent's state.
-// This is the core logic implementing your request.
 SET targetNode.shortest_call_path =
-    // COALESCE returns the first non-null value. This elegantly handles the two cases.
-    // Case 1: If the parent has a path, use it.
-    // Case 2: If the parent's path is null (i.e., it's the root), use its name property.
-    COALESCE(parentNode.shortest_call_path, parentNode.name) + '.' + targetNode.__name__
+    CASE
+        WHEN targetNode.__name__ CONTAINS '.'
+        THEN targetNode.__name__
+        ELSE COALESCE(parentNode.shortest_call_path, parentNode.name) + '.' + targetNode.__name__
+    END
 
-// Phase 6: Return the count of nodes that were updated.
 RETURN count(targetNode) AS numPathsSet
 """
         )
-        numPathsSet = self.structured_query(set_shortest_call_paths_query, {"module_name": module_name})[0]["numPathsSet"]
-        while numPathsSet > 0:
-            numPathsSet = self.structured_query(set_shortest_call_paths_query, {"module_name": module_name})[0]["numPathsSet"]
+        iteration = 0
+        total_updated = 0
+        while True:
+            iteration += 1
+            result = self.structured_query(set_shortest_call_paths_query, {"module_name": module_name})
+            num_paths_set = result[0]["numPathsSet"] if result else 0
+            total_updated += num_paths_set
+            
+            if num_paths_set == 0:
+                break
+        
+        if total_updated > 0:
+            retry_info = f" (completed in {iteration} iteration{'s' if iteration > 1 else ''})" if iteration > 1 else ""
+            logging.info(f"Set shortest_call_path for {total_updated} nodes in module {module_name}{retry_info}")
 
     def _handle_inherited_methods(self):
         """
@@ -1001,39 +972,27 @@ RETURN count(targetNode) AS numPathsSet
         """
         handle_inheritance_query = (
             """
-// Phase 1: Find classes marked for an inheritance update.
 MATCH (child:CLASS)
 WHERE child.NEW_INHERITED_ENTITIES IS NOT NULL
-WITH child, child.NEW_INHERITED_ENTITIES AS parentContentHashes
+WITH child, child.NEW_INHERITED_ENTITIES AS parentInfoList
 
-// Clean up the trigger property to prevent re-processing.
 REMOVE child.NEW_INHERITED_ENTITIES
 
-// Phase 2: Iterate through all methods from all parents.
-// It is CRITICAL that `parentContentHashes` is sorted in the correct Method Resolution Order (MRO).
-// Using content_hash ensures we match the exact version of the parent class.
-WITH child, parentContentHashes
-UNWIND parentContentHashes AS parentContentHash
-MATCH (parent:CLASS {content_hash: parentContentHash})-[:HAS_METHOD]->(member)
+WITH child, parentInfoList
+UNWIND parentInfoList AS parentInfo
+WITH child, split(parentInfo, '::') AS parts
+WITH child, parts[0] AS parentName, parts[1] AS parentContentHash
+MATCH (parent:CLASS {name: parentName, content_hash: parentContentHash})-[:HAS_METHOD]->(member)
 
-// Phase 3: Filter the methods based on the correct inheritance and override rules.
 WHERE
-    // Rule 1: NEVER inherit private methods.
-    // This is the simplest and first check.
     NOT 'PRIVATE' IN labels(member)
 
-    // AND the method must not be overridden according to its type (Dunder vs. Public).
     AND (
-        // Rule 2: DUNDER methods are overridden by NAME ONLY.
-        // Inherit if it's a Dunder AND the child has no method with the same name.
         (
             'DUNDER' IN labels(member) AND
             NOT EXISTS { MATCH (child)-[:HAS_METHOD]->({__name__: member.__name__}) }
         )
         OR
-        // Rule 3: PUBLIC/PROTECTED methods are overridden by NAME AND SIGNATURE.
-        // Inherit if it's NOT a Dunder AND the child has no method with the same name and signature.
-        // Now we need to traverse to the SIGNATURE property entity to get the signature value.
         (
             NOT 'DUNDER' IN labels(member) AND
             NOT EXISTS { 
@@ -1044,36 +1003,28 @@ WHERE
         )
     )
 
-// Phase 4: Collect the valid inheritable methods and create the links.
-// The DISTINCT is important to handle cases where multiple parents might offer the same valid method.
-// Due to MRO, we will later refine this to only take the first one found.
 WITH child, collect(DISTINCT member) AS members
 UNWIND members AS member
 MERGE (child)-[r:HAS_METHOD]->(member)
 SET r.versions = apoc.coll.toSet(coalesce(r.versions, []) + [lbl IN labels(child) WHERE lbl STARTS WITH 'version_'])
 
-// Phase 5: Report the results and mark children for propagation.
-// If we added new methods to a child that is also a parent, mark its children for re-processing.
 WITH DISTINCT child, collect(member) AS newMembers
 WHERE size(newMembers) > 0
 WITH child, newMembers
 OPTIONAL MATCH (grandchild:CLASS)-[:INHERITS]->(child)
 WHERE grandchild IS NOT NULL
-WITH child, newMembers, collect(DISTINCT child.content_hash) AS childContentHashes, collect(DISTINCT grandchild) AS grandchildren
-// Set NEW_INHERITED_ENTITIES on grandchildren to trigger propagation
+WITH child, newMembers, [child.name + '::' + child.content_hash] AS childInfo, collect(DISTINCT grandchild) AS grandchildren
 FOREACH (gc IN grandchildren |
     SET gc.NEW_INHERITED_ENTITIES = CASE 
-        WHEN gc.NEW_INHERITED_ENTITIES IS NULL THEN childContentHashes
-        ELSE gc.NEW_INHERITED_ENTITIES + childContentHashes
+        WHEN gc.NEW_INHERITED_ENTITIES IS NULL THEN childInfo
+        ELSE gc.NEW_INHERITED_ENTITIES + childInfo
     END
 )
 RETURN child.name AS ChildClass, size(newMembers) AS TotalParentMembersLabeled, size(grandchildren) AS GrandchildrenMarked
             """
         )
         
-        # Run iteratively until no more inheritance propagation occurs
-        # This handles inheritance chains: A -> B -> C -> D...
-        max_iterations = 100  # Safety limit to prevent infinite loops
+        max_iterations = 100
         iteration = 0
         
         while iteration < max_iterations:
@@ -1081,11 +1032,9 @@ RETURN child.name AS ChildClass, size(newMembers) AS TotalParentMembersLabeled, 
             result = self.structured_query(handle_inheritance_query)
             
             if not result or all(r.get('TotalParentMembersLabeled', 0) == 0 for r in result):
-                # No new methods inherited, we've reached a fixed point
                 logging.info(f"Inheritance propagation completed after {iteration} iteration(s)")
                 break
             
-            # Log progress
             total_inherited = sum(r.get('TotalParentMembersLabeled', 0) for r in result)
             total_marked = sum(r.get('GrandchildrenMarked', 0) for r in result)
             logging.info(f"Iteration {iteration}: {total_inherited} methods inherited, {total_marked} grandchildren marked for propagation")
