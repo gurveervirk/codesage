@@ -44,7 +44,7 @@ class COMStore(Neo4jPropertyGraphStore):
     embedding_node_property: str
     text_node_property: str
     retrieval_query: str
-    batch_size: int = 5000
+    batch_size: int = 1000
     _support_metadata_filter: bool = PrivateAttr()
     _is_enterprise: bool = PrivateAttr()
     custom_fts_indices: Any = []
