@@ -144,19 +144,41 @@ def get_library_versions(
     return result
 
 
-def create_venv(venv_path: Path) -> bool:
+def create_venv(venv_path: Path, use_conda: bool = False) -> bool:
     """
     Create a virtual environment using Python 3.9.
     
     Args:
         venv_path: Path where the venv should be created
+        use_conda: If True, try to use conda to create the environment
     
     Returns:
         True if successful, False otherwise
     """
     try:
+        # If conda is requested or available, try to use it
+        if use_conda:
+            try:
+                # Check if conda is available
+                conda_result = subprocess.run(
+                    ["conda", "--version"],
+                    capture_output=True,
+                    text=True
+                )
+                if conda_result.returncode == 0:
+                    logger.info(f"Using conda to create environment with Python 3.9")
+                    subprocess.run(
+                        ["conda", "create", "-p", str(venv_path), "python=3.9", "-y"],
+                        check=True,
+                        capture_output=True
+                    )
+                    logger.info(f"Conda environment created at {venv_path}")
+                    return True
+            except (subprocess.CalledProcessError, FileNotFoundError) as e:
+                logger.warning(f"Conda environment creation failed, falling back to venv: {e}")
+        
         # Try to find Python 3.9 executable
-        python39_candidates = ["python3.9", "python3"]
+        python39_candidates = ["python3.9", "python3", "python"]
         python39_exe = None
         
         for candidate in python39_candidates:
@@ -176,7 +198,7 @@ def create_venv(venv_path: Path) -> bool:
                 continue
         
         if not python39_exe:
-            logger.error("Python 3.9 not found. Please install Python 3.9")
+            logger.error("Python 3.9 not found. Please install Python 3.9 or use --use-conda flag")
             logger.error("Tried: " + ", ".join(python39_candidates))
             return False
         
@@ -193,11 +215,17 @@ def create_venv(venv_path: Path) -> bool:
 
 
 def get_venv_python(venv_path: Path) -> Path:
-    """Get the path to the Python executable in the venv."""
+    """Get the path to the Python executable in the venv or conda env."""
     if sys.platform == "win32":
-        return venv_path / "Scripts" / "python.exe"
+        # Try conda path first, then venv path
+        conda_python = venv_path / "python.exe"
+        venv_python = venv_path / "Scripts" / "python.exe"
+        return conda_python if conda_python.exists() else venv_python
     else:
-        return venv_path / "bin" / "python"
+        # Try conda path first, then venv path
+        conda_python = venv_path / "bin" / "python"
+        venv_python = venv_path / "bin" / "python"
+        return conda_python if conda_python.exists() else venv_python
 
 
 def install_package(venv_path: Path, package_spec: str) -> bool:
@@ -356,6 +384,11 @@ def check_version_exists(
         True if the version exists, False otherwise
     """
     try:
+        # Check if COMStore is available
+        if COMStore is None:
+            logger.error("COMStore not available, cannot check if version exists")
+            return False
+        
         # Use global COMStore instance
         store = init_com_store(neo4j_config)
         
@@ -380,6 +413,8 @@ def check_version_exists(
         
     except Exception as e:
         logger.error(f"Error checking if {library}=={version} exists: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 
@@ -435,7 +470,8 @@ def process_library_version(
     work_dir: Path,
     codesage_root: Path,
     neo4j_config: Dict,
-    keep_venv: bool = False
+    keep_venv: bool = False,
+    use_conda: bool = False
 ) -> bool:
     """
     Process a single library version.
@@ -448,7 +484,7 @@ def process_library_version(
         codesage_root: Path to CodeSage root
         neo4j_config: Neo4j configuration
         keep_venv: Whether to keep the venv after processing
-        skip_existing: Whether to skip versions that already exist in Neo4j
+        use_conda: Whether to use conda for environment creation
     
     Returns:
         True if successful, False otherwise
@@ -457,7 +493,7 @@ def process_library_version(
     
     try:
         # Step 1: Create virtual environment
-        if not create_venv(venv_path):
+        if not create_venv(venv_path, use_conda=use_conda):
             return False
         
         # Step 2: Install the library
@@ -565,6 +601,12 @@ Examples:
         '--force',
         action='store_true',
         help='Force processing even if version exists (overrides --skip-existing)'
+    )
+    
+    parser.add_argument(
+        '--use-conda',
+        action='store_true',
+        help='Use conda to create virtual environments instead of venv'
     )
     
     args = parser.parse_args()
@@ -725,7 +767,8 @@ Examples:
             work_dir=work_dir,
             codesage_root=codesage_root,
             neo4j_config=neo4j_config,
-            keep_venv=args.keep_venv
+            keep_venv=args.keep_venv,
+            use_conda=args.use_conda
         ):
             successful += 1
         else:
