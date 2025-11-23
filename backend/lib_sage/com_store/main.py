@@ -605,7 +605,7 @@ class COMStore(Neo4jPropertyGraphStore):
         
         upsert_rel_query = """
             UNWIND $data AS row
-            CALL apoc.cypher.run(
+            CALL apoc.cypher.doIt(
               'MATCH (source:' + row.source_label + ' {name: $source_name, content_hash: $source_content_hash}) 
                MATCH (target:' + row.target_label + ' {name: $target_name, content_hash: $target_content_hash})
                CALL apoc.merge.relationship(source, $label, {}, $properties, target) YIELD rel
