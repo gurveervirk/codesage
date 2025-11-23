@@ -608,7 +608,7 @@ class COMStore(Neo4jPropertyGraphStore):
                MATCH (target:' + row.target_label + ' {name: $target_name, content_hash: $target_content_hash})
                MERGE (source)-[r:' + row.label + ']->(target)
                SET r += $properties
-               RETURN row.label as rel_type, 1 as created_count',
+               RETURN $label as rel_type, 1 as created_count',
               {source_name: row.source_name, source_content_hash: row.source_content_hash,
                target_name: row.target_name, target_content_hash: row.target_content_hash,
                properties: row.properties, label: row.label}
