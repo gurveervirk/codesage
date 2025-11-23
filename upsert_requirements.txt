@@ -1,0 +1,5 @@
+python-dotenv
+pydantic
+neo4j
+llama-index-core
+llama-index-graph-stores-neo4j
