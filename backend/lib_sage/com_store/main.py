@@ -606,8 +606,7 @@ class COMStore(Neo4jPropertyGraphStore):
             CALL apoc.cypher.run(
               'MATCH (source:' + row.source_label + ' {name: $source_name, content_hash: $source_content_hash}) 
                MATCH (target:' + row.target_label + ' {name: $target_name, content_hash: $target_content_hash})
-               MERGE (source)-[r:' + row.label + ']->(target)
-               SET r += $properties
+               CALL apoc.merge.relationship(source, $label, {}, $properties, target) YIELD rel
                RETURN $label as rel_type, 1 as created_count',
               {source_name: row.source_name, source_content_hash: row.source_content_hash,
                target_name: row.target_name, target_content_hash: row.target_content_hash,
