@@ -15,10 +15,13 @@ try:
     from typing import get_overloads
 except ImportError:
     from typing_extensions import get_overloads
-from pathlib import Path
 import importlib.metadata
 import inspect
 import importlib
+try:
+    from importlib.metadata import packages_distributions
+except ImportError:
+    packages_distributions = None
 import importlib.resources
 import importlib.util
 import re
@@ -1491,13 +1494,25 @@ def get_top_level_modules_for_package(package_name: str) -> List[str]:
         logging.debug(f"Package name {package_name} is not directly importable, will check distribution metadata")
     
     # Check distribution metadata for all matching packages
-    mapping = importlib.metadata.packages_distributions()
-
-    for top_module, distributions in mapping.items():
-        # Check if package_name is in any of the distributions for this top-level module
-        if package_name in distributions:
-            if top_module not in top_level_modules:
-                top_level_modules.append(top_module)
+    # Use packages_distributions if available (Python 3.10+), otherwise use fallback
+    if packages_distributions is not None:
+        mapping = packages_distributions()
+        
+        for top_module, distributions in mapping.items():
+            # Check if package_name is in any of the distributions for this top-level module
+            if package_name in distributions:
+                if top_module not in top_level_modules:
+                    top_level_modules.append(top_module)
+    else:
+        try:
+            dist = importlib.metadata.distribution(package_name)
+            if dist.read_text('top_level.txt'):
+                for line in dist.read_text('top_level.txt').strip().split('\n'):
+                    top_module = line.strip()
+                    if top_module and top_module not in top_level_modules:
+                        top_level_modules.append(top_module)
+        except Exception as e:
+            logging.debug(f"Could not read top_level.txt for {package_name}: {e}")
 
     if not top_level_modules:
         logging.warning(f"No top-level modules found for package {package_name}")
