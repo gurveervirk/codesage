@@ -44,6 +44,7 @@ class COMStore(Neo4jPropertyGraphStore):
     embedding_node_property: str
     text_node_property: str
     retrieval_query: str
+    batch_size: int = 5000
     _support_metadata_filter: bool = PrivateAttr()
     _is_enterprise: bool = PrivateAttr()
     custom_fts_indices: Any = []
@@ -461,7 +462,7 @@ class COMStore(Neo4jPropertyGraphStore):
         Args:
             nodes: List of Entity objects to upsert
         """
-        CHUNK_SIZE = 1000
+        CHUNK_SIZE = self.batch_size
         
         def _serialize_nested_collections(properties: Dict[str, Any]) -> Dict[str, Any]:
             serialized_props = {}
@@ -508,6 +509,7 @@ class COMStore(Neo4jPropertyGraphStore):
             ON CREATE SET e += apoc.map.clean(row.properties, [], [])
             WITH e, row
             CALL apoc.create.addLabels(e, row.labels) YIELD node
+            RETURN count(node) AS upserted_count
         """
         
         # Split into chunks
@@ -544,7 +546,7 @@ class COMStore(Neo4jPropertyGraphStore):
         Args:
             relations: List of Relationship objects to upsert
         """
-        CHUNK_SIZE = 1000
+        CHUNK_SIZE = self.batch_size
         
         def _serialize_nested_collections(properties: Dict[str, Any]) -> Dict[str, Any]:
             serialized_props = {}
