@@ -26,19 +26,20 @@ from dotenv import load_dotenv
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / 'backend'))
 
-try:
-    from lib_sage.com_store import COMStore as _COMStore
-    COMStore = _COMStore
-except ImportError:
-    COMStore = None  # Placeholder if import fails
-    _COMStore = None
-
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+try:
+    from lib_sage.com_store import COMStore as _COMStore
+    COMStore = _COMStore
+except ImportError:
+    COMStore = None  # Placeholder if import fails
+    _COMStore = None
+    logger.warning("COMStore import failed, functionality will be limited. Error: ", exc_info=True)
 
 # Global COMStore instance
 _com_store = None
@@ -384,11 +385,6 @@ def check_version_exists(
         True if the version exists, False otherwise
     """
     try:
-        # Check if COMStore is available
-        if COMStore is None:
-            logger.error("COMStore not available, cannot check if version exists")
-            return False
-        
         # Use global COMStore instance
         store = init_com_store(neo4j_config)
         
