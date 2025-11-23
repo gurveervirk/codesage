@@ -98,7 +98,6 @@ markupsafe
 marshmallow
 matplotlib
 matplotlib-inline
-mcp
 mpmath
 multidict
 mypy-extensions
