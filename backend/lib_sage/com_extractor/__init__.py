@@ -34,7 +34,7 @@ import builtins
 import typing
 import logging
 import sys
-import json
+from tokenize import TokenError
 
 # --------------------
 # Helpers
@@ -768,8 +768,39 @@ def get_fully_qualified_name(cls):
 def safe_get_source(obj) -> str:
     try:
         return inspect.getsource(obj)
-    except (OSError, TypeError):
-        # Normalize repr to remove memory addresses
+    except (OSError, TypeError, TokenError) as e:
+        # TokenError can occur when the tokenizer fails to parse the source
+        # (e.g., EOF in multi-line string, which can happen with some Python 3.13 edge cases)
+        # Try using AST as fallback to get the source
+        if isinstance(e, TokenError):
+            logging.debug(f"TokenError getting source for {obj}, trying AST fallback: {e}")
+            try:
+                # Get the file containing the object
+                source_file = inspect.getsourcefile(obj)
+                if source_file:
+                    # Read the entire file
+                    with open(source_file, 'r', encoding='utf-8') as f:
+                        full_source = f.read()
+                    
+                    # Parse with AST
+                    tree = ast.parse(full_source, filename=source_file)
+                    
+                    # Find the matching node
+                    obj_name = getattr(obj, '__name__', None)
+                    if obj_name:
+                        for node in ast.walk(tree):
+                            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                                if node.name == obj_name:
+                                    # Extract source from the node's line numbers
+                                    lines = full_source.splitlines()
+                                    if hasattr(node, 'lineno') and hasattr(node, 'end_lineno'):
+                                        # Get lines from lineno-1 to end_lineno (1-indexed to 0-indexed)
+                                        source_lines = lines[node.lineno - 1:node.end_lineno]
+                                        return '\n'.join(source_lines)
+            except Exception as ast_error:
+                logging.debug(f"AST fallback also failed: {ast_error}")
+        
+        # Final fallback: normalize repr to remove memory addresses
         return f"# Representation:\n{_normalize_signature(repr(obj))}"
     
 def safe_get_docstring(obj) -> str:
@@ -1413,7 +1444,7 @@ def get_typed_signature(func, include_overloads: bool = True):
                     runtime_ns[missing_name] = missing_name
             except TypeError as e:
                 error_msg = str(e)
-                if "not subscriptable" in error_msg:
+                if "not subscriptable" in error_msg or "unsupported operand type" in error_msg:
                     logging.warning(f'Skipping type hints due to TypeError (likely malformed annotation): {e}')
                     return str(sig)  # Fallback to raw signature
                 # Re-raise other TypeErrors
