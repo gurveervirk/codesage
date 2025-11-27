@@ -33,6 +33,8 @@ import types
 import builtins
 import typing
 import logging
+import sys
+import json
 
 # --------------------
 # Helpers
@@ -2503,7 +2505,7 @@ def process_module(module_name: str, version: Optional[str] = None, include_exte
 
     return entities, relations, other_relations
 
-def process_package(package_name: str, version: Optional[str] = None):
+def process_package(package_name: str, version: Optional[str] = None, install_method: str = "pip"):
     """
     Process all top-level modules associated with a package name.
     
@@ -2514,6 +2516,7 @@ def process_package(package_name: str, version: Optional[str] = None):
     Args:
         package_name (str): The name of the package.
         version (Optional[str]): Version of the package.
+        install_method (str): Method to use for installation: 'pip', 'uv', or 'conda'. Default is 'pip'.
         
     Returns:
         Tuple[List[Entity], List[Relationship], Dict]: Combined entities, relations, and other relations
@@ -2524,18 +2527,62 @@ def process_package(package_name: str, version: Optional[str] = None):
     top_level_modules = get_top_level_modules_for_package(pkg_name)
 
     if not top_level_modules:
-        logging.info(f"Package '{pkg_name}' not found. Attempting to install...")
+        logging.info(f"Package '{pkg_name}' not found. Attempting to install using {install_method}...")
         try:
-            subprocess.run(["pip", "install", pkg_name], check=True)
-            logging.info(f"Package '{pkg_name}' installed successfully.")
+            # Install specific version if provided, otherwise latest
+            install_spec = f"{pkg_name}=={version}" if version else pkg_name
+            
+            # Determine install command based on method
+            if install_method == "uv":
+                install_cmd = ["uv", "pip", "install", install_spec]
+            elif install_method == "conda":
+                # For conda, use conda install with -c conda-forge or just the package name
+                if version:
+                    install_cmd = ["conda", "install", "-y", f"{pkg_name}={version}"]
+                else:
+                    install_cmd = ["conda", "install", "-y", pkg_name]
+            else:  # pip (default)
+                install_cmd = [sys.executable, "-m", "pip", "install", install_spec]
+            
+            subprocess.run(install_cmd, check=True)
+            logging.info(f"Package '{install_spec}' installed successfully using {install_method}.")
         except subprocess.CalledProcessError as e:
-            logging.error(f"Failed to install package '{pkg_name}': {e}")
+            logging.error(f"Failed to install package '{pkg_name}' using {install_method}: {e}")
             return [], [], {"INHERITS": [], "EXPOSES": [], "PUBLISHES": []}
     
     top_level_modules = get_top_level_modules_for_package(pkg_name)
     if not top_level_modules:
         logging.error(f"Package '{pkg_name}' not found after installation.")
         return [], [], {"INHERITS": [], "EXPOSES": [], "PUBLISHES": []}
+    
+    # Verify installed version matches requested version
+    if version:
+        try:
+            installed_version = importlib.metadata.version(pkg_name)
+            if installed_version != version:
+                logging.warning(f"Version mismatch: requested {version}, but found {installed_version}")
+                logging.info(f"Attempting to install correct version using {install_method}...")
+                install_spec = f"{pkg_name}=={version}"
+                
+                # Determine reinstall command based on method
+                if install_method == "uv":
+                    reinstall_cmd = ["uv", "pip", "install", "--force-reinstall", install_spec]
+                elif install_method == "conda":
+                    reinstall_cmd = ["conda", "install", "-y", "--force-reinstall", f"{pkg_name}={version}"]
+                else:  # pip
+                    reinstall_cmd = [sys.executable, "-m", "pip", "install", "--force-reinstall", install_spec]
+                
+                subprocess.run(reinstall_cmd, check=True)
+                # Verify again after reinstall
+                installed_version = importlib.metadata.version(pkg_name)
+                if installed_version != version:
+                    logging.error(f"Failed to install version {version}. Current version: {installed_version}")
+                    return [], [], {"INHERITS": [], "EXPOSES": [], "PUBLISHES": []}
+                logging.info(f"Successfully installed {pkg_name}=={version}")
+        except importlib.metadata.PackageNotFoundError:
+            logging.error(f"Package '{pkg_name}' metadata not found after installation")
+            return [], [], {"INHERITS": [], "EXPOSES": [], "PUBLISHES": []}
+            return [], [], {"INHERITS": [], "EXPOSES": [], "PUBLISHES": []}
     
     # Process all top-level modules and combine results
     all_entities: List[Entity] = []
@@ -2572,80 +2619,3 @@ def process_package(package_name: str, version: Optional[str] = None):
                 f"{len(all_entities)} total entities, {len(all_relations)} total relations")
     
     return all_entities, all_relations, combined_other_relations
-
-
-if __name__ == "__main__":
-    import argparse
-    import sys
-    
-    parser = argparse.ArgumentParser(
-        description="Process Python packages or modules to extract entities and relationships."
-    )
-    parser.add_argument(
-        "mode",
-        choices=["package", "module"],
-        help="Processing mode: 'package' to process a package (all top-level modules), 'module' to process a single module"
-    )
-    parser.add_argument(
-        "name",
-        help="Name of the package or module to process"
-    )
-    parser.add_argument(
-        "--version",
-        "-v",
-        default=None,
-        help="Version of the package/module (optional)"
-    )
-    parser.add_argument(
-        "--log-level",
-        default="INFO",
-        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
-        help="Logging level (default: INFO)"
-    )
-    parser.add_argument(
-        "--no-external-parents",
-        action="store_true",
-        help="Disable processing of external parent classes (only for module mode)"
-    )
-    
-    args = parser.parse_args()
-    
-    # Configure logging
-    logging.basicConfig(
-        level=getattr(logging, args.log_level),
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-    )
-    
-    try:
-        if args.mode == "package":
-            logging.info(f"Processing package: {args.name} (version: {args.version or 'latest'})")
-            entities, relations, other_relations = process_package(args.name, args.version)
-        else:  # module
-            logging.info(f"Processing module: {args.name} (version: {args.version or 'latest'})")
-            include_external = not args.no_external_parents
-            entities, relations, other_relations = process_module(
-                args.name, args.version, include_external_parents=include_external
-            )
-        
-        # Print summary
-        print(f"\n{'='*60}")
-        print(f"Processing completed successfully!")
-        print(f"{'='*60}")
-        print(f"Mode: {args.mode}")
-        print(f"Name: {args.name}")
-        print(f"Version: {args.version or 'latest'}")
-        print(f"\nResults:")
-        print(f"  - Entities: {len(entities)}")
-        print(f"  - Relations: {len(relations)}")
-        print(f"  - INHERITS: {len(other_relations.get('INHERITS', []))}")
-        print(f"  - EXPOSES: {len(other_relations.get('EXPOSES', []))}")
-        print(f"  - PUBLISHES: {len(other_relations.get('PUBLISHES', []))}")
-        print(f"{'='*60}\n")
-        
-        sys.exit(0)
-        
-    except Exception as e:
-        logging.error(f"Error processing {args.mode} '{args.name}': {e}")
-        logging.error(traceback.format_exc())
-        print(f"\nError: {e}", file=sys.stderr)
-        sys.exit(1)

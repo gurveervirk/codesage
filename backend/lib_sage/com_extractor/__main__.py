@@ -43,8 +43,25 @@ def main():
         action="store_true",
         help="Disable processing of external parent classes (only for module mode)"
     )
+    parser.add_argument(
+        "--use-uv",
+        action="store_true",
+        help="Use uv for package installation instead of pip"
+    )
+    parser.add_argument(
+        "--use-conda",
+        action="store_true",
+        help="Use conda for package installation instead of pip"
+    )
     
     args = parser.parse_args()
+    
+    # Determine install method
+    if args.use_uv and args.use_conda:
+        print("Error: Cannot specify both --use-uv and --use-conda", file=sys.stderr)
+        sys.exit(1)
+    
+    install_method = "uv" if args.use_uv else "conda" if args.use_conda else "pip"
     
     # Configure logging
     logging.basicConfig(
@@ -54,8 +71,8 @@ def main():
     
     try:
         if args.mode == "package":
-            logging.info(f"Processing package: {args.name} (version: {args.version or 'latest'})")
-            entities, relations, other_relations = process_package(args.name, args.version)
+            logging.info(f"Processing package: {args.name} (version: {args.version or 'latest'}) using {install_method}")
+            entities, relations, other_relations = process_package(args.name, args.version, install_method=install_method)
         else:  # module
             logging.info(f"Processing module: {args.name} (version: {args.version or 'latest'})")
             include_external = not args.no_external_parents
