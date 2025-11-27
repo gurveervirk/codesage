@@ -145,13 +145,14 @@ def get_library_versions(
     return result
 
 
-def create_venv(venv_path: Path, use_conda: bool = False) -> bool:
+def create_venv(venv_path: Path, use_conda: bool = False, use_available_python: bool = False) -> bool:
     """
-    Create a virtual environment using Python 3.9.
+    Create a virtual environment using Python 3.9 (or available Python version).
     
     Args:
         venv_path: Path where the venv should be created
         use_conda: If True, try to use conda to create the environment
+        use_available_python: If True, use any available Python version instead of requiring 3.9
     
     Returns:
         True if successful, False otherwise
@@ -178,9 +179,10 @@ def create_venv(venv_path: Path, use_conda: bool = False) -> bool:
             except (subprocess.CalledProcessError, FileNotFoundError) as e:
                 logger.warning(f"Conda environment creation failed, falling back to venv: {e}")
         
-        # Try to find Python 3.9 executable
+        # Try to find Python 3.9 executable (or any Python if use_available_python is True)
         python39_candidates = ["python3.9", "python3", "python"]
         python39_exe = None
+        found_version = None
         
         for candidate in python39_candidates:
             try:
@@ -191,15 +193,26 @@ def create_venv(venv_path: Path, use_conda: bool = False) -> bool:
                     check=True
                 )
                 version_output = result.stdout.strip()
-                if "Python 3.9" in version_output:
+                
+                # If use_available_python is True, accept any Python version
+                if use_available_python:
                     python39_exe = candidate
+                    found_version = version_output
+                    logger.info(f"Found Python: {version_output}")
+                    break
+                elif "Python 3.9" in version_output:
+                    python39_exe = candidate
+                    found_version = version_output
                     logger.info(f"Found Python 3.9: {version_output}")
                     break
             except (subprocess.CalledProcessError, FileNotFoundError):
                 continue
         
         if not python39_exe:
-            logger.error("Python 3.9 not found. Please install Python 3.9 or use --use-conda flag")
+            if use_available_python:
+                logger.error("No Python executable found.")
+            else:
+                logger.error("Python 3.9 not found. Please install Python 3.9, use --use-conda, or use --use-available-python flag")
             logger.error("Tried: " + ", ".join(python39_candidates))
             return False
         
@@ -467,7 +480,8 @@ def process_library_version(
     codesage_root: Path,
     neo4j_config: Dict,
     keep_venv: bool = False,
-    use_conda: bool = False
+    use_conda: bool = False,
+    use_available_python: bool = False
 ) -> bool:
     """
     Process a single library version.
@@ -481,6 +495,7 @@ def process_library_version(
         neo4j_config: Neo4j configuration
         keep_venv: Whether to keep the venv after processing
         use_conda: Whether to use conda for environment creation
+        use_available_python: Whether to use any available Python version instead of requiring 3.9
     
     Returns:
         True if successful, False otherwise
@@ -489,7 +504,7 @@ def process_library_version(
     
     try:
         # Step 1: Create virtual environment
-        if not create_venv(venv_path, use_conda=use_conda):
+        if not create_venv(venv_path, use_conda=use_conda, use_available_python=use_available_python):
             return False
         
         # Step 2: Install the library
@@ -603,6 +618,12 @@ Examples:
         '--use-conda',
         action='store_true',
         help='Use conda to create virtual environments instead of venv'
+    )
+    
+    parser.add_argument(
+        '--use-available-python',
+        action='store_true',
+        help='Use any available Python version instead of requiring Python 3.9 (useful when 3.9 is not installed)'
     )
     
     args = parser.parse_args()
@@ -764,7 +785,8 @@ Examples:
             codesage_root=codesage_root,
             neo4j_config=neo4j_config,
             keep_venv=args.keep_venv,
-            use_conda=args.use_conda
+            use_conda=args.use_conda,
+            use_available_python=args.use_available_python
         ):
             successful += 1
         else:

@@ -1410,12 +1410,25 @@ def get_typed_signature(func, include_overloads: bool = True):
                 type_hints = get_type_hints(target_for_hints, globalns=globalns, localns=localns)
                 break
             except AttributeError as e:
-                # Simplified recovery: do not try to discover/import; just attach a Literal placeholder for the missing attribute
+                # In Python 3.9+, get_type_hints can raise AttributeError when evaluating forward refs
+                # e.g., "'str' object has no attribute 'TestCase'" during forward ref evaluation
+                error_msg = str(e)
+                
+                # Try to extract the attribute name from the error message
+                # Format: "'<type>' object has no attribute '<attr>'"
                 missing_attr = getattr(e, 'name', None)
                 base_obj = getattr(e, 'obj', None)
+                
+                # If we can't get name/obj from attributes, try parsing the error message
                 if missing_attr is None or base_obj is None:
-                    # If we can't identify target object and attribute, propagate the error
+                    # Check if this is a forward ref evaluation error
+                    if "object has no attribute" in error_msg:
+                        # This is likely a forward ref issue, just skip type hints
+                        logging.warning(f'Skipping type hints due to AttributeError during forward ref evaluation: {e}')
+                        return str(sig)  # Fallback to raw signature
+                    # Otherwise propagate the error
                     raise
+                
                 try:
                     base_name = getattr(base_obj, '__name__', base_obj.__class__.__name__)
                 except Exception:
