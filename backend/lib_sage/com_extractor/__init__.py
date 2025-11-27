@@ -2599,7 +2599,7 @@ def process_package(package_name: str, version: Optional[str] = None, install_me
                 if install_method == "uv":
                     reinstall_cmd = ["uv", "pip", "install", "--force-reinstall", install_spec]
                 elif install_method == "conda":
-                    reinstall_cmd = ["conda", "install", "-y", "--force-reinstall", f"{pkg_name}={version}"]
+                    reinstall_cmd = ["conda", "install", "-y", "--force-reinstall", f"main::{pkg_name}=={version}"]
                 else:  # pip
                     reinstall_cmd = [sys.executable, "-m", "pip", "install", "--force-reinstall", install_spec]
                 
@@ -2612,7 +2612,6 @@ def process_package(package_name: str, version: Optional[str] = None, install_me
                 logging.info(f"Successfully installed {pkg_name}=={version}")
         except importlib.metadata.PackageNotFoundError:
             logging.error(f"Package '{pkg_name}' metadata not found after installation")
-            return [], [], {"INHERITS": [], "EXPOSES": [], "PUBLISHES": []}
             return [], [], {"INHERITS": [], "EXPOSES": [], "PUBLISHES": []}
     
     # Process all top-level modules and combine results
