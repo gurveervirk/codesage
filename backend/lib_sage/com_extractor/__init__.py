@@ -1370,6 +1370,7 @@ def get_typed_signature(func, include_overloads: bool = True):
             logging.warning(f"Error occurred while ensuring root module is available: {e}")
             pass
 
+        type_hints = {}
         retries = 0
         while retries < 10:
             try:
@@ -1388,15 +1389,33 @@ def get_typed_signature(func, include_overloads: bool = True):
                     base_name = '<unknown>'
                 missing_name = f"{base_name}.{missing_attr}"
                 placeholder = typing.Literal[missing_name]
+                
+                # Only try to set attribute if base_obj has a __dict__ (is a module, class, or instance)
+                # Cannot set attributes on built-in types like str, int, etc.
+                can_set_attr = hasattr(base_obj, '__dict__') or hasattr(type(base_obj), '__dict__')
+                
                 try:
-                    setattr(base_obj, missing_attr, placeholder)
+                    if can_set_attr:
+                        setattr(base_obj, missing_attr, placeholder)
+                    # Always add to namespaces even if we can't set on the object
                     globalns[missing_name] = placeholder
                     localns[missing_name] = placeholder
                     runtime_ns[missing_name] = missing_name
                     logging.info(f"Injected placeholder for missing attribute: {base_name}.{missing_attr} -> Literal['{base_name}.{missing_attr}']")
-                except Exception:
-                    # If we cannot set attribute on the object, re-raise as per requirements
-                    raise
+                except (AttributeError, TypeError) as set_error:
+                    # If we cannot set attribute on the object, just add to namespaces and continue
+                    # This handles cases like frozen classes, built-in types, etc.
+                    logging.debug(f"Could not set attribute on {base_name}, but added to namespaces: {set_error}")
+                    globalns[missing_name] = placeholder
+                    localns[missing_name] = placeholder
+                    runtime_ns[missing_name] = missing_name
+            except TypeError as e:
+                error_msg = str(e)
+                if "not subscriptable" in error_msg:
+                    logging.warning(f'Skipping type hints due to TypeError (likely malformed annotation): {e}')
+                    return str(sig)  # Fallback to raw signature
+                # Re-raise other TypeErrors
+                raise
             except NameError as e:
                 # Skip getting type hints if Name Error is thrown
                 logging.info(f'Skipping getting type hints due to NameError: {e}')
@@ -2344,19 +2363,68 @@ def process_module(module_name: str, version: Optional[str] = None, include_exte
         entities.extend(sub_entities)
         relations.extend(sub_relations)
 
-    # Clean up temporary import properties from root_entity used for decorator resolution
-    if "import_statements" in root_entity.properties:
-        del root_entity.properties["import_statements"]
-    if "import_as_aliases" in root_entity.properties:
-        del root_entity.properties["import_as_aliases"]
-
     # Build mapping from content_hash to entity for lookups
     hash_to_entity: Dict[str, Entity] = {}
     for entity in entities:
         hash_to_entity[entity.content_hash] = entity
+
+    # Process import_statements for all MODULE and ROOT_MODULE entities
+    # to populate import_details property and determine unused imports for EXPOSES
+    for entity in entities:
+        if entity.label not in ("ROOT_MODULE", "MODULE"):
+            continue
+        
+        import_statements = entity.properties.get("import_statements", "")
+        if not import_statements:
+            continue
+        
+        # Process import statements and get imported entities
+        import_details, imported_entities = _process_import_statements(import_statements)
+        
+        if not imported_entities:
+            continue
+        
+        # Determine which imports are unused
+        entity_module_name = entity.name
+        unused_imports = get_unused_imports(entity_module_name, imported_entities)
+        logging.warning(f"Entity {entity.name} has {len(unused_imports)} unused imports out of {len(imported_entities)} imported entities.")
+        used_imports = imported_entities - unused_imports
+        
+        # Update the "used" status in import_details
+        for module_name, module_info in import_details["modules"].items():
+            for entity_info in module_info["entities"]:
+                entity_fqn = entity_info["fqn"]
+                if entity_fqn in used_imports:
+                    entity_info["used"] = True
+                elif entity_fqn in unused_imports:
+                    entity_info["used"] = False
+                    # Add to EXPOSES relationships only for internal unused imports
+                    if entity_fqn.startswith(module_object.__name__ + "."):
+                        # Internal import that's unused -> EXPOSES
+                        import_version = module_info["version"]
+                        import_ref = ExternalEntityRef(name=entity_fqn, version=import_version)
+                        other_relations["EXPOSES"].add((entity.content_hash, import_ref))
+                    else:
+                        # External unused import to be added to PUBLISHES
+                        import_version = module_info["version"]
+                        import_ref = ExternalEntityRef(name=entity_fqn, version=import_version)
+                        other_relations["PUBLISHES"].add((entity.content_hash, import_ref))
+        
+        # Store the processed import details
+        if import_details:
+            entity.properties["import_details"] = import_details
+
+    logging.warning(f"Total EXPOSES before cleaning relations: {len(other_relations['EXPOSES'])}")
+    logging.warning(f"Total PUBLISHES before cleaning relations: {len(other_relations['PUBLISHES'])}")
+
+    # Clean up temporary import properties from root_entity
+    if "import_statements" in root_entity.properties:
+        del root_entity.properties["import_statements"]
+    if "import_as_aliases" in root_entity.properties:
+        del root_entity.properties["import_as_aliases"]
     
-    cleaned_exposed_relations: Set[Tuple[str, ExternalEntityRef]] = set()
-    cleaned_publishes_relations: Set[Tuple[str, ExternalEntityRef]] = set()
+    cleaned_exposed_relations: Set[Tuple[str, ExternalEntityRef]] = set(other_relations["EXPOSES"])
+    cleaned_publishes_relations: Set[Tuple[str, ExternalEntityRef]] = set(other_relations["PUBLISHES"])
 
     # Clean up EXPOSED relations and separate PUBLISHES relations
     for from_hash, to_ref in other_relations["EXPOSES"]:
@@ -2385,7 +2453,12 @@ def process_module(module_name: str, version: Optional[str] = None, include_exte
         elif to_ref.name.startswith(from_entity.name):
             # Normal internal EXPOSES
             cleaned_exposed_relations.add((from_hash, to_ref))
-        # Otherwise, skip this relation (invalid)
+
+    other_relations["EXPOSES"] = cleaned_exposed_relations
+    other_relations["PUBLISHES"] = cleaned_publishes_relations
+
+    logging.warning(f"Total EXPOSES after cleaning relations: {len(other_relations['EXPOSES'])}")
+    logging.warning(f"Total PUBLISHES after cleaning relations: {len(other_relations['PUBLISHES'])}")
 
     # Clean up Alias Imports
     for entity in entities:
@@ -2409,47 +2482,6 @@ def process_module(module_name: str, version: Optional[str] = None, include_exte
                 cleaned_import_aliases.append((key, value))
         if cleaned_import_aliases:
             entity.properties["import_as_aliases"] = cleaned_import_aliases
-
-    # Process import_statements for all MODULE and ROOT_MODULE entities
-    # to populate import_details property and determine unused imports for EXPOSES
-    for entity in entities:
-        if entity.label not in ("ROOT_MODULE", "MODULE"):
-            continue
-        
-        import_statements = entity.properties.get("import_statements", "")
-        if not import_statements:
-            continue
-        
-        # Process import statements and get imported entities
-        import_details, imported_entities = _process_import_statements(import_statements)
-        
-        if not imported_entities:
-            continue
-        
-        # Determine which imports are unused
-        entity_module_name = entity.name
-        unused_imports = get_unused_imports(entity_module_name, imported_entities)
-        used_imports = imported_entities - unused_imports
-        
-        # Update the "used" status in import_details
-        for module_name, module_info in import_details["modules"].items():
-            for entity_info in module_info["entities"]:
-                entity_fqn = entity_info["fqn"]
-                if entity_fqn in used_imports:
-                    entity_info["used"] = True
-                elif entity_fqn in unused_imports:
-                    entity_info["used"] = False
-                    # Add to EXPOSES relationships only for internal unused imports
-                    if entity_fqn.startswith(module_object.__name__ + "."):
-                        # Internal import that's unused -> EXPOSES
-                        import_version = module_info["version"]
-                        import_ref = ExternalEntityRef(name=entity_fqn, version=import_version)
-                        other_relations["EXPOSES"].add((entity.content_hash, import_ref))
-                    # External unused imports are just tracked in properties
-        
-        # Store the processed import details
-        if import_details:
-            entity.properties["import_details"] = import_details
 
     # Process external parent classes recursively if enabled
     if include_external_parents:
