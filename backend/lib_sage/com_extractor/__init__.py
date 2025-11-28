@@ -10,11 +10,7 @@ This module provides utilities to extract entities and relationships from Python
 """
 
 from .models import Entity, Relationship, ExternalEntityRef
-from typing import Any, Dict, List, Set, Tuple, Callable, Optional, get_type_hints, Literal
-try:
-    from typing import get_overloads
-except ImportError:
-    from typing_extensions import get_overloads
+from typing_extensions import get_overloads, Any, Dict, List, Set, Tuple, Callable, Optional, get_type_hints, Literal
 import importlib.metadata
 import inspect
 import importlib
