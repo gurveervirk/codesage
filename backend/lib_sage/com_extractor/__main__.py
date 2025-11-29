@@ -7,8 +7,10 @@ Usage:
 """
 
 import argparse
+import json
 import logging
 import sys
+from pathlib import Path
 
 from . import process_package, process_module
 
@@ -53,6 +55,33 @@ def main():
         action="store_true",
         help="Use conda for package installation instead of pip"
     )
+    parser.add_argument(
+        "--output",
+        "-o",
+        default=None,
+        help="Output JSON file path to save results (default: <name>_extraction.json in current directory)"
+    )
+    parser.add_argument(
+        "--output-dir",
+        default=None,
+        help="Directory to save output file (default: current working directory)"
+    )
+    parser.add_argument(
+        "--log-file",
+        default=None,
+        help="Log file path to save logs (default: <name>_extraction.log in current directory if --log-dir specified)"
+    )
+    parser.add_argument(
+        "--log-dir",
+        default=None,
+        help="Directory to save log file (default: no log file created unless --log-file specified)"
+    )
+    parser.add_argument(
+        "--log-file-level",
+        default="DEBUG",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        help="Minimum logging level for log file (default: DEBUG)"
+    )
     
     args = parser.parse_args()
     
@@ -64,9 +93,51 @@ def main():
     install_method = "uv" if args.use_uv else "conda" if args.use_conda else "pip"
     
     # Configure logging
+    log_handlers = []
+    
+    # Console handler
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setLevel(getattr(logging, args.log_level))
+    console_formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+    console_handler.setFormatter(console_formatter)
+    log_handlers.append(console_handler)
+    
+    # File handler (if requested)
+    if args.log_file or args.log_dir:
+        # Determine log file path
+        if args.log_file:
+            log_path = Path(args.log_file)
+            if not log_path.is_absolute() and args.log_dir:
+                log_path = Path(args.log_dir) / log_path
+        else:
+            # Generate default filename
+            log_filename = f"{args.name.replace('.', '_')}_extraction.log"
+            if args.log_dir:
+                log_path = Path(args.log_dir) / log_filename
+            else:
+                log_path = Path.cwd() / log_filename
+        
+        # Ensure parent directory exists
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Create file handler
+        try:
+            file_handler = logging.FileHandler(log_path, mode='w', encoding='utf-8')
+            file_handler.setLevel(getattr(logging, args.log_file_level))
+            file_formatter = logging.Formatter(
+                "%(asctime)s - %(name)s - %(levelname)s - %(funcName)s:%(lineno)d - %(message)s"
+            )
+            file_handler.setFormatter(file_formatter)
+            log_handlers.append(file_handler)
+            print(f"Logging to file: {log_path.absolute()}", file=sys.stderr)
+        except Exception as e:
+            print(f"Warning: Failed to create log file at {log_path}: {e}", file=sys.stderr)
+    
+    # Configure root logger
     logging.basicConfig(
-        level=getattr(logging, args.log_level),
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+        level=logging.DEBUG,  # Set to DEBUG to capture all, handlers will filter
+        handlers=log_handlers,
+        force=True
     )
     
     try:
@@ -94,6 +165,90 @@ def main():
         print(f"  - EXPOSES: {len(other_relations.get('EXPOSES', []))}")
         print(f"  - PUBLISHES: {len(other_relations.get('PUBLISHES', []))}")
         print(f"{'='*60}\n")
+        
+        # Save to JSON if requested
+        if args.output or args.output_dir:
+            # Determine output path
+            if args.output:
+                # Use provided output path
+                output_path = Path(args.output)
+                if not output_path.is_absolute() and args.output_dir:
+                    # Relative path with output_dir specified
+                    output_path = Path(args.output_dir) / output_path
+            else:
+                # Generate default filename
+                filename = f"{args.name.replace('.', '_')}_extraction.json"
+                if args.output_dir:
+                    output_path = Path(args.output_dir) / filename
+                else:
+                    output_path = Path.cwd() / filename
+            
+            # Ensure parent directory exists
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            # Convert entities and relationships to serializable format
+            entities_data = [
+                {
+                    "name": e.name,
+                    "labels": e.labels,
+                    "properties": e.properties
+                }
+                for e in entities
+            ]
+            
+            relations_data = [
+                {
+                    "from": r.from_entity.name,
+                    "to": r.to_entity.name,
+                    "type": r.type,
+                    "properties": r.properties
+                }
+                for r in relations
+            ]
+            
+            # Convert other_relations tuples to serializable format
+            other_relations_data = {}
+            for rel_type, rel_list in other_relations.items():
+                other_relations_data[rel_type] = [
+                    {
+                        "from": item[0] if isinstance(item, tuple) else str(item),
+                        "to": {
+                            "name": item[1].name,
+                            "version": item[1].version
+                        } if isinstance(item, tuple) and hasattr(item[1], 'name') else str(item[1]) if isinstance(item, tuple) else str(item)
+                    }
+                    for item in rel_list
+                ]
+            
+            output_data = {
+                "metadata": {
+                    "mode": args.mode,
+                    "name": args.name,
+                    "version": args.version or "latest",
+                    "install_method": install_method if args.mode == "package" else None,
+                    "include_external_parents": not args.no_external_parents if args.mode == "module" else None
+                },
+                "entities": entities_data,
+                "relations": relations_data,
+                "other_relations": other_relations_data,
+                "summary": {
+                    "total_entities": len(entities),
+                    "total_relations": len(relations),
+                    "inherits_count": len(other_relations.get('INHERITS', [])),
+                    "exposes_count": len(other_relations.get('EXPOSES', [])),
+                    "publishes_count": len(other_relations.get('PUBLISHES', []))
+                }
+            }
+            
+            # Write to file
+            try:
+                with open(output_path, 'w', encoding='utf-8') as f:
+                    json.dump(output_data, f, indent=2, ensure_ascii=False)
+                logging.info(f"Results saved to: {output_path.absolute()}")
+                print(f"Results saved to: {output_path.absolute()}")
+            except Exception as e:
+                logging.error(f"Failed to save results to {output_path}: {e}")
+                print(f"Warning: Failed to save results to {output_path}: {e}", file=sys.stderr)
         
         sys.exit(0)
         
