@@ -200,7 +200,7 @@ def main():
                 {
                     "from": r.from_entity.name,
                     "to": r.to_entity.name,
-                    "type": r.type,
+                    "type": r.label,
                     "properties": r.properties
                 }
                 for r in relations

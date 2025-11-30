@@ -153,11 +153,6 @@ def process_package(
             logging.error(f"Failed to install package '{pkg_name}' using {install_method}: {e}")
             return [], [], {"INHERITS": [], "EXPOSES": [], "PUBLISHES": []}
     
-    top_level_modules = get_top_level_modules_for_package(pkg_name)
-    if not top_level_modules:
-        logging.error(f"Package '{pkg_name}' not found after installation.")
-        return [], [], {"INHERITS": [], "EXPOSES": [], "PUBLISHES": []}
-    
     # Verify installed version matches requested version
     if version:
         try:
@@ -185,6 +180,12 @@ def process_package(
         except importlib.metadata.PackageNotFoundError:
             logging.error(f"Package '{pkg_name}' metadata not found after installation")
             return [], [], {"INHERITS": [], "EXPOSES": [], "PUBLISHES": []}
+    
+    # Get top-level modules after version verification
+    top_level_modules = get_top_level_modules_for_package(pkg_name)
+    if not top_level_modules:
+        logging.error(f"Package '{pkg_name}' not found after installation.")
+        return [], [], {"INHERITS": [], "EXPOSES": [], "PUBLISHES": []}
     
     # Process all top-level modules and combine results
     all_entities: List[Entity] = []
