@@ -9,6 +9,9 @@ Usage:
 import argparse
 import json
 import logging
+import os
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -82,6 +85,11 @@ def main():
         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
         help="Minimum logging level for log file (default: DEBUG)"
     )
+    parser.add_argument(
+        "--isolated-venv",
+        action="store_true",
+        help="Create and use an isolated virtual environment in CWD named <package>_<version>_venv"
+    )
     
     args = parser.parse_args()
     
@@ -91,6 +99,62 @@ def main():
         sys.exit(1)
     
     install_method = "uv" if args.use_uv else "conda" if args.use_conda else "pip"
+    
+    # Handle isolated venv if requested
+    original_executable = sys.executable
+    venv_python = None
+    if args.isolated_venv:
+        # Create venv name from package name and version
+        version_str = args.version if args.version else "latest"
+        venv_name = f"{args.name.replace('.', '_')}_{version_str}_venv"
+        venv_path = Path.cwd() / venv_name
+        print(f"Creating isolated virtual environment: {venv_name}", file=sys.stderr)
+        
+        try:
+            # Create venv based on method
+            if install_method == "uv":
+                # Create venv using uv
+                subprocess.run(["uv", "venv", str(venv_path)], check=True, capture_output=True)
+                # Install pydantic using uv pip
+                subprocess.run(["uv", "pip", "install", "--python", str(venv_path / "bin" / "python"), "pydantic"], check=True, capture_output=True)
+                venv_python = venv_path / "bin" / "python"
+            elif install_method == "conda":
+                # Create conda environment
+                subprocess.run(["conda", "create", "-y", "-p", str(venv_path), "python", "pydantic"], check=True, capture_output=True)
+                venv_python = venv_path / "bin" / "python"
+            else:  # pip
+                # Create standard venv
+                import venv
+                venv.create(venv_path, with_pip=True)
+                # Install pydantic using the venv's pip
+                subprocess.run([str(venv_path / "bin" / "python"), "-m", "pip", "install", "pydantic"], check=True, capture_output=True)
+                venv_python = venv_path / "bin" / "python"
+            
+            if not venv_python.exists():
+                raise FileNotFoundError(f"Python executable not found at {venv_python}")
+            
+            print(f"Virtual environment created at: {venv_path}", file=sys.stderr)
+            print(f"Using Python: {venv_python}", file=sys.stderr)
+            
+            # Re-execute this script with the venv Python
+            # Build the command with all the original arguments except --isolated-venv
+            new_args = [str(venv_python), "-m", "backend.lib_sage.com_extractor"]
+            for arg in sys.argv[1:]:
+                if arg != "--isolated-venv":
+                    new_args.append(arg)
+            
+            # Execute in the new venv
+            result = subprocess.run(new_args, env={**os.environ, "VIRTUAL_ENV": str(venv_path)})
+            sys.exit(result.returncode)
+            
+        except subprocess.CalledProcessError as e:
+            print(f"Error creating virtual environment: {e}", file=sys.stderr)
+            if e.output:
+                print(e.output.decode(), file=sys.stderr)
+            sys.exit(1)
+        except Exception as e:
+            print(f"Error setting up isolated environment: {e}", file=sys.stderr)
+            sys.exit(1)
     
     # Configure logging
     log_handlers = []
