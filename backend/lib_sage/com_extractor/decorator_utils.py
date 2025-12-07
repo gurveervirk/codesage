@@ -224,46 +224,26 @@ def _resolve_decorator_details(
     return resolved_decorators
 
 
-def get_function_method_labels(func: Callable, name: str, parent_obj: Optional[Any] = None) -> Tuple[List[str], List[Dict[str, Any]]]:
+def get_function_method_labels(func: Callable, name: str) -> Tuple[List[str], List[Dict[str, Any]]]:
     """
-    Determine extra labels (ASYNC, GENERATOR, PROPERTY, CLASSMETHOD, STATICMETHOD) and decorators list.
-    Also add visibility label.
+    Determine extra labels and decorators list.
+    Only returns ASYNC, GENERATOR, and visibility labels for main entity.
+    Decorator-specific labels (PROPERTY, CLASSMETHOD, STATICMETHOD) should NOT be returned
+    as they are source-specific and stored in DECORATOR_DETAILS entity.
     Returns (labels, decorators) where decorators is a list of dicts with 'name' and 'args'
     """
     labels: List[str] = []
-    # Async / generator
+    # Async / generator - these are intrinsic to the function, not source-specific
     if inspect.iscoroutinefunction(func) or inspect.isasyncgenfunction(func):
         labels.append("ASYNC")
     if inspect.isgeneratorfunction(func):
         labels.append("GENERATOR")
 
-    # Static analysis of descriptor on the parent class (if any)
-    if parent_obj is not None:
-        try:
-            descriptor = inspect.getattr_static(parent_obj, name)
-            if isinstance(descriptor, staticmethod):
-                labels.append("STATICMETHOD")
-            elif isinstance(descriptor, classmethod):
-                labels.append("CLASSMETHOD")
-            elif isinstance(descriptor, property):
-                labels.append("PROPERTY")
-        except Exception:
-            pass
-
-    # Decorators from source
+    # Decorators from source - collect for DECORATOR_DETAILS entity
     decorators: List[Dict[str, Any]] = []
     try:
         src = safe_get_source(func)
         decorators = _get_decorators_from_source(src)
-        # Also map common decorator names to labels if descriptor wasn't detected
-        for deco in decorators:
-            deco_name = deco['name']
-            if deco_name == "property" and "PROPERTY" not in labels:
-                labels.append("PROPERTY")
-            if deco_name == "staticmethod" and "STATICMETHOD" not in labels:
-                labels.append("STATICMETHOD")
-            if deco_name == "classmethod" and "CLASSMETHOD" not in labels:
-                labels.append("CLASSMETHOD")
     except Exception:
         pass
 

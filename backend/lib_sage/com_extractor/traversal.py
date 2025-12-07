@@ -190,11 +190,21 @@ def traverse_recursive(
     if inspect.ismodule(obj):
         import_statements = get_import_statements(source)
         import_as_aliases = get_import_as_aliases(source, obj_path)
-        # Process import statements to get structured import_details
-        import_details, _ = _process_import_statements(import_statements)
+        # Process import statements with full context to get EXPOSES/PUBLISHES relationships
+        import_details, _, exposes_rels, publishes_rels = _process_import_statements(
+            import_statements,
+            entity_name=obj_path,
+            entity_content_hash=entity.content_hash,
+            root_module_name=root_module_path
+        )
         # Store import_statements and aliases for decorator resolution (temporary, will be in property entity)
         entity.properties["import_statements"] = import_statements
         entity.properties["import_as_aliases"] = import_as_aliases
+        
+        # Add EXPOSES and PUBLISHES relationships to other_relations
+        if other_relations is not None:
+            other_relations["EXPOSES"].update(exposes_rels)
+            other_relations["PUBLISHES"].update(publishes_rels)
     
     # For CLASS entities, get decorators
     decorators = []

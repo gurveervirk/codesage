@@ -51,9 +51,68 @@ def get_fully_qualified_name(cls):
     return f"{cls.__module__}.{cls.__qualname__}"
 
 
+def get_raw_source(obj) -> Optional[str]:
+    """
+    Get raw source code directly from the source file, bypassing inspect module.
+    
+    This provides version-independent source extraction by reading directly from
+    the file and using AST line numbers. This is preferable for version comparison
+    and diffing as it preserves the original source exactly as written.
+    
+    Args:
+        obj: The Python object to get source for
+        
+    Returns:
+        Raw source code string from file, or None if unavailable
+    """
+    try:
+        # Get the source file
+        source_file = inspect.getsourcefile(obj)
+        if not source_file:
+            return None
+        
+        # Read the entire file
+        with open(source_file, 'r', encoding='utf-8') as f:
+            full_source = f.read()
+        
+        # Parse with AST to find line numbers
+        try:
+            tree = ast.parse(full_source, filename=source_file)
+        except SyntaxError:
+            return None
+        
+        # Find the matching node
+        obj_name = getattr(obj, '__name__', None)
+        if not obj_name:
+            return None
+        
+        # For methods, we need to match the class context too
+        obj_qualname = getattr(obj, '__qualname__', obj_name)
+        
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                # For nested definitions (methods), check qualname match
+                if node.name == obj_name or obj_qualname.endswith(f".{node.name}"):
+                    # Extract source from the node's line numbers
+                    lines = full_source.splitlines()
+                    if hasattr(node, 'lineno') and hasattr(node, 'end_lineno'):
+                        # Get lines from lineno-1 to end_lineno (1-indexed to 0-indexed)
+                        source_lines = lines[node.lineno - 1:node.end_lineno]
+                        return '\n'.join(source_lines)
+        
+        return None
+    except Exception as e:
+        logging.debug(f"Error getting raw source for {obj}: {e}")
+        return None
+
+
 def safe_get_source(obj) -> str:
     """
-    Safely get the source code of an object, with AST fallback.
+    Safely get the source code of an object, prioritizing raw source from file.
+    
+    This function prioritizes raw source (version-independent) over inspect.getsource()
+    for better consistency across Python versions. Falls back to inspect and finally
+    to a normalized representation if neither works.
     
     Args:
         obj: The Python object to get source for
@@ -61,40 +120,16 @@ def safe_get_source(obj) -> str:
     Returns:
         Source code string, or a normalized representation if source unavailable
     """
+    # First try: Get raw source directly from file (version-independent)
+    raw_source = get_raw_source(obj)
+    if raw_source:
+        return raw_source
+    
+    # Second try: Use inspect.getsource as fallback
     try:
         return inspect.getsource(obj)
     except (OSError, TypeError, TokenError) as e:
-        # TokenError can occur when the tokenizer fails to parse the source
-        # (e.g., EOF in multi-line string, which can happen with some Python 3.13 edge cases)
-        # Try using AST as fallback to get the source
-        if isinstance(e, TokenError):
-            logging.debug(f"TokenError getting source for {obj}, trying AST fallback: {e}")
-            try:
-                # Get the file containing the object
-                source_file = inspect.getsourcefile(obj)
-                if source_file:
-                    # Read the entire file
-                    with open(source_file, 'r', encoding='utf-8') as f:
-                        full_source = f.read()
-                    
-                    # Parse with AST
-                    tree = ast.parse(full_source, filename=source_file)
-                    
-                    # Find the matching node
-                    obj_name = getattr(obj, '__name__', None)
-                    if obj_name:
-                        for node in ast.walk(tree):
-                            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                                if node.name == obj_name:
-                                    # Extract source from the node's line numbers
-                                    lines = full_source.splitlines()
-                                    if hasattr(node, 'lineno') and hasattr(node, 'end_lineno'):
-                                        # Get lines from lineno-1 to end_lineno (1-indexed to 0-indexed)
-                                        source_lines = lines[node.lineno - 1:node.end_lineno]
-                                        return '\n'.join(source_lines)
-            except Exception as ast_error:
-                logging.debug(f"AST fallback also failed: {ast_error}")
-        
+        logging.debug(f"Could not get source for {obj}: {e}")
         # Final fallback: normalize repr to remove memory addresses
         return f"# Representation:\n{_normalize_signature(repr(obj))}"
 

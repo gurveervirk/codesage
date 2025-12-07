@@ -44,29 +44,30 @@ def _sanitize_labels(labels: List[str]) -> List[str]:
     return sanitized
 
 
-def _compute_content_hash(props: Dict) -> str:
+def _compute_content_hash(name: str, props: Dict) -> str:
     """
-    Calculate content hash for an entity based on its properties.
+    Calculate content hash for an entity based on its name and properties.
     
     For regular entities (METHOD, FUNCTION, CLASS, MODULE):
         Uses name + __name__ as the primary identifier (signatures/source are in separate entities)
     
     For property entities (SIGNATURE, SOURCE, DOCSTRING, etc.):
-        Uses the 'value' property which contains the actual content
+        Uses name + 'value' property which contains the actual content
     """
+    h = hashlib.sha256()
+    
+    # Always include entity name in hash
+    h.update(name.encode("utf-8", errors="ignore"))
+    h.update(b"|::|")
+    
     # For property entities, hash their value
     if "value" in props:
         value = str(props.get("value", ""))
-        h = hashlib.sha256()
         h.update(value.encode("utf-8", errors="ignore"))
         return h.hexdigest()
     
-    # For regular entities, use name and __name__
-    name = str(props.get("name", ""))
+    # For regular entities, additionally use __name__
     dunder_name = str(props.get("__name__", ""))
-    h = hashlib.sha256()
-    h.update(name.encode("utf-8", errors="ignore"))
-    h.update(b"|::|")
     h.update(dunder_name.encode("utf-8", errors="ignore"))
     return h.hexdigest()
 
@@ -86,7 +87,7 @@ class Entity(BaseModel):
         
         # Compute content_hash if not provided
         if content_hash is None:
-            content_hash = _compute_content_hash(properties)
+            content_hash = _compute_content_hash(name, properties)
         
         super().__init__(name=name, labels=sanitized_labels, properties=properties, content_hash=content_hash)
 

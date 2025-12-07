@@ -150,35 +150,60 @@ def process_package(
             subprocess.run(install_cmd, check=True)
             logging.info(f"Package '{install_spec}' installed successfully using {install_method}.")
         except subprocess.CalledProcessError as e:
+            error_output = getattr(e, 'stderr', None) or str(e)
             logging.error(f"Failed to install package '{pkg_name}' using {install_method}: {e}")
+            
+            # Check for common Python version incompatibility messages
+            if any(msg in error_output for msg in [
+                "requires Python", "python_requires", "No matching distribution",
+                "Could not find a version", "incompatible", "not supported"
+            ]):
+                py_version = f"{sys.version_info.major}.{sys.version_info.minor}"
+                logging.error(f"Package '{install_spec}' may not be compatible with Python {py_version}")
+                logging.error(f"Installation error details: {error_output}")
             return [], [], {"INHERITS": [], "EXPOSES": [], "PUBLISHES": []}
     
     # Verify installed version matches requested version
     if version:
         try:
             installed_version = importlib.metadata.version(pkg_name)
-            if installed_version != version:
-                logging.warning(f"Version mismatch: requested {version}, but found {installed_version}")
+            if version in installed_version:
+                logging.info(f"Package {pkg_name}=={version} is installed")
+            else:
+                logging.warning(f"Version mismatch: requested {version}, found {installed_version}")
                 logging.info(f"Attempting to install correct version using {install_method}...")
                 install_spec = f"{pkg_name}=={version}"
                 
                 # Determine reinstall command based on method
                 if install_method == "uv":
-                    reinstall_cmd = ["uv", "pip", "install", "--force-reinstall", install_spec]
+                    reinstall_cmd = ["uv", "pip", "install", install_spec]
                 elif install_method == "conda":
-                    reinstall_cmd = ["conda", "install", "-y", "--force-reinstall", f"main::{pkg_name}=={version}"]
+                    reinstall_cmd = ["conda", "install", "-y", "--force-reinstall", f"{pkg_name}={version}"]
                 else:  # pip
                     reinstall_cmd = [sys.executable, "-m", "pip", "install", "--force-reinstall", install_spec]
                 
-                subprocess.run(reinstall_cmd, check=True)
+                subprocess.run(reinstall_cmd, check=True, capture_output=True)
                 # Verify again after reinstall
                 installed_version = importlib.metadata.version(pkg_name)
                 if installed_version != version:
                     logging.error(f"Failed to install version {version}. Current version: {installed_version}")
                     return [], [], {"INHERITS": [], "EXPOSES": [], "PUBLISHES": []}
                 logging.info(f"Successfully installed {pkg_name}=={version}")
+        except subprocess.CalledProcessError as e:
+            error_output = getattr(e, 'stderr', None) or str(e)
+            logging.error(f"Failed to reinstall package '{pkg_name}=={version}': {e}")
+            
+            # Check for Python version incompatibility
+            if any(msg in str(error_output) for msg in [
+                "requires Python", "python_requires", "No matching distribution",
+                "Could not find a version", "incompatible", "not supported"
+            ]):
+                py_version = f"{sys.version_info.major}.{sys.version_info.minor}"
+                logging.error(f"Package '{pkg_name}=={version}' may not be compatible with Python {py_version}")
+                logging.error(f"Try using a different Python version or a different package version")
+            return [], [], {"INHERITS": [], "EXPOSES": [], "PUBLISHES": []}
         except importlib.metadata.PackageNotFoundError:
-            logging.error(f"Package '{pkg_name}' metadata not found after installation")
+            logging.error(f"Package '{pkg_name}' metadata not found")
             return [], [], {"INHERITS": [], "EXPOSES": [], "PUBLISHES": []}
     
     # Get top-level modules after version verification

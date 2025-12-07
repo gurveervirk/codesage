@@ -9,7 +9,7 @@ import importlib
 import inspect
 import logging
 import traceback
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 from .models import Entity, Relationship, ExternalEntityRef
 from .source_utils import (
@@ -17,7 +17,6 @@ from .source_utils import (
     safe_get_docstring,
     get_import_statements,
     get_import_as_aliases,
-    get_unused_imports,
     find_submodules_importlib_resources,
 )
 from .entity_builder import _create_property_entities_and_relations, _process_import_statements
@@ -78,9 +77,6 @@ def process_module(
     all_import_statements = get_import_statements(source)
     import_as_aliases = get_import_as_aliases(source, module_object.__name__)
     
-    # Process import statements to get structured import_details
-    import_details, _ = _process_import_statements(all_import_statements)
-    
     labels = ["ROOT_MODULE"]
     if version:
         labels.append(f"version:{version}")
@@ -93,6 +89,18 @@ def process_module(
     root_entity.properties["import_as_aliases"] = import_as_aliases
     
     entities.append(root_entity)
+    
+    # Process import statements with full context to get EXPOSES/PUBLISHES relationships for ROOT_MODULE
+    import_details, _, exposes_rels, publishes_rels = _process_import_statements(
+        all_import_statements,
+        entity_name=module_object.__name__,
+        entity_content_hash=root_entity.content_hash,
+        root_module_name=module_object.__name__
+    )
+    
+    # Add EXPOSES and PUBLISHES relationships to other_relations
+    other_relations["EXPOSES"].update(exposes_rels)
+    other_relations["PUBLISHES"].update(publishes_rels)
     
     # Create property entities for ROOT_MODULE
     prop_entities, prop_relations = _create_property_entities_and_relations(
@@ -167,97 +175,14 @@ def process_module(
     for entity in entities:
         hash_to_entity[entity.content_hash] = entity
 
-    # Process import_statements for all MODULE and ROOT_MODULE entities
-    # to populate import_details property and determine unused imports for EXPOSES
-    for entity in entities:
-        if entity.label not in ("ROOT_MODULE", "MODULE"):
-            continue
-        
-        import_statements = entity.properties.get("import_statements", "")
-        if not import_statements:
-            continue
-        
-        # Process import statements and get imported entities
-        import_details, imported_entities = _process_import_statements(import_statements)
-        
-        if not imported_entities:
-            continue
-        
-        # Determine which imports are unused
-        entity_module_name = entity.name
-        unused_imports = get_unused_imports(entity_module_name, imported_entities)
-        logging.warning(f"Entity {entity.name} has {len(unused_imports)} unused imports out of {len(imported_entities)} imported entities.")
-        used_imports = imported_entities - unused_imports
-        
-        # Update the "used" status in import_details
-        for module_name, module_info in import_details["modules"].items():
-            for entity_info in module_info["entities"]:
-                entity_fqn = entity_info["fqn"]
-                if entity_fqn in used_imports:
-                    entity_info["used"] = True
-                elif entity_fqn in unused_imports:
-                    entity_info["used"] = False
-                    # Add to EXPOSES relationships only for internal unused imports
-                    if entity_fqn.startswith(module_object.__name__ + "."):
-                        # Internal import that's unused -> EXPOSES
-                        import_version = module_info["version"]
-                        import_ref = ExternalEntityRef(name=entity_fqn, version=import_version)
-                        other_relations["EXPOSES"].add((entity.content_hash, import_ref))
-                    else:
-                        # External unused import to be added to PUBLISHES
-                        import_version = module_info["version"]
-                        import_ref = ExternalEntityRef(name=entity_fqn, version=import_version)
-                        other_relations["PUBLISHES"].add((entity.content_hash, import_ref))
-        
-        # Store the processed import details
-        if import_details:
-            entity.properties["import_details"] = import_details
-
-    logging.warning(f"Total EXPOSES before cleaning relations: {len(other_relations['EXPOSES'])}")
-    logging.warning(f"Total PUBLISHES before cleaning relations: {len(other_relations['PUBLISHES'])}")
+    logging.warning(f"Total EXPOSES relations: {len(other_relations['EXPOSES'])}")
+    logging.warning(f"Total PUBLISHES relations: {len(other_relations['PUBLISHES'])}")
 
     # Clean up temporary import properties from root_entity
     if "import_statements" in root_entity.properties:
         del root_entity.properties["import_statements"]
     if "import_as_aliases" in root_entity.properties:
         del root_entity.properties["import_as_aliases"]
-    
-    cleaned_exposed_relations: Set[Tuple[str, ExternalEntityRef]] = set(other_relations["EXPOSES"])
-    cleaned_publishes_relations: Set[Tuple[str, ExternalEntityRef]] = set(other_relations["PUBLISHES"])
-
-    # Clean up EXPOSED relations and separate PUBLISHES relations
-    for from_hash, to_ref in other_relations["EXPOSES"]:
-        from_entity = hash_to_entity.get(from_hash)
-        if not from_entity:
-            continue
-        
-        # Extract root module names for pattern detection
-        from_root = from_entity.name.split(".")[0]
-        to_root = to_ref.name.split(".")[0]
-        
-        # Check if this is a PUBLISHES relationship (_<package> pattern)
-        is_publishes = False
-        if from_root.startswith("_") and to_root == from_root[1:]:
-            # Case: _pytest publishing to pytest
-            is_publishes = True
-            logging.debug(f"Found PUBLISHES: {from_entity.name} publishes {to_ref.name}")
-        elif to_root.startswith("_") and from_root == to_root[1:]:
-            # Case: pytest publishing from _pytest
-            is_publishes = True
-            logging.debug(f"Found PUBLISHES: {from_entity.name} publishes {to_ref.name}")
-        
-        if is_publishes:
-            # This is a PUBLISHES relationship
-            cleaned_publishes_relations.add((from_hash, to_ref))
-        elif to_ref.name.startswith(from_entity.name):
-            # Normal internal EXPOSES
-            cleaned_exposed_relations.add((from_hash, to_ref))
-
-    other_relations["EXPOSES"] = cleaned_exposed_relations
-    other_relations["PUBLISHES"] = cleaned_publishes_relations
-
-    logging.warning(f"Total EXPOSES after cleaning relations: {len(other_relations['EXPOSES'])}")
-    logging.warning(f"Total PUBLISHES after cleaning relations: {len(other_relations['PUBLISHES'])}")
 
     # Clean up Alias Imports
     for entity in entities:

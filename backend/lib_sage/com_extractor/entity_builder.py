@@ -23,6 +23,134 @@ def _is_dunder(name: str) -> bool:
     return len(name) >= 4 and name.startswith("__") and name.endswith("__")
 
 
+def _extract_raw_signature(obj: Any) -> Optional[str]:
+    """
+    Extract the raw signature notation from source code using AST.
+    
+    This extracts the actual signature as written in the source code,
+    preserving the original formatting and type hints.
+    
+    Args:
+        obj: The callable object (function, method, or class)
+        
+    Returns:
+        Raw signature string as written in source, or None if unavailable
+    """
+    try:
+        source = safe_get_source(obj)
+        if not source or source.startswith("# Representation:"):
+            return None
+        
+        # Parse the source code
+        tree = ast.parse(source)
+        
+        # Find the function/class definition
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                # Extract the signature from the AST node
+                if isinstance(node, ast.ClassDef):
+                    # For classes, look for __init__ method
+                    for item in node.body:
+                        if isinstance(item, ast.FunctionDef) and item.name == "__init__":
+                            return _build_signature_from_ast(item)
+                    # If no __init__, return empty signature
+                    return "()"
+                else:
+                    # For functions/methods
+                    return _build_signature_from_ast(node)
+        
+        return None
+    except Exception as e:
+        logging.debug(f"Error extracting raw signature: {e}")
+        return None
+
+
+def _build_signature_from_ast(node: ast.FunctionDef) -> str:
+    """
+    Build signature string from AST FunctionDef node.
+    
+    Args:
+        node: AST FunctionDef or AsyncFunctionDef node
+        
+    Returns:
+        Signature string in format: (arg1: type1, arg2: type2 = default, ...) -> return_type
+    """
+    args = node.args
+    params = []
+    
+    # Helper to unparse annotation
+    def unparse_annotation(annotation):
+        if annotation is None:
+            return ""
+        try:
+            return ast.unparse(annotation)
+        except Exception:
+            return ""
+    
+    # Helper to unparse default
+    def unparse_default(default):
+        if default is None:
+            return None
+        try:
+            return ast.unparse(default)
+        except Exception:
+            return "..."
+    
+    # Regular positional/keyword arguments
+    defaults_offset = len(args.args) - len(args.defaults)
+    for i, arg in enumerate(args.args):
+        param = arg.arg
+        if arg.annotation:
+            param += f": {unparse_annotation(arg.annotation)}"
+        
+        # Check if this arg has a default
+        default_idx = i - defaults_offset
+        if default_idx >= 0:
+            default_val = unparse_default(args.defaults[default_idx])
+            if default_val:
+                param += f" = {default_val}"
+        
+        params.append(param)
+    
+    # *args
+    if args.vararg:
+        param = f"*{args.vararg.arg}"
+        if args.vararg.annotation:
+            param += f": {unparse_annotation(args.vararg.annotation)}"
+        params.append(param)
+    
+    # Keyword-only arguments
+    for i, arg in enumerate(args.kwonlyargs):
+        param = arg.arg
+        if arg.annotation:
+            param += f": {unparse_annotation(arg.annotation)}"
+        
+        if i < len(args.kw_defaults) and args.kw_defaults[i] is not None:
+            default_val = unparse_default(args.kw_defaults[i])
+            if default_val:
+                param += f" = {default_val}"
+        
+        params.append(param)
+    
+    # **kwargs
+    if args.kwarg:
+        param = f"**{args.kwarg.arg}"
+        if args.kwarg.annotation:
+            param += f": {unparse_annotation(args.kwarg.annotation)}"
+        params.append(param)
+    
+    # Build the signature
+    sig = f"({', '.join(params)})"
+    
+    # Add return annotation if present
+    if node.returns:
+        return_type = unparse_annotation(node.returns)
+        if return_type:
+            sig += f" -> {return_type}"
+    
+    return sig
+
+
 def _get_entity_version(entity_path: str) -> Optional[str]:
     """
     Try to determine the version of an external entity by looking at its module's package.
@@ -126,37 +254,29 @@ def _create_property_entities_and_relations(
     prop_entities: List[Entity] = []
     prop_relations: List[Relationship] = []
     
-    # SOURCE entity
-    if source_code:
-        source_entity = _create_property_entity(
-            parent_entity.name, "SOURCE", source_code, version
-        )
+    # SOURCE entity - now includes docstring and signature as separate properties
+    if source_code or docstring or signature:
+        # Create SOURCE entity name
+        name = f"{parent_entity.name}::SOURCE"
+        
+        labels = ["SOURCE"]
+        if version:
+            labels.append(f"version:{version}")
+        
+        # Store as separate properties instead of nested dict
+        properties = {
+            "code": source_code or "",
+            "docstring": docstring or "",
+            "signature": signature or ""
+        }
+        
+        source_entity = Entity(name=name, labels=labels, properties=properties)
         prop_entities.append(source_entity)
         prop_relations.append(
             Relationship(parent_entity, source_entity, "HAS_SOURCE", {})
         )
     
-    # DOCSTRING entity
-    if docstring:
-        docstring_entity = _create_property_entity(
-            parent_entity.name, "DOCSTRING", docstring, version
-        )
-        prop_entities.append(docstring_entity)
-        prop_relations.append(
-            Relationship(parent_entity, docstring_entity, "HAS_DOCSTRING", {})
-        )
-    
-    # SIGNATURE entity (for METHOD/FUNCTION/CLASS)
-    if signature:
-        signature_entity = _create_property_entity(
-            parent_entity.name, "SIGNATURE", signature, version
-        )
-        prop_entities.append(signature_entity)
-        prop_relations.append(
-            Relationship(parent_entity, signature_entity, "HAS_SIGNATURE", {})
-        )
-    
-    # RESOLVED_SIGNATURE entity
+    # RESOLVED_SIGNATURE entity - kept separate as it's derived from type analysis
     if resolved_signature:
         resolved_sig_entity = _create_property_entity(
             parent_entity.name, "RESOLVED_SIGNATURE", resolved_signature, version
@@ -222,7 +342,7 @@ def _process_callable_with_overloads(
     # Get source, docstring, labels, and decorators
     source_code = safe_get_source(obj)
     docstring = safe_get_docstring(obj)
-    extra_labels, decorators = get_function_method_labels(obj, name, parent_obj=parent_obj)
+    extra_labels, decorators = get_function_method_labels(obj, name)
     
     # Overload detection
     overloads: List[Callable] = []
@@ -240,8 +360,14 @@ def _process_callable_with_overloads(
     if version:
         labels.append(f"version:{version}")
     
-    # Collect signature variants (normalized to remove memory addresses)
-    raw_sig = _normalize_signature(str(inspect.signature(obj)))
+    # Collect signature variants
+    # raw_sig: Extract actual signature from source using AST
+    raw_sig = _extract_raw_signature(obj)
+    if not raw_sig:
+        # Fallback to inspect.signature if AST extraction fails
+        raw_sig = _normalize_signature(str(inspect.signature(obj)))
+    
+    # resolved_sig: Type-resolved signature (normalized to remove memory addresses)
     resolved_sig = _normalize_signature(str(get_typed_signature(obj, include_overloads=False)))
     
     # Create main entity with minimal properties
@@ -286,7 +412,7 @@ def _process_callable_with_overloads(
             except Exception:
                 ov_src = ""
             ov_doc = safe_get_docstring(ov)
-            ov_extra_labels, ov_decorators = get_function_method_labels(ov, name, parent_obj=parent_obj)
+            ov_extra_labels, ov_decorators = get_function_method_labels(ov, name)
             
             # Build overload labels
             ov_labels = [entity_type, "OVERLOAD"] + (ov_extra_labels or [])
@@ -295,11 +421,17 @@ def _process_callable_with_overloads(
             if version:
                 ov_labels.append(f"version:{version}")
             
-            # Get overload signatures (normalized to remove memory addresses)
-            if hasattr(ov, "__call__") or inspect.isfunction(ov):
-                ov_sig_raw = _normalize_signature(str(inspect.signature(ov)))
-            else:
-                ov_sig_raw = "<unavailable>"
+            # Get overload signatures
+            # ov_sig_raw: Extract actual signature from source using AST
+            ov_sig_raw = _extract_raw_signature(ov)
+            if not ov_sig_raw:
+                # Fallback to inspect.signature if AST extraction fails
+                if hasattr(ov, "__call__") or inspect.isfunction(ov):
+                    ov_sig_raw = _normalize_signature(str(inspect.signature(ov)))
+                else:
+                    ov_sig_raw = "<unavailable>"
+            
+            # ov_sig_res: Type-resolved signature
             try:
                 ov_sig_res = _normalize_signature(str(get_typed_signature(ov, include_overloads=False)))
             except Exception:
@@ -342,7 +474,12 @@ def _process_callable_with_overloads(
     return entities, relations
 
 
-def _process_import_statements(import_statements: str) -> Tuple[Dict, Set[str]]:
+def _process_import_statements(
+    import_statements: str,
+    entity_name: Optional[str] = None,
+    entity_content_hash: Optional[str] = None,
+    root_module_name: Optional[str] = None
+) -> Tuple[Dict, Set[str], Set[Tuple], Set[Tuple]]:
     """
     Process import statements from source code and extract import details.
     
@@ -361,16 +498,28 @@ def _process_import_statements(import_statements: str) -> Tuple[Dict, Set[str]]:
     }
     
     Args:
-        import_statements (str): String containing all import statements
+        import_statements: String containing all import statements
+        entity_name: The name of the entity (module/ROOT_MODULE) being processed
+        entity_content_hash: The content_hash of the entity for relationship tracking
+        root_module_name: The root module name to determine internal vs external imports
     
     Returns:
-        Tuple[Dict, Set[str]]: Dictionary containing structured import information and set of imported entity FQNs
+        Tuple containing:
+        - Dict: Structured import information
+        - Set[str]: Set of imported entity FQNs
+        - Set[Tuple]: EXPOSES relationships (entity_hash, ExternalEntityRef)
+        - Set[Tuple]: PUBLISHES relationships (entity_hash, ExternalEntityRef)
     """
+    from .models import ExternalEntityRef
+    from .source_utils import get_unused_imports
+    
     import_details = {"modules": {}}
     imported_entities: Set[str] = set()  # Track all imported entity FQNs for unused detection
+    exposes_relations: Set[Tuple] = set()
+    publishes_relations: Set[Tuple] = set()
     
     if not import_statements:
-        return import_details, imported_entities
+        return import_details, imported_entities, exposes_relations, publishes_relations
     
     try:
         tree = ast.parse(import_statements)
@@ -433,4 +582,46 @@ def _process_import_statements(import_statements: str) -> Tuple[Dict, Set[str]]:
     except Exception as e:
         logging.warning(f"Error processing import statements: {e}")
     
-    return import_details, imported_entities
+    # Determine unused imports and create EXPOSES/PUBLISHES relationships
+    if entity_name and entity_content_hash and root_module_name and imported_entities:
+        try:
+            unused_imports = get_unused_imports(entity_name, imported_entities)
+            logging.debug(f"Entity {entity_name} has {len(unused_imports)} unused imports out of {len(imported_entities)} imported entities.")
+            
+            # Update the "used" status in import_details and create relationships
+            for module_name, module_info in import_details["modules"].items():
+                for entity_info in module_info["entities"]:
+                    entity_fqn = entity_info["fqn"]
+                    if entity_fqn in unused_imports:
+                        entity_info["used"] = False
+                        
+                        # Determine relationship type
+                        import_version = module_info["version"]
+                        import_ref = ExternalEntityRef(name=entity_fqn, version=import_version)
+                        
+                        # Check for _<package> pattern (PUBLISHES)
+                        from_root = entity_name.split(".")[0]
+                        to_root = entity_fqn.split(".")[0]
+                        
+                        is_publishes = False
+                        if from_root.startswith("_") and to_root == from_root[1:]:
+                            # Case: _pytest publishing to pytest
+                            is_publishes = True
+                        elif to_root.startswith("_") and from_root == to_root[1:]:
+                            # Case: pytest publishing from _pytest
+                            is_publishes = True
+                        
+                        if is_publishes:
+                            publishes_relations.add((entity_content_hash, import_ref))
+                        elif entity_fqn.startswith(root_module_name + "."):
+                            # Internal import that's unused -> EXPOSES
+                            exposes_relations.add((entity_content_hash, import_ref))
+                        else:
+                            # External unused import -> PUBLISHES
+                            publishes_relations.add((entity_content_hash, import_ref))
+                    else:
+                        entity_info["used"] = True
+        except Exception as e:
+            logging.warning(f"Error determining unused imports for {entity_name}: {e}")
+    
+    return import_details, imported_entities, exposes_relations, publishes_relations
