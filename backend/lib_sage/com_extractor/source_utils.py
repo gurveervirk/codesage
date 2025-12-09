@@ -6,6 +6,7 @@ import statements, and submodules from Python objects.
 """
 
 import ast
+import functools
 import importlib
 import importlib.resources
 import importlib.util
@@ -245,18 +246,26 @@ def get_import_as_aliases(source_code: str, current_file_path: str) -> List[Tupl
         return []
 
 
-def get_unused_imports(module_name: str, imported_names: Set[str]) -> Set[str]:
+@functools.lru_cache(maxsize=128)
+def get_unused_imports(module_name: str, imported_names: frozenset) -> Dict[str, str]:
     """
-    Get the list of unused imports in a module using flake8, returning the full paths.
+    Get the list of unused imports in a module using flake8.
     Also checks if imports are only used in __all__ (re-exports) and treats them as unused.
+    
+    Results are cached per module_name for optimization.
 
     Args:
         module_name (str): The name of the module.
-        imported_names (Set[str]): The set of fully qualified imported names.
+        imported_names (frozenset): The set of fully qualified imported names (frozenset for hashability).
 
     Returns:
-        Set[str]: The set of unused imports (full paths).
+        Dict[str, str]: Mapping from FQN to exact import statement.
+                       e.g., {'pandas.DataFrame': 'from pandas import DataFrame',
+                              'os.path': 'import os.path'}
     """
+    # Convert frozenset back to set for internal use
+    imported_names_set: Set[str] = set(imported_names)
+    
     try:
         # Get the full file path of the module
         module = importlib.import_module(module_name)
@@ -291,16 +300,16 @@ def get_unused_imports(module_name: str, imported_names: Set[str]) -> Set[str]:
             logging.warning(f"flake8 command failed for {module_name} with exit code {process.returncode}")
             if process.stderr:
                 logging.debug(f"flake8 stderr: {process.stderr}")
-            return set()
+            return {}
 
         output = process.stdout
-        unused_names: List[str] = []
+        unused_simple_names: Set[str] = set()  # Simple names from flake8
 
         # Parse the output for unused import errors (F401), extracting the simple names
         for line in output.splitlines():
             match = re.search(r":\d+:(\d+): F401 '(.*)' imported but unused", line)
             if match:
-                unused_names.append(match.group(2))
+                unused_simple_names.add(match.group(2))
         
         # Check for imports that are only used in __all__ (re-exports without actual usage)
         # Parse the module source to find imports and __all__
@@ -357,41 +366,52 @@ def get_unused_imports(module_name: str, imported_names: Set[str]) -> Set[str]:
                         
                         # If usage_count is 1 or less (just the reference in __all__), it's only exported
                         if usage_count <= 1:
-                            unused_names.append(all_name)
+                            unused_simple_names.add(all_name)
                             logging.debug(f"Import '{all_name}' only used in __all__, treating as exposed")
         
         except Exception as e:
             logging.debug(f"Could not parse __all__ for {module_name}: {e}")
 
-        # Handle aliases and from-imports statements
-        for i in range(len(unused_names)):
-            name = unused_names[i].strip()
-            if " as " in name:
-                unused_names[i] = name.split(" as ")[0]
-            if name.startswith("from "):
-                unused_names[i] = name.split("from ")[1]
-            if " import " in name:
-                # Import this unused name to get the fully qualified name
-                split_name = name.split(" import ")
-                module_name = split_name[0]
-                imported_name = split_name[1]
-                imported_module = importlib.import_module(module_name)
-                imported_entity = getattr(imported_module, imported_name)
-                unused_names[i] = get_fully_qualified_name(imported_entity)
-
-        unused_imports: Set[str] = set()
-        for full_name in imported_names:
-            # if any(name == full_name or full_name.startswith(f"{name}.") for name in unused_names):
-            #     unused_imports.add(full_name)
-            if any(full_name.endswith(name) for name in unused_names):
-                 unused_imports.add(full_name)
-
+        # Now parse the source to extract exact import statements for unused names
+        unused_imports: Dict[str, str] = {}  # FQN -> import statement
+        
+        try:
+            source = inspect.getsource(module)
+            tree = ast.parse(source)
+            
+            # Build mapping of simple names to their import statements and FQNs
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    # Handle: import os, sys
+                    for alias in node.names:
+                        simple_name = alias.asname if alias.asname else alias.name.split('.')[-1]
+                        if simple_name in unused_simple_names:
+                            fqn = alias.name
+                            import_stmt = f"import {alias.name}"
+                            if alias.asname:
+                                import_stmt += f" as {alias.asname}"
+                            unused_imports[fqn] = import_stmt
+                
+                elif isinstance(node, ast.ImportFrom):
+                    # Handle: from module import name [as alias]
+                    module = node.module or ""
+                    for alias in node.names:
+                        simple_name = alias.asname if alias.asname else alias.name
+                        if simple_name in unused_simple_names:
+                            fqn = f"{module}.{alias.name}" if module else alias.name
+                            import_stmt = f"from {module} import {alias.name}"
+                            if alias.asname:
+                                import_stmt += f" as {alias.asname}"
+                            unused_imports[fqn] = import_stmt
+        
+        except Exception as e:
+            logging.debug(f"Could not extract import statements for {module_name}: {e}")
+        
         return unused_imports
     except Exception as e:
         logging.error(f"Error getting unused imports for {module_name}: {e}")
         logging.error(traceback.format_exc())
-        return set()
-
+        return {}
 
 def _get_decorators_from_source(src: str) -> List[Dict[str, Any]]:
     """

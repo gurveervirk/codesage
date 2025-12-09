@@ -567,11 +567,11 @@ def _process_import_statements(
                 
                 # Process each imported entity
                 for alias in node.names:
-                    entity_name = alias.name
-                    entity_fqn = f"{module_name}.{entity_name}"
+                    imported_entity_name = alias.name
+                    entity_fqn = f"{module_name}.{imported_entity_name}"
                     
                     entity_info = {
-                        "name": entity_name,
+                        "name": imported_entity_name,
                         "fqn": entity_fqn,
                         "alias": alias.asname,
                         "used": None  # Will be determined later
@@ -585,7 +585,8 @@ def _process_import_statements(
     # Determine unused imports and create EXPOSES/PUBLISHES relationships
     if entity_name and entity_content_hash and root_module_name and imported_entities:
         try:
-            unused_imports = get_unused_imports(entity_name, imported_entities)
+            # Convert to frozenset for caching (lru_cache requires hashable args)
+            unused_imports = get_unused_imports(entity_name, frozenset(imported_entities))
             logging.debug(f"Entity {entity_name} has {len(unused_imports)} unused imports out of {len(imported_entities)} imported entities.")
             
             # Update the "used" status in import_details and create relationships
@@ -594,6 +595,7 @@ def _process_import_statements(
                     entity_fqn = entity_info["fqn"]
                     if entity_fqn in unused_imports:
                         entity_info["used"] = False
+                        entity_info["import_statement"] = unused_imports[entity_fqn]
                         
                         # Determine relationship type
                         import_version = module_info["version"]
