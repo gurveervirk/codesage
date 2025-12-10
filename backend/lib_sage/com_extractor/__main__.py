@@ -215,6 +215,26 @@ def main():
                 args.name, args.version, include_external_parents=include_external
             )
         
+        # Categorize entities and relations for final summary
+        if args.mode == "package":
+            # For package mode, we need to determine the base module name(s)
+            from backend.lib_sage.com_extractor.core import get_top_level_modules_for_package
+            top_level_modules = get_top_level_modules_for_package(args.name)
+            
+            # Categorize as internal if belongs to any top-level module
+            internal_entities = [e for e in entities if any(e.name.startswith(mod) for mod in top_level_modules)]
+            external_entities = [e for e in entities if e not in internal_entities]
+            
+            internal_relations = [r for r in relations if any(r.from_entity.name.startswith(mod) and r.to_entity.name.startswith(mod) for mod in top_level_modules)]
+            external_relations = [r for r in relations if r not in internal_relations]
+        else:
+            # For module mode, use the module name as base
+            internal_entities = [e for e in entities if e.name.startswith(args.name)]
+            external_entities = [e for e in entities if e not in internal_entities]
+            
+            internal_relations = [r for r in relations if r.from_entity.name.startswith(args.name) and r.to_entity.name.startswith(args.name)]
+            external_relations = [r for r in relations if r not in internal_relations]
+        
         # Print summary
         print(f"\n{'='*60}")
         print(f"Processing completed successfully!")
@@ -223,8 +243,12 @@ def main():
         print(f"Name: {args.name}")
         print(f"Version: {args.version or 'latest'}")
         print(f"\nResults:")
-        print(f"  - Entities: {len(entities)}")
-        print(f"  - Relations: {len(relations)}")
+        print(f"  - Total Entities: {len(entities)}")
+        print(f"    • Internal: {len(internal_entities)}")
+        print(f"    • External: {len(external_entities)}")
+        print(f"  - Total Relations: {len(relations)}")
+        print(f"    • Internal: {len(internal_relations)}")
+        print(f"    • External: {len(external_relations)}")
         print(f"  - INHERITS: {len(other_relations.get('INHERITS', []))}")
         print(f"  - EXPOSES: {len(other_relations.get('EXPOSES', []))}")
         print(f"  - PUBLISHES: {len(other_relations.get('PUBLISHES', []))}")

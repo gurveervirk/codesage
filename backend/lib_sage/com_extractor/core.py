@@ -224,6 +224,19 @@ def process_package(
         try:
             entities, relations, other_relations = process_module(top_level_module, version=version)
             
+            # Categorize entities as internal vs external based on module name
+            internal_entities = [e for e in entities if e.properties.get("__name__", "").startswith(top_level_module)]
+            external_entities = [e for e in entities if not e.properties.get("__name__", "").startswith(top_level_module)]
+            
+            # Categorize relations as internal vs external
+            internal_relations = [r for r in relations if r.from_entity.properties.get("__name__", "").startswith(top_level_module) and r.to_entity.properties.get("__name__", "").startswith(top_level_module)]
+            external_relations = [r for r in relations if r not in internal_relations]
+            
+            # Count other_relations by type
+            inherits_count = len(other_relations.get("INHERITS", []))
+            exposes_count = len(other_relations.get("EXPOSES", []))
+            publishes_count = len(other_relations.get("PUBLISHES", []))
+            
             all_entities.extend(entities)
             all_relations.extend(relations)
             
@@ -231,9 +244,14 @@ def process_package(
             for rel_type in ["INHERITS", "EXPOSES", "PUBLISHES"]:
                 if rel_type in other_relations:
                     combined_other_relations[rel_type].extend(other_relations[rel_type])
-                    
-            logging.info(f"Successfully processed top-level module '{top_level_module}': "
-                        f"{len(entities)} entities, {len(relations)} relations")
+            
+            # Log detailed statistics for this module
+            logging.info(f"Successfully processed top-level module '{top_level_module}':")
+            logging.info(f"  Total entities: {len(entities)} (Internal: {len(internal_entities)}, External: {len(external_entities)})")
+            logging.info(f"  Total relations: {len(relations)} (Internal: {len(internal_relations)}, External: {len(external_relations)})")
+            logging.info(f"  INHERITS: {inherits_count}")
+            logging.info(f"  EXPOSES: {exposes_count}")
+            logging.info(f"  PUBLISHES: {publishes_count}")
         except Exception as e:
             logging.error(f"Error processing top-level module '{top_level_module}' for package '{pkg_name}': {e}")
             logging.error(traceback.format_exc())
