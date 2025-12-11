@@ -113,41 +113,46 @@ class COMStore(Neo4jPropertyGraphStore):
     def create_required_indices(self) -> None:
         """
         This method constructs Cypher queries and executes them to create:
-        1. Composite indices on (name, content_hash) for all entity types - CRITICAL for MERGE performance
-        2. 5 full-text indices in Neo4j:
-            - one for ROOT_MODULE entities on 'name' and 'source' properties.
-            - one for MODULE entities on 'name' and 'source' properties.
-            - one for FUNCTION entities on 'name' and 'source' properties.
-            - one for CLASS entities on 'name' and 'source' properties.
-            - one for METHOD entities on 'name' and 'source' properties.
-        3. 5 vector indices:
-            - one for ROOT_MODULE entities on the 'embedding' property.
-            - one for FUNCTION entities on the 'embedding' property.
-            - one for MODULE entities on the 'embedding' property.
-            - one for CLASS entities on the 'embedding' property.
-            - one for METHOD entities on the 'embedding' property.
+        1. Uniqueness constraints on content_hash for all entity types - CRITICAL for MERGE performance
+        2. Separate indices on name for query performance
+        3. Full-text indices on name for text search
+        4. Vector indices on embedding property for similarity search
 
         It uses the IF NOT EXISTS clause to avoid errors if the indices already exist.
         """
 
-        # Create composite uniqueness constraints on (name, content_hash) for MERGE optimization
-        # These are CRITICAL for performance and data integrity when using MERGE with both properties
+        # Create uniqueness constraints on content_hash for MERGE optimization
+        # content_hash is the primary unique identifier (includes name + content)
         # Constraints automatically create indexes AND guarantee uniqueness
-        composite_constraints = [
-            "CREATE CONSTRAINT root_module_unique IF NOT EXISTS FOR (n:ROOT_MODULE) REQUIRE (n.name, n.content_hash) IS UNIQUE",
-            "CREATE CONSTRAINT module_unique IF NOT EXISTS FOR (n:MODULE) REQUIRE (n.name, n.content_hash) IS UNIQUE",
-            "CREATE CONSTRAINT function_unique IF NOT EXISTS FOR (n:FUNCTION) REQUIRE (n.name, n.content_hash) IS UNIQUE",
-            "CREATE CONSTRAINT class_unique IF NOT EXISTS FOR (n:CLASS) REQUIRE (n.name, n.content_hash) IS UNIQUE",
-            "CREATE CONSTRAINT method_unique IF NOT EXISTS FOR (n:METHOD) REQUIRE (n.name, n.content_hash) IS UNIQUE",
-            "CREATE CONSTRAINT signature_unique IF NOT EXISTS FOR (n:SIGNATURE) REQUIRE (n.name, n.content_hash) IS UNIQUE",
-            "CREATE CONSTRAINT resolved_signature_unique IF NOT EXISTS FOR (n:RESOLVED_SIGNATURE) REQUIRE (n.name, n.content_hash) IS UNIQUE",
-            "CREATE CONSTRAINT docstring_unique IF NOT EXISTS FOR (n:DOCSTRING) REQUIRE (n.name, n.content_hash) IS UNIQUE",
-            "CREATE CONSTRAINT source_unique IF NOT EXISTS FOR (n:SOURCE) REQUIRE (n.name, n.content_hash) IS UNIQUE",
-            "CREATE CONSTRAINT decorator_details_unique IF NOT EXISTS FOR (n:DECORATOR_DETAILS) REQUIRE (n.name, n.content_hash) IS UNIQUE",
-            "CREATE CONSTRAINT import_details_unique IF NOT EXISTS FOR (n:IMPORT_DETAILS) REQUIRE (n.name, n.content_hash) IS UNIQUE",
+        hash_constraints = [
+            "CREATE CONSTRAINT root_module_unique IF NOT EXISTS FOR (n:ROOT_MODULE) REQUIRE n.content_hash IS UNIQUE",
+            "CREATE CONSTRAINT module_unique IF NOT EXISTS FOR (n:MODULE) REQUIRE n.content_hash IS UNIQUE",
+            "CREATE CONSTRAINT function_unique IF NOT EXISTS FOR (n:FUNCTION) REQUIRE n.content_hash IS UNIQUE",
+            "CREATE CONSTRAINT class_unique IF NOT EXISTS FOR (n:CLASS) REQUIRE n.content_hash IS UNIQUE",
+            "CREATE CONSTRAINT method_unique IF NOT EXISTS FOR (n:METHOD) REQUIRE n.content_hash IS UNIQUE",
+            "CREATE CONSTRAINT resolved_signature_unique IF NOT EXISTS FOR (n:RESOLVED_SIGNATURE) REQUIRE n.content_hash IS UNIQUE",
+            "CREATE CONSTRAINT source_unique IF NOT EXISTS FOR (n:SOURCE) REQUIRE n.content_hash IS UNIQUE",
+            "CREATE CONSTRAINT decorator_details_unique IF NOT EXISTS FOR (n:DECORATOR_DETAILS) REQUIRE n.content_hash IS UNIQUE",
+            "CREATE CONSTRAINT import_details_unique IF NOT EXISTS FOR (n:IMPORT_DETAILS) REQUIRE n.content_hash IS UNIQUE",
         ]
         
-        for query in composite_constraints:
+        for query in hash_constraints:
+            self.database_query(query)
+        
+        # Create separate indices on name for query performance
+        name_indices = [
+            "CREATE INDEX root_module_name_idx IF NOT EXISTS FOR (n:ROOT_MODULE) ON (n.name)",
+            "CREATE INDEX module_name_idx IF NOT EXISTS FOR (n:MODULE) ON (n.name)",
+            "CREATE INDEX function_name_idx IF NOT EXISTS FOR (n:FUNCTION) ON (n.name)",
+            "CREATE INDEX class_name_idx IF NOT EXISTS FOR (n:CLASS) ON (n.name)",
+            "CREATE INDEX method_name_idx IF NOT EXISTS FOR (n:METHOD) ON (n.name)",
+            "CREATE INDEX resolved_signature_name_idx IF NOT EXISTS FOR (n:RESOLVED_SIGNATURE) ON (n.name)",
+            "CREATE INDEX source_name_idx IF NOT EXISTS FOR (n:SOURCE) ON (n.name)",
+            "CREATE INDEX decorator_details_name_idx IF NOT EXISTS FOR (n:DECORATOR_DETAILS) ON (n.name)",
+            "CREATE INDEX import_details_name_idx IF NOT EXISTS FOR (n:IMPORT_DETAILS) ON (n.name)",
+        ]
+        
+        for query in name_indices:
             self.database_query(query)
 
         # Create full-text indices
@@ -177,20 +182,10 @@ class COMStore(Neo4jPropertyGraphStore):
         self.database_query(method_index_query)
 
         # Create full-text indices for property entity types
-        signature_index_query = """
-        CREATE FULLTEXT INDEX signature_index IF NOT EXISTS FOR (n:`SIGNATURE`) ON EACH [n.`name`]
-        """
-        self.database_query(signature_index_query)
-
         resolved_signature_index_query = """
         CREATE FULLTEXT INDEX resolved_signature_index IF NOT EXISTS FOR (n:`RESOLVED_SIGNATURE`) ON EACH [n.`name`]
         """
         self.database_query(resolved_signature_index_query)
-
-        docstring_index_query = """
-        CREATE FULLTEXT INDEX docstring_index IF NOT EXISTS FOR (n:`DOCSTRING`) ON EACH [n.`name`]
-        """
-        self.database_query(docstring_index_query)
 
         source_index_query = """
         CREATE FULLTEXT INDEX source_index IF NOT EXISTS FOR (n:`SOURCE`) ON EACH [n.`name`]
@@ -454,8 +449,11 @@ class COMStore(Neo4jPropertyGraphStore):
     
     def upsert_nodes(self, nodes: List[Entity]) -> None:
         """
-        Override parent's upsert_nodes to work directly with Entity models.
-        This method uses name and content_hash for MERGE operations.
+        Override parent's upsert_nodes with 2-stage upsertion strategy:
+        Stage 1: Match existing nodes by content_hash and add new labels (lightweight)
+        Stage 2: Create missing nodes with full properties (only for non-existent entities)
+        
+        This approach minimizes data transfer for existing entities.
         Entity already has content_hash computed and labels sanitized.
         Supports optional parallel execution via max_workers parameter.
         
@@ -480,63 +478,113 @@ class COMStore(Neo4jPropertyGraphStore):
                     serialized_props[key] = value
             return {k: v for k, v in serialized_props.items() if v is not None}
         
-        entity_dicts: List[dict] = []
+        # Prepare lightweight data for stage 1 (hash + labels only)
+        stage1_data: List[dict] = []
+        # Prepare full data for stage 2 (everything)
+        entity_map: Dict[str, dict] = {}
         
         for entity in nodes:
-            # Use content_hash from Entity (already computed in com_extractor)
             c_hash = entity.content_hash
+            sanitized_labels = entity.labels
             
-            # Prepare properties with content_hash
+            # Stage 1: lightweight match and label addition
+            stage1_data.append({
+                "content_hash": c_hash,
+                "labels": sanitized_labels
+            })
+            
+            # Prepare full entity data for stage 2 (if needed)
             properties = dict(entity.properties or {})
             properties["content_hash"] = c_hash
             properties = _serialize_nested_collections(properties)
             
-            # Labels are already sanitized in Entity model
-            sanitized_labels = entity.labels
-            
-            entity_dicts.append({
+            entity_map[c_hash] = {
                 "name": entity.name,
-                "labels": sanitized_labels,  # All labels from entity.labels (already sanitized)
+                "labels": sanitized_labels,
                 "properties": properties
-            })
+            }
         
-        if not entity_dicts:
+        if not stage1_data:
             return
         
-        upsert_query = """
+        # Stage 1: Match existing nodes and add labels, return missing hashes
+        stage1_query = """
             UNWIND $data AS row
-            MERGE (e {name: row.name, content_hash: row.properties.content_hash})
-            ON CREATE SET e += apoc.map.clean(row.properties, [], [])
+            OPTIONAL MATCH (e {content_hash: row.content_hash})
+            WITH e, row
+            WHERE e IS NOT NULL
+            CALL apoc.create.addLabels(e, row.labels) YIELD node
+            RETURN row.content_hash AS matched_hash
+        """
+        
+        # Stage 2: Create only the missing nodes with full properties
+        stage2_query = """
+            UNWIND $data AS row
+            CREATE (e {content_hash: row.properties.content_hash})
+            SET e += apoc.map.clean(row.properties, [], [])
             WITH e, row
             CALL apoc.create.addLabels(e, row.labels) YIELD node
-            RETURN count(node) AS upserted_count
+            RETURN count(node) AS created_count
         """
         
         # Split into chunks
-        chunks = [entity_dicts[i:i + CHUNK_SIZE] for i in range(0, len(entity_dicts), CHUNK_SIZE)]
+        stage1_chunks = [stage1_data[i:i + CHUNK_SIZE] for i in range(0, len(stage1_data), CHUNK_SIZE)]
         
-        # Parallel execution if max_workers is set
+        # Execute stage 1
+        matched_hashes = set()
+        logging.info(f"Stage 1: Matching {len(stage1_data)} nodes by content_hash and adding labels")
+        
         if self.max_workers and self.max_workers > 1:
-            logging.info(f"Upserting {len(entity_dicts)} nodes in parallel with {self.max_workers} workers")
             with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-                # Submit all chunks as parallel tasks
                 futures = [
-                    executor.submit(self._execute_query_in_session, upsert_query, {"data": chunk})
-                    for chunk in chunks
+                    executor.submit(self._execute_query_in_session, stage1_query, {"data": chunk})
+                    for chunk in stage1_chunks
                 ]
-                # Wait for all to complete and handle any errors
+                for future in as_completed(futures):
+                    try:
+                        result = future.result()
+                        for r in result:
+                            if r.get("matched_hash"):
+                                matched_hashes.add(r["matched_hash"])
+                    except Exception as e:
+                        logging.error(f"Error in stage 1 parallel upsert: {e}")
+                        raise
+        else:
+            for chunk in stage1_chunks:
+                result = self.structured_query(stage1_query, param_map={"data": chunk})
+                for r in result:
+                    if r.get("matched_hash"):
+                        matched_hashes.add(r["matched_hash"])
+        
+        logging.info(f"Stage 1 complete: Found {len(matched_hashes)} existing nodes")
+        
+        # Stage 2: Create only missing nodes
+        missing_entities = [entity_map[h] for h in entity_map.keys() if h not in matched_hashes]
+        
+        if not missing_entities:
+            logging.info("Stage 2: No new nodes to create")
+            return
+        
+        logging.info(f"Stage 2: Creating {len(missing_entities)} new nodes with full properties")
+        stage2_chunks = [missing_entities[i:i + CHUNK_SIZE] for i in range(0, len(missing_entities), CHUNK_SIZE)]
+        
+        if self.max_workers and self.max_workers > 1:
+            with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+                futures = [
+                    executor.submit(self._execute_query_in_session, stage2_query, {"data": chunk})
+                    for chunk in stage2_chunks
+                ]
                 for future in as_completed(futures):
                     try:
                         future.result()
                     except Exception as e:
-                        logging.error(f"Error in parallel node upsert: {e}")
+                        logging.error(f"Error in stage 2 parallel creation: {e}")
                         raise
         else:
-            # Sequential execution (original behavior)
-            for chunk in chunks:
-                logging.info(f"Upserting chunk of {len(chunk)} nodes")
-                self.structured_query(upsert_query, param_map={"data": chunk})
-                logging.info(f"Upserted {len(chunk)} nodes")
+            for chunk in stage2_chunks:
+                self.structured_query(stage2_query, param_map={"data": chunk})
+        
+        logging.info(f"Stage 2 complete: Created {len(missing_entities)} new nodes")
     
     def upsert_relations(self, relations: List[Relationship]) -> None:
         """
@@ -567,7 +615,7 @@ class COMStore(Neo4jPropertyGraphStore):
         def _extract_entity_type_label(labels: List[str]) -> Optional[str]:
             """Extract primary entity type label (ROOT_MODULE, MODULE, CLASS, etc.)"""
             entity_types = {'ROOT_MODULE', 'MODULE', 'FUNCTION', 'CLASS', 'METHOD', 
-                          'SIGNATURE', 'RESOLVED_SIGNATURE', 'DOCSTRING', 'SOURCE', 
+                          'RESOLVED_SIGNATURE', 'SOURCE', 
                           'DECORATOR_DETAILS', 'IMPORT_DETAILS'}
             for label in labels or []:
                 if label in entity_types:
@@ -606,12 +654,12 @@ class COMStore(Neo4jPropertyGraphStore):
         upsert_rel_query = """
             UNWIND $data AS row
             CALL apoc.cypher.doIt(
-              'MATCH (source:' + row.source_label + ' {name: $source_name, content_hash: $source_content_hash}) 
-               MATCH (target:' + row.target_label + ' {name: $target_name, content_hash: $target_content_hash})
+              'MATCH (source:' + row.source_label + ' {content_hash: $source_content_hash}) 
+               MATCH (target:' + row.target_label + ' {content_hash: $target_content_hash})
                CALL apoc.merge.relationship(source, $label, {}, $properties, target) YIELD rel
                RETURN $label as rel_type, 1 as created_count',
-              {source_name: row.source_name, source_content_hash: row.source_content_hash,
-               target_name: row.target_name, target_content_hash: row.target_content_hash,
+              {source_content_hash: row.source_content_hash,
+               target_content_hash: row.target_content_hash,
                properties: row.properties, label: row.label}
             ) YIELD value
             RETURN value.rel_type AS rel_type, value.created_count AS created_count

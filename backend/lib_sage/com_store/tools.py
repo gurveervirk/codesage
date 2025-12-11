@@ -262,16 +262,11 @@ class COMStoreTools:
         """
         retrieve_node_by_name_query = (
             """
-            // Phase 1: Try direct match by node name
             OPTIONAL MATCH (n1:METHOD|FUNCTION|CLASS|MODULE {name: $name})
             WITH collect(n1)[0] AS direct_match
-            
-            // Phase 2: If no direct match, try EXPOSES/PUBLISHES relationship name
             OPTIONAL MATCH ()-[r:EXPOSES|PUBLISHES]->(n2:METHOD|FUNCTION|CLASS|MODULE)
             WHERE direct_match IS NULL AND r.name = $name
             WITH direct_match, collect(n2)[0] AS exposed_match
-            
-            // Return the first non-null match
             WITH COALESCE(direct_match, exposed_match) AS found_node
             RETURN found_node.name AS name
             """
@@ -327,30 +322,29 @@ class COMStoreTools:
         }
         return dict_to_xml_string(data, "get_full_path_name_response")
     
-    def get_full_path_names(self, names: List[str]) -> str:
+    def get_full_path_names(self, names) -> str:
         """
         Get the full path names of multiple entities.
 
         Args:
-            names (List[str]): List of entity names.
+            names (str | List[str]): Entity names to search for. If string, will be split by commas and each name trimmed.
 
         Returns:
             str: XML-formatted string containing full path name results for each entity
         """
+        # Normalize names: convert string to list if needed
+        if isinstance(names, str):
+            names = [name.strip() for name in names.split(',') if name.strip()]
+        
         results = []
         for name in names:
             retrieve_node_by_name_query = (
                 """
-                // Phase 1: Try direct match by node name
                 OPTIONAL MATCH (n1:METHOD|FUNCTION|CLASS|MODULE {name: $name})
                 WITH collect(n1)[0] AS direct_match
-                
-                // Phase 2: If no direct match, try EXPOSES/PUBLISHES relationship name
                 OPTIONAL MATCH ()-[r:EXPOSES|PUBLISHES]->(n2:METHOD|FUNCTION|CLASS|MODULE)
                 WHERE direct_match IS NULL AND r.name = $name
                 WITH direct_match, collect(n2)[0] AS exposed_match
-                
-                // Return the first non-null match
                 WITH COALESCE(direct_match, exposed_match) AS found_node
                 RETURN found_node.name AS name
                 """
@@ -402,95 +396,65 @@ class COMStoreTools:
         }
         return dict_to_xml_string(data, "get_full_path_names_response")
     
-    def get_signatures(self, entity_names: List[str]) -> str:
+    def get_signatures(self, entity_names) -> str:
         """
         Get signatures for multiple entities.
         Now traverses to SIGNATURE property entities instead of accessing inline properties.
 
         Args:
-            entity_names (List[str]): List of entity names.
+            entity_names (str | List[str]): Entity names to search for. If string, will be split by commas and each name trimmed.
 
         Returns:
             str: XML-formatted string containing signature and type for each entity
         """
+        # Normalize entity_names: convert string to list if needed
+        if isinstance(entity_names, str):
+            entity_names = [name.strip() for name in entity_names.split(',') if name.strip()]
+        
         # Prepare a Cypher query to retrieve signatures for the entities
         query = (
 """
-// Start with the list of names to search for and create a row for each
 UNWIND $entity_names AS entity_name
-
-// Phase 1: Try to find a direct match for the entity by its own properties
 OPTIONAL MATCH (e1:METHOD|FUNCTION|CLASS)
 WHERE e1.name = entity_name OR e1.shortest_call_path = entity_name
 WITH entity_name, collect(e1)[0] AS direct_match
-
-// Phase 2: If no direct match was found, try the fallback search via the EXPOSES or PUBLISHES relationship
 OPTIONAL MATCH ()-[r:EXPOSES|PUBLISHES]->(e2:METHOD|FUNCTION|CLASS)
 WHERE direct_match IS NULL AND r.name = entity_name
 WITH entity_name, direct_match, collect(e2)[0] AS exposed_match
-
-// Combine the results from both phases. COALESCE gives us the first non-null entity found.
 WITH entity_name, COALESCE(direct_match, exposed_match) AS found_entity
-
-// Phase 3: If still no match, try parsing as Class.method
-// This block will only execute if found_entity from phases 1 & 2 is NULL.
 CALL apoc.when(
   found_entity IS NULL AND entity_name CONTAINS '.',
-  // If TRUE, execute this subquery to find the method via its class
   '
     WITH entity_name
-
-// 1. Collect all positions of the last dot
 WITH entity_name,
      apoc.text.indexesOf(entity_name, ".") AS ids
-
-// 2. Determine the last index (if none found, default to -1)
 WITH entity_name, ids,
      CASE
        WHEN size(ids) = 0 THEN -1
        ELSE ids[size(ids) - 1]
      END AS lastDot
-
-// 3. Split into class_path and method_name based on that
 WITH entity_name, lastDot,
      substring(entity_name, 0, lastDot) AS class_path,
      substring(entity_name, lastDot + 1) AS method_name
-
-// 4. Try to find the class node by direct or exposed match
 OPTIONAL MATCH (c1:CLASS)
 WHERE c1.name = class_path OR c1.shortest_call_path = class_path
 WITH entity_name, class_path, method_name, collect(c1)[0] AS class_direct_match
-
 OPTIONAL MATCH ()-[r:EXPOSES|PUBLISHES]->(c2:CLASS)
 WHERE class_direct_match IS NULL AND r.name = class_path
 WITH entity_name, method_name, class_direct_match, collect(c2)[0] AS class_exposed_match
-
 WITH entity_name, method_name,
      COALESCE(class_direct_match, class_exposed_match) AS found_class
-
-// 5. Finally, find the method under that class
 OPTIONAL MATCH (found_class)-[:HAS_METHOD]->(method:METHOD {__name__: method_name})
 RETURN method AS method_match;
   ',
-  // If FALSE, return null
   'RETURN NULL AS method_match',
-  // Parameters for the subquery
   {entity_name: entity_name}
 ) YIELD value
-
-// Combine results from all phases.
 WITH entity_name, COALESCE(found_entity, value.method_match) AS final_entity
-
-// Phase 4: Get the signature from SIGNATURE property entity
-// If the final_entity is a CLASS, we OPTIONALLY look for its `__init__` method.
 OPTIONAL MATCH (final_entity)-[:HAS_METHOD]->(init:METHOD {__name__: "__init__"})-[:HAS_SIGNATURE]->(init_sig:SIGNATURE)
 WHERE "CLASS" IN labels(final_entity)
-
-// Get signature for METHOD/FUNCTION entities
 OPTIONAL MATCH (final_entity)-[:HAS_SIGNATURE]->(entity_sig:SIGNATURE)
 WHERE final_entity IS NOT NULL AND NOT "CLASS" IN labels(final_entity)
-
-// Final Projection: Build the result map using a CASE statement for conditional logic.
 RETURN apoc.map.fromPairs(
   collect([
     entity_name,
@@ -498,9 +462,7 @@ RETURN apoc.map.fromPairs(
       WHEN final_entity IS NULL THEN NULL
       ELSE {
         signature: CASE
-          // If a class was found, use the __init__ method's signature from SIGNATURE entity.
           WHEN "CLASS" IN labels(final_entity) THEN init_sig.value
-          // For METHOD, FUNCTION, use the entity's own signature from SIGNATURE entity.
           ELSE entity_sig.value
         END,
         type: [label IN labels(final_entity) WHERE label IN ["CLASS", "FUNCTION", "METHOD"]][0]
@@ -540,13 +502,13 @@ RETURN apoc.map.fromPairs(
 
     def list_libraries(
             self,
-            search_terms: Optional[List[str]] = None,
+            search_terms = None,
         ) -> str:
         """
         Get a list of all ROOT_MODULE entities (libraries) in the knowledge graph.
         
         Args:
-            search_terms (List[str], optional): Search terms to filter libraries by name, using case-insensitive partial matching. Defaults to None.
+            search_terms (str | List[str], optional): Search terms to filter libraries by name, using case-insensitive partial matching. If string, will be split by commas and each term trimmed. Defaults to None.
 
         Returns:
             str: XML-formatted string containing:
@@ -555,6 +517,11 @@ RETURN apoc.map.fromPairs(
                     - versions (List[str]): List of version labels available for the library
                 - system_message (str): Informational message about the results
         """
+        # Normalize search_terms: convert string to list if needed
+        if search_terms:
+            if isinstance(search_terms, str):
+                search_terms = [term.strip() for term in search_terms.split(',') if term.strip()]
+        
         # Build the query with optional filtering and version aggregation
         query = """
         MATCH (lib:ROOT_MODULE)
@@ -617,7 +584,8 @@ RETURN apoc.map.fromPairs(
     def search_definitions(
         self,
         parent_entity_name: str,
-        search_terms: List[str],
+        search_terms,
+        version: Optional[str] = None,
         page: int = 1,
         page_size: int = 10
     ) -> str:
@@ -627,7 +595,8 @@ RETURN apoc.map.fromPairs(
         
         Args:
             parent_entity_name (str): Name of the parent entity to search within
-            search_terms (List[str]): List of definition names to search for
+            search_terms (str | List[str]): Definition names to search for. If string, will be split by commas and each term trimmed.
+            version (str, optional): Version of the entity to search within (e.g., "4.28")
             page (int): Page number starting from 1. Default is 1.
             page_size (int): Number of results per page. Default is 10.
         
@@ -638,7 +607,6 @@ RETURN apoc.map.fromPairs(
                     - api_path (str): API call path (entity.shortest_call_path)
                     - definition_type (str): Primary type of definition (e.g., "FUNCTION", "CLASS", "METHOD")
                     - all_labels (List[str]): All labels associated with the entity
-                    - signature (str): Code signature (for CLASS, shows __init__ signature if available)
                 - next_page (int | None): Next page number if more results are available
                 - current_page (int): Current page number
                 - total_results (int): Total number of matching results
@@ -646,8 +614,51 @@ RETURN apoc.map.fromPairs(
         """
         from .utils import _escape_regex_special_chars, _extract_partial_terms
         
+        # Normalize search_terms: convert string to list if needed
+        if isinstance(search_terms, str):
+            search_terms = [term.strip() for term in search_terms.split(',') if term.strip()]
+        
         # Calculate skip value for pagination
         skip = (page - 1) * page_size
+        
+        # Normalize version string if provided
+        version_label = None
+        if version:
+            if version.startswith("version_"):
+                version_label = version
+            else:
+                version_label = f"version_{version.replace('.', '_').replace(':', '_').replace('-', '_')}"
+        
+        # If version specified, check if entity with that version exists
+        if version_label:
+            check_query = """
+            OPTIONAL MATCH (parent1:`version_label` {name: $parent_entity_name})
+            WITH collect(parent1)[0] AS direct_parent
+            OPTIONAL MATCH ()-[r:EXPOSES|PUBLISHES]->(parent2:`version_label`)
+            WHERE direct_parent IS NULL AND r.name = $parent_entity_name
+            WITH direct_parent, collect(parent2)[0] AS exposed_parent, COALESCE(direct_parent, exposed_parent) AS versioned_parent
+            OPTIONAL MATCH (any_parent {name: $parent_entity_name})
+            RETURN versioned_parent IS NOT NULL AS version_exists,
+                   any_parent IS NOT NULL AS entity_exists,
+                   [label IN labels(any_parent) WHERE label STARTS WITH 'version_'] AS available_versions
+            LIMIT 1
+            """.replace("`version_label`", f"`{version_label}`")
+            
+            check_result = self.store.structured_query(check_query, {"parent_entity_name": parent_entity_name})
+            
+            if check_result and not check_result[0]["version_exists"]:
+                if check_result[0]["entity_exists"]:
+                    # Entity exists but not with this version
+                    available = [v[8:].replace("_", ".") for v in check_result[0]["available_versions"]]
+                    data = {
+                        "definitions": [],
+                        "available_versions": available,
+                        "next_page": None,
+                        "current_page": page,
+                        "total_results": 0,
+                        "system_message": f"Entity '{parent_entity_name}' not found with version '{version}'. Available versions: {', '.join(available)}"
+                    }
+                    return dict_to_xml_string(data, "search_definitions_response")
         
         # Process search terms: escape regex special chars and extract partial terms
         all_search_patterns = []
@@ -661,88 +672,62 @@ RETURN apoc.map.fromPairs(
         # Combine all patterns with OR (|)
         search_pattern = "|".join(all_search_patterns)
         
-        query = """
-        // Phase 1: Find the parent entity by direct name match
-        OPTIONAL MATCH (parent1 {name: $parent_entity_name})
-        WITH collect(parent1)[0] AS direct_parent
+        # Build query with version filtering in MATCH clause
+        if version_label:
+            query = f"""
+            OPTIONAL MATCH (parent1:`{version_label}` {{name: $parent_entity_name}})
+            WITH collect(parent1)[0] AS direct_parent
+            OPTIONAL MATCH ()-[r:EXPOSES|PUBLISHES]->(parent2:`{version_label}`)
+            WHERE direct_parent IS NULL AND r.name = $parent_entity_name
+            WITH direct_parent, collect(parent2)[0] AS exposed_parent
+            WITH COALESCE(direct_parent, exposed_parent) AS parent
+            MATCH path = (parent)-[:HAS_SUBMODULE|HAS_CLASS|HAS_METHOD|HAS_FUNCTION|PUBLISHES*]->(child)
+            """
+        else:
+            query = """
+            OPTIONAL MATCH (parent1 {name: $parent_entity_name})
+            WITH collect(parent1)[0] AS direct_parent
+            OPTIONAL MATCH ()-[r:EXPOSES|PUBLISHES]->(parent2)
+            WHERE direct_parent IS NULL AND r.name = $parent_entity_name
+            WITH direct_parent, collect(parent2)[0] AS exposed_parent
+            WITH COALESCE(direct_parent, exposed_parent) AS parent
+            MATCH path = (parent)-[:HAS_SUBMODULE|HAS_CLASS|HAS_METHOD|HAS_FUNCTION|PUBLISHES*]->(child)
+            """
         
-        // Phase 2: If no direct match, try EXPOSES/PUBLISHES relationship name
-        OPTIONAL MATCH ()-[r:EXPOSES|PUBLISHES]->(parent2)
-        WHERE direct_parent IS NULL AND r.name = $parent_entity_name
-        WITH direct_parent, collect(parent2)[0] AS exposed_parent
-        
-        // Combine results - use whichever parent was found
-        WITH COALESCE(direct_parent, exposed_parent) AS parent
-        
-        // Find all children recursively using variable-length path
-        // Match 1: Search by child.__name__ and PUBLISHES relationship name
-        MATCH path = (parent)-[:HAS_SUBMODULE|HAS_CLASS|HAS_METHOD|HAS_FUNCTION|PUBLISHES*]->(child)
+        query += """
         WHERE child.__name__ =~ $search_pattern 
            OR ANY(rel IN relationships(path) WHERE type(rel) = 'PUBLISHES' AND rel.name =~ $search_pattern)
-        
         WITH DISTINCT child, parent
-        
-        // Match 2a: Direct EXPOSES relationships from parent
         OPTIONAL MATCH (parent)-[direct_exp:EXPOSES]->(direct_exposed_child)
         WHERE direct_exp.name =~ $search_pattern
-        
-        // Match 2b: Indirect EXPOSES relationships in parent's tree
         OPTIONAL MATCH (parent)-[:HAS_SUBMODULE|HAS_CLASS|HAS_METHOD|HAS_FUNCTION|PUBLISHES*]->(intermediate)-[exp:EXPOSES]->(exposed_child)
         WHERE exp.name =~ $search_pattern
-        
-        // Combine all matches
         WITH collect(DISTINCT child) + collect(DISTINCT direct_exposed_child) + collect(DISTINCT exposed_child) AS all_children
         UNWIND all_children AS child
         WHERE child IS NOT NULL
-        
-        // Get distinct children to avoid duplicates from multiple paths
         WITH DISTINCT child
-        
-        // Get SIGNATURE property entities
-        OPTIONAL MATCH (child)-[:HAS_SIGNATURE]->(child_sig:SIGNATURE)
-        
-        // For CLASS entities, optionally get their __init__ method and its signature
-        OPTIONAL MATCH (child:CLASS)-[:HAS_METHOD]->(init:METHOD {__name__: "__init__"})-[:HAS_SIGNATURE]->(init_sig:SIGNATURE)
-        
-        // Build complete result set with all data
-        WITH child, init_sig, child_sig,
+        WITH child,
             child.name AS fqn,
             child.shortest_call_path AS api_path,
             [label IN labels(child) WHERE label IN ['FUNCTION', 'CLASS', 'METHOD', 'MODULE', 'ROOT_MODULE']][0] AS definition_type,
-            labels(child) AS all_labels,
-            CASE
-                // For CLASS, use __init__ signature if available
-                WHEN "CLASS" IN labels(child) AND init_sig IS NOT NULL THEN init_sig.value
-                // For others, use their own signature from SIGNATURE property entity
-                WHEN child_sig IS NOT NULL THEN child_sig.value
-                ELSE child.__name__
-            END AS signature
+            labels(child) AS all_labels
         ORDER BY fqn
-        
-        // Get total count before pagination
         WITH collect({
             fqn: fqn,
             api_path: api_path,
             definition_type: definition_type,
-            all_labels: all_labels,
-            signature: signature
+            all_labels: all_labels
         }) AS all_results
-        
         WITH all_results, size(all_results) AS total_count
-        
-        // Apply pagination at the end
         UNWIND all_results AS result
         WITH result, total_count
         SKIP $skip
         LIMIT $page_size
-        
-        // Return paginated results with total count
         RETURN 
             result.fqn AS fqn,
             result.api_path AS api_path,
             result.definition_type AS definition_type,
-            result.all_labels AS all_labels,
-            result.signature AS signature,
+            result.all_labels AS all_labels
             total_count
         """
         
@@ -776,8 +761,7 @@ RETURN apoc.map.fromPairs(
                     "fqn": result["fqn"],
                     "api_path": result["api_path"],
                     "definition_type": result["definition_type"],
-                    "all_labels": result["all_labels"],
-                    "signature": result["signature"]
+                    "all_labels": result["all_labels"]
                 })
             
             data = {
@@ -800,13 +784,13 @@ RETURN apoc.map.fromPairs(
             }
             return dict_to_xml_string(data, "search_definitions_response")
         
-    def get_definitions(self, entity_names: List[str]) -> str:
+    def get_definitions(self, entity_names, version: Optional[str] = None) -> str:
         """
-        Get definition information for one or more entities.
-        Now traverses to property entities (DOCSTRING, SIGNATURE, RESOLVED_SIGNATURE) instead of accessing inline properties.
+        Get detailed definition information for one or more entities.
 
         Args:
-            entity_names (List[str]): List of entity names (can be a single entity or multiple).
+            entity_names (str | List[str]): Entity names to retrieve. If string, will be split by commas and each name trimmed.
+            version (str, optional): Version of the entities to retrieve (e.g., "4.28")
 
         Returns:
             str: XML-formatted string containing:
@@ -821,32 +805,86 @@ RETURN apoc.map.fromPairs(
                     - found (bool): Whether the entity was found
                 - system_message (str): Informational message
         """
-        get_definitions_query = """
+        # Normalize entity_names: convert string to list if needed
+        if isinstance(entity_names, str):
+            entity_names = [name.strip() for name in entity_names.split(',') if name.strip()]
+        
+        # Normalize version string if provided
+        version_label = None
+        if version:
+            if version.startswith("version_"):
+                version_label = version
+            else:
+                version_label = f"version_{version.replace('.', '_').replace(':', '_').replace('-', '_')}"
+        
+        # If version specified, check if entities with that version exist
+        if version_label:
+            check_query = f"""
             UNWIND $entity_names AS entity_name
+            OPTIONAL MATCH (versioned1:`{version_label}` {{name: entity_name}})
+            WITH entity_name, collect(versioned1)[0] AS versioned_direct
+            OPTIONAL MATCH ()-[r:EXPOSES|PUBLISHES]->(versioned2:`{version_label}`)
+            WHERE versioned_direct IS NULL AND r.name = entity_name
+            WITH entity_name, versioned_direct, collect(versioned2)[0] AS versioned_exposed,
+                 COALESCE(versioned_direct, versioned_exposed) AS versioned_entity
+            OPTIONAL MATCH (any_entity {{name: entity_name}})
+            RETURN entity_name,
+                   versioned_entity IS NOT NULL AS version_exists,
+                   any_entity IS NOT NULL AS entity_exists,
+                   [label IN labels(any_entity) WHERE label STARTS WITH 'version_'] AS available_versions
+            """
             
-            // Phase 1: Try to match the entity by name directly
-            OPTIONAL MATCH (end1 {name: entity_name})
-            WITH entity_name, collect(end1)[0] AS direct_match
+            check_results = self.store.structured_query(check_query, {"entity_names": entity_names})
             
-            // Phase 2: If no direct match, try EXPOSES/PUBLISHES relationship name
-            OPTIONAL MATCH ()-[r:EXPOSES|PUBLISHES]->(end2)
-            WHERE direct_match IS NULL AND r.name = entity_name
-            WITH entity_name, direct_match, collect(end2)[0] AS exposed_match
+            # Check if any entities don't have the requested version
+            entities_without_version = []
+            for check_result in check_results:
+                if not check_result["version_exists"] and check_result["entity_exists"]:
+                    available = [v[8:].replace("_", ".") for v in check_result["available_versions"]]
+                    entities_without_version.append({
+                        "entity_name": check_result["entity_name"],
+                        "available_versions": available
+                    })
             
-            // Combine results from both phases
-            WITH entity_name, COALESCE(direct_match, exposed_match) AS end
-            
-            // Get property entities for the found entity
-            OPTIONAL MATCH (end)-[:HAS_DOCSTRING]->(docstring:DOCSTRING)
+            if entities_without_version:
+                data = {
+                    "definitions": [],
+                    "entities_without_version": entities_without_version,
+                    "system_message": f"Some entities not found with version '{version}'. Check entities_without_version for available versions."
+                }
+                return dict_to_xml_string(data, "get_definitions_response")
+        
+        # Build query with version filtering in MATCH clause
+        if version_label:
+            get_definitions_query = f"""
+                UNWIND $entity_names AS entity_name
+                OPTIONAL MATCH (end1:`{version_label}` {{name: entity_name}})
+                WITH entity_name, collect(end1)[0] AS direct_match
+                OPTIONAL MATCH ()-[r:EXPOSES|PUBLISHES]->(end2:`{version_label}`)
+                WHERE direct_match IS NULL AND r.name = entity_name
+                WITH entity_name, direct_match, collect(end2)[0] AS exposed_match
+                WITH entity_name, COALESCE(direct_match, exposed_match) AS end
+                OPTIONAL MATCH (end)-[:HAS_DOCSTRING]->(docstring:DOCSTRING)
+            """
+        else:
+            get_definitions_query = """
+                UNWIND $entity_names AS entity_name
+                OPTIONAL MATCH (end1 {name: entity_name})
+                WITH entity_name, collect(end1)[0] AS direct_match
+                OPTIONAL MATCH ()-[r:EXPOSES|PUBLISHES]->(end2)
+                WHERE direct_match IS NULL AND r.name = entity_name
+                WITH entity_name, direct_match, collect(end2)[0] AS exposed_match
+                WITH entity_name, COALESCE(direct_match, exposed_match) AS end
+                OPTIONAL MATCH (end)-[:HAS_DOCSTRING]->(docstring:DOCSTRING)
+            """
+        
+        get_definitions_query += """
             OPTIONAL MATCH (end)-[:HAS_SIGNATURE]->(signature:SIGNATURE)
             OPTIONAL MATCH (end)-[:HAS_RESOLVED_SIGNATURE]->(resolved_sig:RESOLVED_SIGNATURE)
-            
-            // Get __init__ for CLASS entities
             OPTIONAL MATCH (end:CLASS)-[:HAS_METHOD]->(init {__name__: "__init__"})
             OPTIONAL MATCH (init)-[:HAS_SIGNATURE]->(init_sig:SIGNATURE)
             OPTIONAL MATCH (init)-[:HAS_RESOLVED_SIGNATURE]->(init_resolved_sig:RESOLVED_SIGNATURE)
             WHERE "CLASS" IN labels(end)
-            
             WITH entity_name, end, docstring, signature, resolved_sig, init, init_sig, init_resolved_sig
             RETURN 
                 entity_name AS query_name,
@@ -869,7 +907,9 @@ RETURN apoc.map.fromPairs(
                 end IS NOT NULL AS found
         """
         
-        results = self.store.structured_query(get_definitions_query, {"entity_names": entity_names})
+        query_params = {"entity_names": entity_names}
+        
+        results = self.store.structured_query(get_definitions_query, query_params)
         
         found_count = sum(1 for r in results if r['found'])
         data = {
@@ -889,7 +929,7 @@ RETURN apoc.map.fromPairs(
         
         Args:
             library_name (str): Name of the ROOT_MODULE (library) to map
-            version (str): Version of the library (e.g., "4.28" or "version_4_28")
+            version (str): Version of the library (e.g., "4.28")
             depth (int): Directory/entity traversal depth. 0 = full depth (default), >0 = limited depth.
         
         Returns:
@@ -916,38 +956,57 @@ RETURN apoc.map.fromPairs(
         actual_depth = 999 if depth == 0 else depth
         
         try:
-            # Query to get hierarchical structure
-            query = """
-            // Find the root module with the specified version
-            MATCH (root:ROOT_MODULE {name: $library_name})
-            WHERE $version_label IN labels(root)
+            # Check if library with version exists
+            check_query = f"""
+            OPTIONAL MATCH (versioned_lib:`{version_label}` {{name: $library_name}})
+            OPTIONAL MATCH (any_lib {{name: $library_name}})
+            RETURN versioned_lib IS NOT NULL AS version_exists,
+                   any_lib IS NOT NULL AS library_exists,
+                   [label IN labels(any_lib) WHERE label STARTS WITH 'version_'] AS available_versions
+            LIMIT 1
+            """
             
-            // Get all descendants up to the specified depth
-            CALL apoc.path.subgraphAll(root, {
+            check_result = self.store.structured_query(check_query, {"library_name": library_name})
+            
+            if check_result and not check_result[0]["version_exists"]:
+                if check_result[0]["library_exists"]:
+                    # Library exists but not with this version
+                    available = [v[8:].replace("_", ".") for v in check_result[0]["available_versions"]]
+                    data = {
+                        "library_name": library_name,
+                        "version": version_display,
+                        "depth": depth,
+                        "entities": [],
+                        "available_versions": available,
+                        "system_message": f"Library '{library_name}' not found with version '{version_display}'. Available versions: {', '.join(available)}"
+                    }
+                    return dict_to_xml_string(data, "library_map_response")
+            
+            # Query to get hierarchical structure with version in MATCH
+            query = f"""
+            MATCH (root:`{version_label}` {{name: $library_name}})
+            CALL apoc.path.subgraphAll(root, {{
                 relationshipFilter: 'HAS_SUBMODULE>|HAS_CLASS>|HAS_METHOD>|HAS_FUNCTION>|EXPOSES>|PUBLISHES>',
                 maxLevel: $depth
-            })
+            }})
             YIELD nodes, relationships
-            
-            // Return the structure
             RETURN 
-                [n IN nodes | {
+                [n IN nodes | {{
                     id: id(n),
                     name: n.name,
                     __name__: n.__name__,
                     shortest_call_path: n.shortest_call_path,
                     labels: labels(n)
-                }] AS all_nodes,
-                [r IN relationships | {
+                }}] AS all_nodes,
+                [r IN relationships | {{
                     from_id: id(startNode(r)),
                     to_id: id(endNode(r)),
                     type: type(r)
-                }] AS all_relationships
+                }}] AS all_relationships
             """
             
             query_params = {
                 "library_name": library_name,
-                "version_label": version_label,
                 "depth": actual_depth
             }
             
@@ -1038,8 +1097,8 @@ RETURN apoc.map.fromPairs(
 
         Args:
             parent_entity (str): The entity, under which the versions are to be compared for itself and its children.
-            old_version (str): The old version identifier (e.g., "4.28" or "version_4_28").
-            new_version (str): The new version identifier (e.g., "4.29" or "version_4_29").
+            old_version (str): The old version identifier (e.g., "4.28" ).
+            new_version (str): The new version identifier (e.g., "4.29" ).
 
         Returns:
             str: XML-formatted string containing:
@@ -1067,29 +1126,63 @@ RETURN apoc.map.fromPairs(
                 new_version_label = f"version_{new_version.replace('.', '_').replace(':', '_').replace('-', '_')}"
                 new_version_display = new_version
             
-            # Query to get both versions' hierarchies with their SIGNATURE property entities
-            query = """
-            // Get old version hierarchy
-            MATCH (old_root {name: $parent_entity})
-            WHERE $old_version_label IN labels(old_root)
-            CALL apoc.path.subgraphAll(old_root, {
+            # Check if entity exists with both versions
+            check_query = f"""
+            OPTIONAL MATCH (old_ver:`{old_version_label}` {{name: $parent_entity}})
+            OPTIONAL MATCH (new_ver:`{new_version_label}` {{name: $parent_entity}})
+            OPTIONAL MATCH (any_entity {{name: $parent_entity}})
+            RETURN old_ver IS NOT NULL AS old_version_exists,
+                   new_ver IS NOT NULL AS new_version_exists,
+                   any_entity IS NOT NULL AS entity_exists,
+                   [label IN labels(any_entity) WHERE label STARTS WITH 'version_'] AS available_versions
+            LIMIT 1
+            """
+            
+            check_result = self.store.structured_query(check_query, {"parent_entity": parent_entity})
+            
+            if check_result:
+                if not check_result[0]["old_version_exists"] or not check_result[0]["new_version_exists"]:
+                    if check_result[0]["entity_exists"]:
+                        available = [v[8:].replace("_", ".") for v in check_result[0]["available_versions"]]
+                        missing = []
+                        if not check_result[0]["old_version_exists"]:
+                            missing.append(old_version_display)
+                        if not check_result[0]["new_version_exists"]:
+                            missing.append(new_version_display)
+                        
+                        data = {
+                            "entity_name": parent_entity,
+                            "old_version": old_version_display,
+                            "new_version": new_version_display,
+                            "diff": "",
+                            "entities": [],
+                            "available_versions": available,
+                            "summary": {
+                                "added": 0,
+                                "removed": 0,
+                                "modified": 0,
+                                "unchanged": 0
+                            },
+                            "system_message": f"Entity '{parent_entity}' not found with version(s): {', '.join(missing)}. Available versions: {', '.join(available)}"
+                        }
+                        return dict_to_xml_string(data, "get_version_diff_response")
+            
+            # Query to get both versions' hierarchies with version in MATCH clause
+            query = f"""
+            MATCH (old_root:`{old_version_label}` {{name: $parent_entity}})
+            CALL apoc.path.subgraphAll(old_root, {{
                 relationshipFilter: 'HAS_SUBMODULE>|HAS_CLASS>|HAS_METHOD>|HAS_FUNCTION>|EXPOSES>|PUBLISHES>'
-            })
+            }})
             YIELD nodes AS old_nodes, relationships AS old_rels
-            
-            // Get new version hierarchy
-            MATCH (new_root {name: $parent_entity})
-            WHERE $new_version_label IN labels(new_root)
-            CALL apoc.path.subgraphAll(new_root, {
+            MATCH (new_root:`{new_version_label}` {{name: $parent_entity}})
+            CALL apoc.path.subgraphAll(new_root, {{
                 relationshipFilter: 'HAS_SUBMODULE>|HAS_CLASS>|HAS_METHOD>|HAS_FUNCTION>|EXPOSES>|PUBLISHES>'
-            })
+            }})
             YIELD nodes AS new_nodes, relationships AS new_rels
-            
-            // Process old nodes with signatures
             WITH old_nodes, old_rels, new_nodes, new_rels
             UNWIND old_nodes AS old_n
             OPTIONAL MATCH (old_n)-[:HAS_SIGNATURE]->(old_sig:SIGNATURE)
-            WITH collect({
+            WITH collect({{
                 id: id(old_n),
                 name: old_n.name,
                 __name__: old_n.__name__,
@@ -1097,12 +1190,10 @@ RETURN apoc.map.fromPairs(
                 labels: labels(old_n),
                 signature: old_sig.value,
                 content_hash: old_n.content_hash
-            }) AS old_all_nodes, old_rels, new_nodes, new_rels
-            
-            // Process new nodes with signatures
+            }}) AS old_all_nodes, old_rels, new_nodes, new_rels
             UNWIND new_nodes AS new_n
             OPTIONAL MATCH (new_n)-[:HAS_SIGNATURE]->(new_sig:SIGNATURE)
-            WITH old_all_nodes, old_rels, new_rels, collect({
+            WITH old_all_nodes, old_rels, new_rels, collect({{
                 id: id(new_n),
                 name: new_n.name,
                 __name__: new_n.__name__,
@@ -1110,25 +1201,22 @@ RETURN apoc.map.fromPairs(
                 labels: labels(new_n),
                 signature: new_sig.value,
                 content_hash: new_n.content_hash
-            }) AS new_all_nodes
-            
+            }}) AS new_all_nodes
             RETURN 
                 old_all_nodes,
-                [r IN old_rels | {
+                [r IN old_rels | {{
                     from_id: id(startNode(r)),
                     to_id: id(endNode(r))
-                }] AS old_all_relationships,
+                }}] AS old_all_relationships,
                 new_all_nodes,
-                [r IN new_rels | {
+                [r IN new_rels | {{
                     from_id: id(startNode(r)),
                     to_id: id(endNode(r))
-                }] AS new_all_relationships
+                }}] AS new_all_relationships
             """
             
             query_params = {
-                "parent_entity": parent_entity,
-                "old_version_label": old_version_label,
-                "new_version_label": new_version_label
+                "parent_entity": parent_entity
             }
             
             results = self.store.structured_query(query, query_params)
