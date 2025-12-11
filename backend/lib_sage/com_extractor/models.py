@@ -1,4 +1,4 @@
-from typing import Dict, List, Optional, Tuple
+from typing_extensions import Dict, List, Optional, Tuple
 from pydantic import BaseModel
 import hashlib
 import re

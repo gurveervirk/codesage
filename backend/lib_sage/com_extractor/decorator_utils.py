@@ -8,7 +8,7 @@ resolving them to their full paths, and determining function/method labels.
 import ast
 import inspect
 import logging
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing_extensions import Any, Callable, Dict, List, Optional, Tuple
 
 from .source_utils import safe_get_source
 

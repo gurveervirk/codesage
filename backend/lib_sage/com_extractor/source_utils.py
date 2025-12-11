@@ -18,7 +18,7 @@ import subprocess
 import traceback
 import types
 from tokenize import TokenError
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing_extensions import Any, Dict, List, Optional, Set, Tuple
 
 
 def _normalize_signature(signature_str: str) -> str:

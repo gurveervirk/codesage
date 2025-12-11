@@ -9,7 +9,7 @@ import importlib
 import inspect
 import logging
 import traceback
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing_extensions import Any, Dict, List, Optional, Set, Tuple
 
 from .models import Entity, Relationship, ExternalEntityRef
 from .source_utils import (

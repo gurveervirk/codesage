@@ -11,7 +11,7 @@ import logging
 import subprocess
 import sys
 import traceback
-from typing import Dict, List, Optional, Tuple
+from typing_extensions import Dict, List, Optional, Tuple
 
 try:
     from importlib.metadata import packages_distributions
@@ -231,7 +231,7 @@ def process_package(
             for rel_type in ["INHERITS", "EXPOSES", "PUBLISHES"]:
                 if rel_type in other_relations:
                     combined_other_relations[rel_type].extend(other_relations[rel_type])
-                    
+
         except Exception as e:
             logging.error(f"Error processing top-level module '{top_level_module}' for package '{pkg_name}': {e}")
             logging.error(traceback.format_exc())

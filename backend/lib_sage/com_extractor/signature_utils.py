@@ -13,8 +13,10 @@ import logging
 import re
 import types
 import typing
-from typing import Any, Callable, Dict, List, Optional, Tuple
-from typing_extensions import get_overloads, get_type_hints, Literal
+from typing_extensions import Any, Callable, Dict, List, Optional, Tuple
+from typing_extensions import get_type_hints, Literal
+
+from .overload_utils import get_overloads_with_fallback
 
 
 # Module cache for namespace resolution
@@ -726,7 +728,7 @@ def get_typed_signature(func, include_overloads: bool = True):
 
     # If overloads exist, compute signatures for each overload and include implementation
     try:
-        overloads = get_overloads(func) or []
+        overloads = get_overloads_with_fallback(func) or []
     except Exception:
         overloads = []
 

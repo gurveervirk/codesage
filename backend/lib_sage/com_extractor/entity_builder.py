@@ -9,13 +9,14 @@ import ast
 import inspect
 import json
 import logging
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
-from typing_extensions import get_overloads, Literal
+from typing_extensions import Any, Callable, Dict, List, Optional, Set, Tuple
+from typing_extensions import Literal
 
 from .models import Entity, Relationship
 from .source_utils import safe_get_source, safe_get_docstring
 from .signature_utils import get_typed_signature, _normalize_signature
 from .decorator_utils import get_function_method_labels, _resolve_decorator_details
+from .overload_utils import get_overloads_with_fallback
 
 
 def _is_dunder(name: str) -> bool:
@@ -347,7 +348,7 @@ def _process_callable_with_overloads(
     # Overload detection
     overloads: List[Callable] = []
     try:
-        overloads = get_overloads(obj) or []
+        overloads = get_overloads_with_fallback(obj) or []
     except Exception:
         overloads = []
     
