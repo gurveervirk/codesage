@@ -227,6 +227,19 @@ def main():
             
             internal_relations = [r for r in relations if any(r.from_entity.name.startswith(mod) and r.to_entity.name.startswith(mod) for mod in top_level_modules)]
             external_relations = [r for r in relations if r not in internal_relations]
+            
+            # Log per-root-module breakdown
+            print(f"\n{'='*60}")
+            print(f"Per Top-Level Module Breakdown:")
+            print(f"{'='*60}")
+            for mod in sorted(top_level_modules):
+                mod_entities = [e for e in entities if e.name.startswith(mod)]
+                mod_internal_entities = [e for e in mod_entities if e.name.startswith(mod)]
+                mod_internal_relations = [r for r in relations if r.from_entity.name.startswith(mod) and r.to_entity.name.startswith(mod)]
+                print(f"  {mod}:")
+                print(f"    - Entities: {len(mod_internal_entities)}")
+                print(f"    - Relations: {len(mod_internal_relations)}")
+            print(f"{'='*60}")
         else:
             # For module mode, use the module name as base
             internal_entities = [e for e in entities if e.name.startswith(args.name)]
