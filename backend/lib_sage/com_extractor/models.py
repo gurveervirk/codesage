@@ -46,29 +46,23 @@ def _sanitize_labels(labels: List[str]) -> List[str]:
 
 def _compute_content_hash(name: str, props: Dict) -> str:
     """
-    Calculate content hash for an entity based on its name and properties.
-    
-    For regular entities (METHOD, FUNCTION, CLASS, MODULE):
-        Uses name + __name__ as the primary identifier (signatures/source are in separate entities)
-    
-    For property entities (SIGNATURE, SOURCE, DOCSTRING, etc.):
-        Uses name + 'value' property which contains the actual content
+    Calculate content hash for an entity based on its name and all properties.
+    Hashes all property keys and values in sorted order for deterministic results.
     """
     h = hashlib.sha256()
     
-    # Always include entity name in hash
+    # Include entity name
     h.update(name.encode("utf-8", errors="ignore"))
     h.update(b"|::|")
     
-    # For property entities, hash their value
-    if "value" in props:
-        value = str(props.get("value", ""))
-        h.update(value.encode("utf-8", errors="ignore"))
-        return h.hexdigest()
+    # Hash all properties in sorted order for determinism
+    for key in sorted(props.keys()):
+        value = props[key]
+        h.update(key.encode("utf-8", errors="ignore"))
+        h.update(b"|::|")
+        h.update(str(value).encode("utf-8", errors="ignore"))
+        h.update(b"|::|")
     
-    # For regular entities, additionally use __name__
-    dunder_name = str(props.get("__name__", ""))
-    h.update(dunder_name.encode("utf-8", errors="ignore"))
     return h.hexdigest()
 
 

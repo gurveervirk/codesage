@@ -496,6 +496,7 @@ class COMStore(Neo4jPropertyGraphStore):
             # Prepare full entity data for stage 2 (if needed)
             properties = dict(entity.properties or {})
             properties["content_hash"] = c_hash
+            properties["name"] = entity.name
             properties = _serialize_nested_collections(properties)
             
             entity_map[c_hash] = {
@@ -682,8 +683,15 @@ class COMStore(Neo4jPropertyGraphStore):
                     try:
                         result = future.result()
                         if result:
+                            # Aggregate counts per chunk
+                            type_counts = {}
                             for r in result:
-                                logging.info(f"Created {r.get('created_count', 0)} {r.get('rel_type', 'unknown')} relationships")
+                                rel_type = r.get('rel_type', 'unknown')
+                                count = r.get('created_count', 0)
+                                type_counts[rel_type] = type_counts.get(rel_type, 0) + count
+                            # Log once per chunk
+                            count_str = ", ".join([f"{count} {rel_type}" for rel_type, count in type_counts.items()])
+                            logging.info(f"Chunk {i}: Created {count_str}")
                     except Exception as e:
                         logging.error(f"Error in parallel relationship upsert chunk {i}: {e}")
                         raise
@@ -696,10 +704,16 @@ class COMStore(Neo4jPropertyGraphStore):
                     logging.info(f"Upserting relationship chunk {index}-{index+CHUNK_SIZE} with {len(chunked_params)} relationships")
                     result = self.structured_query(upsert_rel_query, param_map={"data": chunked_params})
                     
-                    # Log results for debugging
+                    # Aggregate counts per chunk
                     if result:
+                        type_counts = {}
                         for r in result:
-                            logging.info(f"Created {r.get('created_count', 0)} {r.get('rel_type', 'unknown')} relationships")
+                            rel_type = r.get('rel_type', 'unknown')
+                            count = r.get('created_count', 0)
+                            type_counts[rel_type] = type_counts.get(rel_type, 0) + count
+                        # Log once per chunk
+                        count_str = ", ".join([f"{count} {rel_type}" for rel_type, count in type_counts.items()])
+                        logging.info(f"Chunk {index}-{index+CHUNK_SIZE}: Created {count_str}")
                             
                 except Exception as e:
                     logging.error(f"Error upserting relationship chunk {index}-{index+CHUNK_SIZE}: {e}")

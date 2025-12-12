@@ -156,6 +156,10 @@ def _get_entity_version(entity_path: str) -> Optional[str]:
     """
     Try to determine the version of an external entity by looking at its module's package.
     
+    Handles special cases:
+    - Private modules (e.g., _tqdm): Falls back to public module version (tqdm)
+    - Python builtins (e.g., os, sys): Returns Python version as py:X.Y.Z
+    
     Args:
         entity_path: Fully qualified path like 'numpy.ndarray' or 'pandas.DataFrame'
     
@@ -165,9 +169,16 @@ def _get_entity_version(entity_path: str) -> Optional[str]:
     try:
         import importlib
         import importlib.metadata
+        import sys
         
         # Extract the root package name (first component)
         root_package = entity_path.split('.')[0]
+        
+        # Check if it's a Python builtin module
+        if root_package in sys.builtin_module_names:
+            # Return Python version for builtins
+            py_version = sys.version_info
+            return f"py:{py_version.major}.{py_version.minor}.{py_version.micro}"
         
         # Try to get version from importlib.metadata
         try:
@@ -183,6 +194,24 @@ def _get_entity_version(entity_path: str) -> Optional[str]:
                 return str(module.__version__)
         except Exception:
             pass
+        
+        # Special handling for private modules (e.g., _tqdm -> tqdm)
+        if root_package.startswith('_'):
+            public_package = root_package[1:]  # Remove leading underscore
+            try:
+                # Try to get version from the public package
+                public_version = importlib.metadata.version(public_package)
+                return public_version
+            except importlib.metadata.PackageNotFoundError:
+                pass
+            
+            # Try __version__ from public package
+            try:
+                public_module = importlib.import_module(public_package)
+                if hasattr(public_module, '__version__'):
+                    return str(public_module.__version__)
+            except Exception:
+                pass
         
         return None
     except Exception as e:
