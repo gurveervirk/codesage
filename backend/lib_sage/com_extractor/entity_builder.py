@@ -598,7 +598,23 @@ def _process_import_statements(
                 # Process each imported entity
                 for alias in node.names:
                     imported_entity_name = alias.name
+                    
+                    # Try to determine the actual FQN by importing the entity
                     entity_fqn = f"{module_name}.{imported_entity_name}"
+                    try:
+                        import importlib
+                        imported_module = importlib.import_module(module_name)
+                        if hasattr(imported_module, imported_entity_name):
+                            imported_obj = getattr(imported_module, imported_entity_name)
+                            # Try to get the actual module where the object is defined
+                            if hasattr(imported_obj, '__module__'):
+                                actual_module = imported_obj.__module__
+                                if hasattr(imported_obj, '__qualname__'):
+                                    entity_fqn = f"{actual_module}.{imported_obj.__qualname__}"
+                                else:
+                                    entity_fqn = f"{actual_module}.{imported_entity_name}"
+                    except Exception as e:
+                        logging.debug(f"Could not resolve actual FQN for {module_name}.{imported_entity_name}: {e}")
                     
                     entity_info = {
                         "name": imported_entity_name,

@@ -416,7 +416,7 @@ class COMStoreTools:
 """
 UNWIND $entity_names AS entity_name
 OPTIONAL MATCH (e1:METHOD|FUNCTION|CLASS)
-WHERE e1.name = entity_name OR e1.shortest_call_path = entity_name
+WHERE e1.name = entity_name
 WITH entity_name, collect(e1)[0] AS direct_match
 OPTIONAL MATCH ()-[r:EXPOSES|PUBLISHES]->(e2:METHOD|FUNCTION|CLASS)
 WHERE direct_match IS NULL AND r.name = entity_name
@@ -437,7 +437,7 @@ WITH entity_name, lastDot,
      substring(entity_name, 0, lastDot) AS class_path,
      substring(entity_name, lastDot + 1) AS method_name
 OPTIONAL MATCH (c1:CLASS)
-WHERE c1.name = class_path OR c1.shortest_call_path = class_path
+WHERE c1.name = class_path
 WITH entity_name, class_path, method_name, collect(c1)[0] AS class_direct_match
 OPTIONAL MATCH ()-[r:EXPOSES|PUBLISHES]->(c2:CLASS)
 WHERE class_direct_match IS NULL AND r.name = class_path
@@ -604,7 +604,6 @@ RETURN apoc.map.fromPairs(
             str: XML-formatted string containing:
                 - definitions: Array of matching code definitions, each containing:
                     - fqn (str): Fully qualified name (entity.name)
-                    - api_path (str): API call path (entity.shortest_call_path)
                     - definition_type (str): Primary type of definition (e.g., "FUNCTION", "CLASS", "METHOD")
                     - all_labels (List[str]): All labels associated with the entity
                 - next_page (int | None): Next page number if more results are available
@@ -708,13 +707,11 @@ RETURN apoc.map.fromPairs(
         WITH DISTINCT child
         WITH child,
             child.name AS fqn,
-            child.shortest_call_path AS api_path,
             [label IN labels(child) WHERE label IN ['FUNCTION', 'CLASS', 'METHOD', 'MODULE', 'ROOT_MODULE']][0] AS definition_type,
             labels(child) AS all_labels
         ORDER BY fqn
         WITH collect({
             fqn: fqn,
-            api_path: api_path,
             definition_type: definition_type,
             all_labels: all_labels
         }) AS all_results
@@ -725,9 +722,8 @@ RETURN apoc.map.fromPairs(
         LIMIT $page_size
         RETURN 
             result.fqn AS fqn,
-            result.api_path AS api_path,
             result.definition_type AS definition_type,
-            result.all_labels AS all_labels
+            result.all_labels AS all_labels,
             total_count
         """
         
@@ -759,7 +755,6 @@ RETURN apoc.map.fromPairs(
             for result in results:
                 definitions.append({
                     "fqn": result["fqn"],
-                    "api_path": result["api_path"],
                     "definition_type": result["definition_type"],
                     "all_labels": result["all_labels"]
                 })
@@ -799,7 +794,6 @@ RETURN apoc.map.fromPairs(
                     - fqn (str): Fully qualified name
                     - docstring (str): Entity docstring
                     - all_labels (List[str]): All labels
-                    - api_path (str): API call path
                     - signature (str): Entity signature
                     - resolved_sig (str): Resolved signature from type hints
                     - found (bool): Whether the entity was found
@@ -891,7 +885,6 @@ RETURN apoc.map.fromPairs(
                 CASE WHEN end IS NOT NULL THEN end.name ELSE "" END AS fqn,
                 CASE WHEN end IS NOT NULL THEN docstring.value ELSE "" END AS docstring,
                 CASE WHEN end IS NOT NULL THEN labels(end) ELSE [] END AS all_labels,
-                CASE WHEN end IS NOT NULL THEN end.shortest_call_path ELSE "" END AS api_path,
                 CASE 
                     WHEN end IS NULL THEN ""
                     WHEN "CLASS" IN labels(end) AND init_sig IS NOT NULL THEN init_sig.value
@@ -940,7 +933,6 @@ RETURN apoc.map.fromPairs(
                 - entities: Nested hierarchy of all entities, each containing:
                     - all_labels (List[str]): All labels associated with the entity
                     - fqn (str): Fully qualified name (entity.name)
-                    - api_path (str): API call path (entity.shortest_call_path)
                     - children (List): Nested child entities
                 - system_message (str): Informational message about the results
         """
@@ -995,7 +987,6 @@ RETURN apoc.map.fromPairs(
                     id: id(n),
                     name: n.name,
                     __name__: n.__name__,
-                    shortest_call_path: n.shortest_call_path,
                     labels: labels(n)
                 }}] AS all_nodes,
                 [r IN relationships | {{
@@ -1057,7 +1048,6 @@ RETURN apoc.map.fromPairs(
                 entity = {
                     "all_labels": [label for label in node["labels"] if label not in [BASE_ENTITY_LABEL, BASE_NODE_LABEL]],
                     "fqn": node["name"],
-                    "api_path": node.get("shortest_call_path", ""),
                     "children": []
                 }
                 
@@ -1186,7 +1176,6 @@ RETURN apoc.map.fromPairs(
                 id: id(old_n),
                 name: old_n.name,
                 __name__: old_n.__name__,
-                shortest_call_path: old_n.shortest_call_path,
                 labels: labels(old_n),
                 signature: old_sig.value,
                 content_hash: old_n.content_hash
@@ -1197,7 +1186,6 @@ RETURN apoc.map.fromPairs(
                 id: id(new_n),
                 name: new_n.name,
                 __name__: new_n.__name__,
-                shortest_call_path: new_n.shortest_call_path,
                 labels: labels(new_n),
                 signature: new_sig.value,
                 content_hash: new_n.content_hash
@@ -1283,11 +1271,11 @@ RETURN apoc.map.fromPairs(
                 if old_node and not new_node:
                     removed.append(name)
                     if old_node.get("signature"):
-                        diff_lines.append(f"- {old_node.get('shortest_call_path', name)}: {old_node['signature']}")
+                        diff_lines.append(f"- {name}: {old_node['signature']}")
                 elif new_node and not old_node:
                     added.append(name)
                     if new_node.get("signature"):
-                        diff_lines.append(f"+ {new_node.get('shortest_call_path', name)}: {new_node['signature']}")
+                        diff_lines.append(f"+ {name}: {new_node['signature']}")
                 elif old_node and new_node:
                     # Check if modified
                     if old_node.get("content_hash") != new_node.get("content_hash"):
@@ -1296,11 +1284,10 @@ RETURN apoc.map.fromPairs(
                             old_sig = old_node.get("signature", "")
                             new_sig = new_node.get("signature", "")
                             if old_sig != new_sig:
-                                path = new_node.get('shortest_call_path', name)
                                 if old_sig:
-                                    diff_lines.append(f"- {path}: {old_sig}")
+                                    diff_lines.append(f"- {name}: {old_sig}")
                                 if new_sig:
-                                    diff_lines.append(f"+ {path}: {new_sig}")
+                                    diff_lines.append(f"+ {name}: {new_sig}")
                     else:
                         unchanged.append(name)
             
@@ -1330,7 +1317,6 @@ RETURN apoc.map.fromPairs(
                     "status": status,
                     "all_labels": [label for label in node_data["labels"] if label not in [BASE_ENTITY_LABEL, BASE_NODE_LABEL]],
                     "fqn": node_data["name"],
-                    "api_path": node_data.get("shortest_call_path", ""),
                     "children": []
                 }
                 
@@ -1394,3 +1380,91 @@ RETURN apoc.map.fromPairs(
                 "system_message": f"Error generating version diff: {str(e)}"
             }
             return dict_to_xml_string(data, "get_version_diff_response")
+    
+    # TODO: Consider using allShortestPaths() to handle multiple equal-length paths deterministically.
+    # Current implementation uses shortestPath() which is non-deterministic when multiple paths exist.
+    # Potential improvements:
+    # 1. Use allShortestPaths() and prioritize paths with EXPOSES/PUBLISHES (public API)
+    # 2. Order paths by relationship type priority (EXPOSES/PUBLISHES > HAS_*)
+    # 3. Return all shortest paths or implement deterministic selection criteria
+    def compute_shortest_call_path(
+        self, 
+        entity_name: str, 
+        root_module: Optional[str] = None,
+        root_module_version: Optional[str] = None,
+        version_label: Optional[str] = None
+    ) -> Optional[str]:
+        """
+        Compute the shortest call path for an entity at runtime.
+        This method traverses from ROOT_MODULE to the entity and builds the API call path.
+        
+        Args:
+            entity_name (str): The name of the entity to compute path for
+            root_module (Optional[str]): The name of the ROOT_MODULE to start from. If None, uses any ROOT_MODULE.
+            root_module_version (Optional[str]): Version label for the root module (e.g., 'version_1_24_0'). If None, no version filtering on root.
+            version_label (Optional[str]): Optional version label for the target entity (e.g., 'version_1_24_0').
+                                          If None, computes path without version filtering on target.
+        
+        Returns:
+            Optional[str]: The computed shortest call path (e.g., 'numpy.array.reshape'), or None if entity not found
+        """
+        version_filter = f":`{version_label}`" if version_label else ""
+        root_version_filter = f":`{root_module_version}`" if root_module_version else ""
+        root_name_filter = "{name: $root_module}" if root_module else ""
+        
+        query = f"""
+        CALL {{
+            MATCH (e:METHOD{version_filter} {{name: $entity_name}})
+            RETURN e
+            UNION
+            MATCH (e:FUNCTION{version_filter} {{name: $entity_name}})
+            RETURN e
+            UNION
+            MATCH (e:CLASS{version_filter} {{name: $entity_name}})
+            RETURN e
+            UNION
+            MATCH (e:MODULE{version_filter} {{name: $entity_name}})
+            RETURN e
+            UNION
+            MATCH (e:ROOT_MODULE{version_filter} {{name: $entity_name}})
+            RETURN e
+        }}
+        
+        OPTIONAL MATCH path = shortestPath(
+            (root:ROOT_MODULE{root_version_filter} {root_name_filter})-[:HAS_SUBMODULE|HAS_CLASS|HAS_METHOD|HAS_FUNCTION|EXPOSES|PUBLISHES*]->(e)
+        )
+        
+        WITH e, path,
+            CASE 
+                WHEN path IS NOT NULL AND size(nodes(path)) > 1 THEN
+                    reduce(
+                        accumulated = {{path: head(nodes(path)).name, idx: 1}},
+                        n IN tail(nodes(path)) |
+                            CASE
+                                WHEN n.__name__ CONTAINS '.' THEN
+                                    {{path: accumulated.path + '.' + split(n.__name__, '.')[-1], idx: accumulated.idx + 1}}
+                                ELSE
+                                    {{path: accumulated.path + '.' + n.__name__, idx: accumulated.idx + 1}}
+                            END
+                    ).path
+                WHEN e IS NOT NULL THEN e.name
+                ELSE NULL
+            END AS computed_path
+        
+        RETURN computed_path
+        LIMIT 1
+        """
+        
+        try:
+            params = {"entity_name": entity_name}
+            if root_module:
+                params["root_module"] = root_module
+            
+            result = self.store.database_query(query, params)
+            result = self.store.database_query(query, {"entity_name": entity_name})
+            if result and len(result) > 0:
+                return result[0].get("computed_path")
+            return None
+        except Exception as e:
+            logging.error(f"Error computing shortest call path for {entity_name}: {e}")
+            return None

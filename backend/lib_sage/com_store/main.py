@@ -761,9 +761,6 @@ class COMStore(Neo4jPropertyGraphStore):
         # Handle inherited methods
         self._handle_inherited_methods()
 
-        # Set the shortest call paths for all nodes in the module
-        self._set_shortest_call_paths(module_name)
-
     def _add_other_relations_as_properties(self, other_relations: Dict[str, List[Tuple]]):
         """
         Add INHERITS, EXPOSES, and PUBLISHES relations as properties to the respective nodes.
@@ -784,11 +781,10 @@ class COMStore(Neo4jPropertyGraphStore):
         inherits_processed = []
         for from_name, to_ref in inherits_relations:
             if isinstance(to_ref, ExternalEntityRef):
-                # Store as dict with name, version, and content_hash
+                # Store as dict with name and version
                 target_info = {
                     "name": to_ref.name,
-                    "version": to_ref.version,
-                    "content_hash": to_ref.content_hash
+                    "version": to_ref.version
                 }
                 inherits_processed.append((from_name, json.dumps(target_info)))
             else:
@@ -801,8 +797,7 @@ class COMStore(Neo4jPropertyGraphStore):
             if isinstance(to_ref, ExternalEntityRef):
                 target_info = {
                     "name": to_ref.name,
-                    "version": to_ref.version,
-                    "content_hash": to_ref.content_hash
+                    "version": to_ref.version
                 }
                 exposes_processed.append((from_hash, json.dumps(target_info)))
             else:
@@ -813,8 +808,7 @@ class COMStore(Neo4jPropertyGraphStore):
             if isinstance(to_ref, ExternalEntityRef):
                 target_info = {
                     "name": to_ref.name,
-                    "version": to_ref.version,
-                    "content_hash": to_ref.content_hash
+                    "version": to_ref.version
                 }
                 publishes_processed.append((from_hash, json.dumps(target_info)))
             else:
@@ -876,7 +870,7 @@ class COMStore(Neo4jPropertyGraphStore):
             """
         )
         
-        # Process EXPOSES with version-aware and content_hash matching
+        # Process EXPOSES with version-aware matching
         process_exposes_query = (
             """
             MATCH (m:MODULE|ROOT_MODULE)
@@ -885,22 +879,22 @@ class COMStore(Neo4jPropertyGraphStore):
             WITH m, exposedInfo,
                  CASE WHEN exposedInfo STARTS WITH '{'
                       THEN apoc.convert.fromJsonMap(exposedInfo)
-                      ELSE {name: exposedInfo, version: null, content_hash: null}
+                      ELSE {name: exposedInfo, version: null}
                  END AS exposedData
-            // Try to match by content_hash first (if available), then by name+version
-            OPTIONAL MATCH (e)
-            WHERE (exposedData.content_hash IS NOT NULL AND e.content_hash = exposedData.content_hash)
-               OR (e.name = exposedData.name AND (exposedData.version IS NULL
-                   OR ('version_' + replace(replace(replace(exposedData.version, '.', '_'), ':', '_'), '-', '_')) IN labels(e)))
+            // Match by name and version label
+            OPTIONAL MATCH (e {name: exposedData.name})
+            WHERE exposedData.version IS NULL
+               OR ('version_' + replace(replace(replace(exposedData.version, '.', '_'), ':', '_'), '-', '_')) IN labels(e)
             WITH m, exposedInfo, e
             WHERE e IS NOT NULL
-            MERGE (m)-[:EXPOSES]->(e)
+            MERGE (m)-[r:EXPOSES]->(e)
+            SET r.versions = apoc.coll.toSet(coalesce(r.versions, []) + [lbl IN labels(m) WHERE lbl STARTS WITH 'version_'])
             WITH m, COLLECT(exposedInfo) AS processedExposes
             SET m.EXPOSES = [info IN m.EXPOSES WHERE NOT info IN processedExposes]
             """
         )
         
-        # Process PUBLISHES with version-aware and content_hash matching
+        # Process PUBLISHES with version-aware matching
         process_publishes_query = (
             """
             MATCH (m:MODULE|ROOT_MODULE)
@@ -909,16 +903,16 @@ class COMStore(Neo4jPropertyGraphStore):
             WITH m, publishedInfo,
                  CASE WHEN publishedInfo STARTS WITH '{'
                       THEN apoc.convert.fromJsonMap(publishedInfo)
-                      ELSE {name: publishedInfo, version: null, content_hash: null}
+                      ELSE {name: publishedInfo, version: null}
                  END AS publishedData
-            // Try to match by content_hash first (if available), then by name+version
-            OPTIONAL MATCH (e)
-            WHERE (publishedData.content_hash IS NOT NULL AND e.content_hash = publishedData.content_hash)
-               OR (e.name = publishedData.name AND (publishedData.version IS NULL
-                   OR ('version_' + replace(replace(replace(publishedData.version, '.', '_'), ':', '_'), '-', '_')) IN labels(e)))
+            // Match by name and version label
+            OPTIONAL MATCH (e {name: publishedData.name})
+            WHERE publishedData.version IS NULL
+               OR ('version_' + replace(replace(replace(publishedData.version, '.', '_'), ':', '_'), '-', '_')) IN labels(e)
             WITH m, publishedInfo, e
             WHERE e IS NOT NULL
-            MERGE (m)-[:PUBLISHES]->(e)
+            MERGE (m)-[r:PUBLISHES]->(e)
+            SET r.versions = apoc.coll.toSet(coalesce(r.versions, []) + [lbl IN labels(m) WHERE lbl STARTS WITH 'version_'])
             WITH m, COLLECT(publishedInfo) AS processedPublishes
             SET m.PUBLISHES = [info IN m.PUBLISHES WHERE NOT info IN processedPublishes]
             """
@@ -970,57 +964,6 @@ class COMStore(Neo4jPropertyGraphStore):
         self.structured_query(cleanup_empty_PUBLISHES_query)
         self.structured_query(add_names_to_EXPOSES_rels_query)
         self.structured_query(add_names_to_PUBLISHES_rels_query)
-
-    def _set_shortest_call_paths(self, module_name: str):
-        """
-        Set the shortest call paths for all nodes in the module.
-
-        Args:
-            module_name (str): The name of the module.
-        """
-        set_shortest_call_paths_query = (
-            """
-MATCH (end:MODULE|FUNCTION|CLASS|METHOD)<-[:HAS_SUBMODULE|HAS_CLASS|HAS_METHOD|HAS_FUNCTION|EXPOSES|PUBLISHES*]-(root:ROOT_MODULE {name: $module_name})
-WITH root, collect(end) AS endNodes
-
-CALL apoc.path.spanningTree(root, {
-    relationshipFilter: 'HAS_SUBMODULE>|HAS_CLASS>|HAS_METHOD>|HAS_FUNCTION>|EXPOSES>|PUBLISHES>',
-    endNodes: endNodes
-})
-YIELD path
-
-WITH nodes(path) AS nodesInPath
-WHERE size(nodesInPath) > 1
-WITH
-    LAST(nodesInPath) AS targetNode,
-    nodesInPath[-2] AS parentNode
-
-WHERE targetNode.shortest_call_path IS NULL
-
-SET targetNode.shortest_call_path =
-    CASE
-        WHEN targetNode.__name__ CONTAINS '.'
-        THEN targetNode.__name__
-        ELSE COALESCE(parentNode.shortest_call_path, parentNode.name) + '.' + targetNode.__name__
-    END
-
-RETURN count(targetNode) AS numPathsSet
-"""
-        )
-        iteration = 0
-        total_updated = 0
-        while True:
-            iteration += 1
-            result = self.structured_query(set_shortest_call_paths_query, {"module_name": module_name})
-            num_paths_set = result[0]["numPathsSet"] if result else 0
-            total_updated += num_paths_set
-            
-            if num_paths_set == 0:
-                break
-        
-        if total_updated > 0:
-            retry_info = f" (completed in {iteration} iteration{'s' if iteration > 1 else ''})" if iteration > 1 else ""
-            logging.info(f"Set shortest_call_path for {total_updated} nodes in module {module_name}{retry_info}")
 
     def _handle_inherited_methods(self):
         """
