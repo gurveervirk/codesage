@@ -45,17 +45,21 @@ except ImportError:
 _com_store = None
 
 
-def init_com_store(neo4j_config: Dict):
+def init_com_store(neo4j_config: Dict, batch_size: Optional[int] = None):
     """Initialize or return the global COMStore instance."""
     global _com_store
     if _com_store is None:
         logger.info(f"Initializing COMStore connection to {neo4j_config.get('url')}")
-        _com_store = COMStore(
-            username=neo4j_config.get('username', 'neo4j'),
-            password=neo4j_config.get('password', 'password'),
-            url=neo4j_config.get('url', 'bolt://localhost:7687'),
-            database=neo4j_config.get('database', 'neo4j'),
-        )
+        init_kwargs = {
+            'username': neo4j_config.get('username', 'neo4j'),
+            'password': neo4j_config.get('password', 'password'),
+            'url': neo4j_config.get('url', 'bolt://localhost:7687'),
+            'database': neo4j_config.get('database', 'neo4j'),
+        }
+        if batch_size is not None:
+            init_kwargs['batch_size'] = batch_size
+            logger.info(f"Initializing COMStore with custom batch_size: {batch_size}")
+        _com_store = COMStore(**init_kwargs)
     return _com_store
 
 
@@ -399,7 +403,7 @@ def check_version_exists(
     """
     try:
         # Use global COMStore instance
-        store = init_com_store(neo4j_config)
+        store = init_com_store(neo4j_config, batch_size=None)
         
         # Sanitize version label
         version_label = f"version_{version.replace('.', '_').replace(':', '_').replace('-', '_')}"
@@ -433,7 +437,8 @@ def upload_to_neo4j(
     other_relations: Dict,
     library: str,
     version: str,
-    neo4j_config: Dict
+    neo4j_config: Dict,
+    batch_size: Optional[int] = None
 ) -> bool:
     """
     Upload extracted entities to Neo4j.
@@ -445,13 +450,14 @@ def upload_to_neo4j(
         library: Library name
         version: Library version
         neo4j_config: Neo4j connection configuration
+        batch_size: Optional batch size for upserting entities and relations
     
     Returns:
         True if successful, False otherwise
     """
     try:
         # Use global COMStore instance
-        store = init_com_store(neo4j_config)
+        store = init_com_store(neo4j_config, batch_size=batch_size)
         
         # Upload to Neo4j
         logger.info(f"Uploading {len(entities)} entities to Neo4j for {library}=={version}")
@@ -481,7 +487,8 @@ def process_library_version(
     neo4j_config: Dict,
     keep_venv: bool = False,
     use_conda: bool = False,
-    use_available_python: bool = False
+    use_available_python: bool = False,
+    batch_size: Optional[int] = None
 ) -> bool:
     """
     Process a single library version.
@@ -496,6 +503,7 @@ def process_library_version(
         keep_venv: Whether to keep the venv after processing
         use_conda: Whether to use conda for environment creation
         use_available_python: Whether to use any available Python version instead of requiring 3.9
+        batch_size: Optional batch size for upserting entities and relations
     
     Returns:
         True if successful, False otherwise
@@ -532,7 +540,7 @@ def process_library_version(
         entities, relations, other_relations = extraction_result
         
         # Step 5: Upload to Neo4j
-        if not upload_to_neo4j(entities, relations, other_relations, library, version, neo4j_config):
+        if not upload_to_neo4j(entities, relations, other_relations, library, version, neo4j_config, batch_size=batch_size):
             return False
         
         logger.info(f"✓ Successfully processed {library}=={version}")
@@ -624,6 +632,13 @@ Examples:
         '--use-available-python',
         action='store_true',
         help='Use any available Python version instead of requiring Python 3.9 (useful when 3.9 is not installed)'
+    )
+    
+    parser.add_argument(
+        '--batch-size',
+        type=int,
+        default=None,
+        help='Batch size for upserting entities and relations (default: 1000 if not specified)'
     )
     
     args = parser.parse_args()
@@ -743,6 +758,8 @@ Examples:
     logger.info(f"Neo4j User: {neo4j_config['username']}")
     logger.info(f"Neo4j Database: {neo4j_config['database']}")
     logger.info(f"Embed nodes: {neo4j_config['embed_nodes']}")
+    if args.batch_size:
+        logger.info(f"Batch size: {args.batch_size}")
     
     # Create working directory
     work_dir = script_dir / "venvs"
@@ -786,7 +803,8 @@ Examples:
             neo4j_config=neo4j_config,
             keep_venv=args.keep_venv,
             use_conda=args.use_conda,
-            use_available_python=args.use_available_python
+            use_available_python=args.use_available_python,
+            batch_size=args.batch_size
         ):
             successful += 1
         else:

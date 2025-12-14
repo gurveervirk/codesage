@@ -72,6 +72,7 @@ class COMStore(Neo4jPropertyGraphStore):
         sanitize_query_output: bool = True,
         enhanced_schema: bool = False,
         max_workers: Optional[int] = None,
+        batch_size: Optional[int] = None,
         **neo4j_kwargs: Any,
     ) -> None:
         self.index_name = index_name
@@ -83,6 +84,9 @@ class COMStore(Neo4jPropertyGraphStore):
         self.database = database
         # Number of worker threads for parallel upserts (None = sequential, 4-8 recommended for parallel)
         self.max_workers = max_workers
+        # Batch size for upserting nodes and relationships (default from parent class is 1000)
+        if batch_size is not None:
+            self.batch_size = batch_size
         super().__init__(
             username,
             password,
