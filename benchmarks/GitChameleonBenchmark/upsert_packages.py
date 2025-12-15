@@ -149,14 +149,15 @@ def get_library_versions(
     return result
 
 
-def create_venv(venv_path: Path, use_conda: bool = False, use_available_python: bool = False) -> bool:
+def create_venv(venv_path: Path, use_conda: bool = False, use_available_python: bool = False, python_version: str = "3.13") -> bool:
     """
-    Create a virtual environment using Python 3.9 (or available Python version).
+    Create a virtual environment using specified Python version.
     
     Args:
         venv_path: Path where the venv should be created
         use_conda: If True, try to use conda to create the environment
-        use_available_python: If True, use any available Python version instead of requiring 3.9
+        use_available_python: If True, use any available Python version instead of requiring specified version
+        python_version: Python version to use (default: 3.13)
     
     Returns:
         True if successful, False otherwise
@@ -172,9 +173,9 @@ def create_venv(venv_path: Path, use_conda: bool = False, use_available_python: 
                     text=True
                 )
                 if conda_result.returncode == 0:
-                    logger.info(f"Using conda to create environment with Python 3.9")
+                    logger.info(f"Using conda to create environment at {venv_path} with Python {python_version}")
                     subprocess.run(
-                        ["conda", "create", "-p", str(venv_path), "python=3.9", "-y"],
+                        ["conda", "create", "-p", str(venv_path), f"python={python_version}", "-y"],
                         check=True,
                         capture_output=True
                     )
@@ -183,12 +184,13 @@ def create_venv(venv_path: Path, use_conda: bool = False, use_available_python: 
             except (subprocess.CalledProcessError, FileNotFoundError) as e:
                 logger.warning(f"Conda environment creation failed, falling back to venv: {e}")
         
-        # Try to find Python 3.9 executable (or any Python if use_available_python is True)
-        python39_candidates = ["python3.9", "python3", "python"]
-        python39_exe = None
+        # Try to find specified Python version executable (or any Python if use_available_python is True)
+        major_minor = ".".join(python_version.split(".")[:2])  # e.g., "3.13" from "3.13.1"
+        python_candidates = [f"python{major_minor}", "python3", "python"]
+        python_exe = None
         found_version = None
         
-        for candidate in python39_candidates:
+        for candidate in python_candidates:
             try:
                 result = subprocess.run(
                     [candidate, "--version"],
@@ -200,29 +202,29 @@ def create_venv(venv_path: Path, use_conda: bool = False, use_available_python: 
                 
                 # If use_available_python is True, accept any Python version
                 if use_available_python:
-                    python39_exe = candidate
+                    python_exe = candidate
                     found_version = version_output
                     logger.info(f"Found Python: {version_output}")
                     break
-                elif "Python 3.9" in version_output:
-                    python39_exe = candidate
+                elif f"Python {major_minor}" in version_output:
+                    python_exe = candidate
                     found_version = version_output
-                    logger.info(f"Found Python 3.9: {version_output}")
+                    logger.info(f"Found Python {major_minor}: {version_output}")
                     break
             except (subprocess.CalledProcessError, FileNotFoundError):
                 continue
         
-        if not python39_exe:
+        if not python_exe:
             if use_available_python:
                 logger.error("No Python executable found.")
             else:
-                logger.error("Python 3.9 not found. Please install Python 3.9, use --use-conda, or use --use-available-python flag")
-            logger.error("Tried: " + ", ".join(python39_candidates))
+                logger.error(f"Python {major_minor} not found. Please install Python {major_minor}, use --use-conda with --python-version, or use --use-available-python flag")
+            logger.error("Tried: " + ", ".join(python_candidates))
             return False
         
-        logger.info(f"Creating virtual environment at {venv_path} using {python39_exe}")
+        logger.info(f"Creating virtual environment at {venv_path} using {python_exe}")
         subprocess.run(
-            [python39_exe, "-m", "venv", str(venv_path)],
+            [python_exe, "-m", "venv", str(venv_path)],
             check=True,
             capture_output=True
         )
@@ -488,7 +490,8 @@ def process_library_version(
     keep_venv: bool = False,
     use_conda: bool = False,
     use_available_python: bool = False,
-    batch_size: Optional[int] = None
+    batch_size: Optional[int] = None,
+    python_version: str = "3.13"
 ) -> bool:
     """
     Process a single library version.
@@ -502,8 +505,9 @@ def process_library_version(
         neo4j_config: Neo4j configuration
         keep_venv: Whether to keep the venv after processing
         use_conda: Whether to use conda for environment creation
-        use_available_python: Whether to use any available Python version instead of requiring 3.9
+        use_available_python: Whether to use any available Python version instead of requiring specified version
         batch_size: Optional batch size for upserting entities and relations
+        python_version: Python version to use (default: 3.13)
     
     Returns:
         True if successful, False otherwise
@@ -512,7 +516,7 @@ def process_library_version(
     
     try:
         # Step 1: Create virtual environment
-        if not create_venv(venv_path, use_conda=use_conda, use_available_python=use_available_python):
+        if not create_venv(venv_path, use_conda=use_conda, use_available_python=use_available_python, python_version=python_version):
             return False
         
         # Step 2: Install the library
@@ -631,7 +635,14 @@ Examples:
     parser.add_argument(
         '--use-available-python',
         action='store_true',
-        help='Use any available Python version instead of requiring Python 3.9 (useful when 3.9 is not installed)'
+        help='Use any available Python version instead of requiring the specified version'
+    )
+    
+    parser.add_argument(
+        '--python-version',
+        type=str,
+        default='3.13',
+        help='Python version to use for virtual environments (default: 3.13)'
     )
     
     parser.add_argument(
@@ -804,7 +815,8 @@ Examples:
             keep_venv=args.keep_venv,
             use_conda=args.use_conda,
             use_available_python=args.use_available_python,
-            batch_size=args.batch_size
+            batch_size=args.batch_size,
+            python_version=args.python_version
         ):
             successful += 1
         else:
