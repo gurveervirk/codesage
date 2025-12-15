@@ -229,7 +229,8 @@ def traverse_recursive(
         None,
         resolved_decorators,  # Only for CLASS
         import_details,  # Only for MODULE
-        version
+        version,
+        obj  # Pass the source object for line number extraction
     )
     entities.extend(prop_entities)
     relations.extend(prop_relations)

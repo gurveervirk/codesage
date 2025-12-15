@@ -111,7 +111,8 @@ def process_module(
         None,  # No resolved signature for modules
         [],  # No decorators for modules
         import_details,
-        version
+        version,
+        module_object  # Pass the module object (though line numbers won't be used for modules)
     )
     entities.extend(prop_entities)
     relations.extend(prop_relations)

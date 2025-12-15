@@ -13,7 +13,7 @@ from typing_extensions import Any, Callable, Dict, List, Optional, Set, Tuple
 from typing_extensions import Literal
 
 from .models import Entity, Relationship
-from .source_utils import safe_get_source, safe_get_docstring
+from .source_utils import safe_get_source, safe_get_docstring, get_source_line_numbers
 from .signature_utils import get_typed_signature, _normalize_signature
 from .decorator_utils import get_function_method_labels, _resolve_decorator_details
 from .overload_utils import get_overloads_with_fallback
@@ -264,19 +264,21 @@ def _create_property_entities_and_relations(
     decorators: List[Dict[str, Any]],
     import_details: Optional[Dict],
     version: Optional[str],
+    source_obj: Optional[Any] = None,
 ) -> Tuple[List[Entity], List[Relationship]]:
     """
     Create property entities and their relationships to a parent entity.
     
     Args:
         parent_entity: The parent entity (METHOD, FUNCTION, CLASS, MODULE, etc.)
-        source_code: Source code string
+        source_code: Source code string (used for MODULE/ROOT_MODULE only)
         docstring: Docstring string
         signature: Raw signature string (for METHOD/FUNCTION/CLASS)
         resolved_signature: Type-resolved signature string
         decorators: List of decorator dicts with 'name', 'args', 'resolved_path', 'version'
         import_details: Import details dict (for MODULE/ROOT_MODULE)
-        version: Version string
+        version: Optional[str],
+        source_obj: The source object for line number extraction (required for non-module entities)
         
     Returns:
         Tuple of (property_entities, property_relationships)
@@ -284,8 +286,11 @@ def _create_property_entities_and_relations(
     prop_entities: List[Entity] = []
     prop_relations: List[Relationship] = []
     
-    # SOURCE entity - now includes docstring and signature as separate properties
-    if source_code or docstring or signature:
+    # Determine if this is a module entity (should store full source)
+    is_module = "MODULE" in parent_entity.labels or "ROOT_MODULE" in parent_entity.labels
+    
+    # SOURCE entity
+    if (is_module and source_code) or (not is_module and (docstring or signature)):
         # Create SOURCE entity name
         name = f"{parent_entity.name}::SOURCE"
         
@@ -293,12 +298,29 @@ def _create_property_entities_and_relations(
         if version:
             labels.append(f"version:{version}")
         
-        # Store as separate properties instead of nested dict
-        properties = {
-            "code": source_code or "",
-            "docstring": docstring or "",
-            "signature": signature or ""
-        }
+        # For MODULE/ROOT_MODULE: store full source code
+        # For other entities: store line numbers instead
+        properties = {}
+        
+        if is_module:
+            # Store full source for modules
+            if source_code:
+                properties["code"] = source_code
+            if docstring:
+                properties["docstring"] = docstring
+            if signature:
+                properties["signature"] = signature
+        else:
+            # Store line numbers for non-module entities
+            if source_obj:
+                line_info = get_source_line_numbers(source_obj)
+                if line_info:
+                    properties["line_start"] = str(line_info[0])
+                    properties["line_end"] = str(line_info[1])
+            if docstring:
+                properties["docstring"] = docstring
+            if signature:
+                properties["signature"] = signature
         
         source_entity = Entity(name=name, labels=labels, properties=properties)
         prop_entities.append(source_entity)
@@ -429,7 +451,8 @@ def _process_callable_with_overloads(
         resolved_sig,
         resolved_decorators,
         None,  # No import_details for functions/methods
-        version
+        version,
+        obj  # Pass the source object for line number extraction
     )
     entities.extend(prop_entities)
     relations.extend(prop_relations)
@@ -496,7 +519,8 @@ def _process_callable_with_overloads(
                 ov_sig_res,
                 ov_resolved_decorators,
                 None,
-                version
+                version,
+                ov  # Pass the overload object for line number extraction
             )
             entities.extend(ov_prop_entities)
             relations.extend(ov_prop_relations)

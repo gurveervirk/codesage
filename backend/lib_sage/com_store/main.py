@@ -537,7 +537,8 @@ class COMStore(Neo4jPropertyGraphStore):
         
         # Execute stage 1
         matched_hashes = set()
-        logging.info(f"Stage 1: Matching {len(stage1_data)} nodes by content_hash and adding labels")
+        total_chunks = len(stage1_chunks)
+        logging.info(f"Stage 1: Matching {len(stage1_data)} nodes by content_hash and adding labels ({total_chunks} chunks)")
         
         if self.max_workers and self.max_workers > 1:
             with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
@@ -545,21 +546,27 @@ class COMStore(Neo4jPropertyGraphStore):
                     executor.submit(self._execute_query_in_session, stage1_query, {"data": chunk})
                     for chunk in stage1_chunks
                 ]
+                completed_count = 0
                 for future in as_completed(futures):
                     try:
                         result = future.result()
                         for r in result:
                             if r.get("matched_hash"):
                                 matched_hashes.add(r["matched_hash"])
+                        completed_count += 1
+                        if completed_count % 10 == 0 or completed_count == total_chunks:
+                            logging.info(f"Stage 1: Processed {completed_count}/{total_chunks} chunks, found {len(matched_hashes)} matches")
                     except Exception as e:
                         logging.error(f"Error in stage 1 parallel upsert: {e}")
                         raise
         else:
-            for chunk in stage1_chunks:
+            for idx, chunk in enumerate(stage1_chunks, 1):
                 result = self.structured_query(stage1_query, param_map={"data": chunk})
                 for r in result:
                     if r.get("matched_hash"):
                         matched_hashes.add(r["matched_hash"])
+                if idx % 10 == 0 or idx == total_chunks:
+                    logging.info(f"Stage 1: Processed {idx}/{total_chunks} chunks, found {len(matched_hashes)} matches")
         
         logging.info(f"Stage 1 complete: Found {len(matched_hashes)} existing nodes")
         

@@ -135,6 +135,57 @@ def safe_get_source(obj) -> str:
         return f"# Representation:\n{_normalize_signature(repr(obj))}"
 
 
+def get_source_line_numbers(obj) -> Optional[Tuple[int, int]]:
+    """
+    Get the starting and ending line numbers of an object's source code.
+    
+    Args:
+        obj: The Python object (function, method, class, etc.)
+        
+    Returns:
+        Tuple of (start_line, end_line) or None if unavailable
+    """
+    try:
+        # Try using inspect.getsourcelines first
+        lines, lineno = inspect.getsourcelines(obj)
+        end_lineno = lineno + len(lines) - 1
+        return (lineno, end_lineno)
+    except (OSError, TypeError):
+        pass
+    
+    # Try using AST parsing as fallback
+    try:
+        source_file = inspect.getsourcefile(obj)
+        if not source_file:
+            return None
+        
+        with open(source_file, 'r', encoding='utf-8') as f:
+            full_source = f.read()
+        
+        # Parse and find the matching node
+        try:
+            tree = ast.parse(full_source, filename=source_file)
+        except SyntaxError:
+            return None
+        
+        # Get the object's name
+        obj_name = getattr(obj, '__name__', None)
+        if not obj_name:
+            return None
+        
+        # Walk the AST to find matching node
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                if node.name == obj_name:
+                    if hasattr(node, 'lineno') and hasattr(node, 'end_lineno'):
+                        return (node.lineno, node.end_lineno)
+        
+        return None
+    except Exception as e:
+        logging.debug(f"Error getting line numbers for {obj}: {e}")
+        return None
+
+
 def safe_get_docstring(obj) -> str:
     """
     Safely get the docstring of an object.
