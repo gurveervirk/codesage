@@ -482,7 +482,18 @@ class COMStore(Neo4jPropertyGraphStore):
                     serialized_props[key] = value
             return {k: v for k, v in serialized_props.items() if v is not None}
         
-        # Prepare lightweight data for stage 1 (hash + labels only)
+        # Helper to extract primary entity type label
+        def _extract_entity_type_label(labels: List[str]) -> Optional[str]:
+            """Extract primary entity type label (ROOT_MODULE, MODULE, CLASS, etc.)"""
+            entity_types = {'ROOT_MODULE', 'MODULE', 'FUNCTION', 'CLASS', 'METHOD', 
+                          'RESOLVED_SIGNATURE', 'SOURCE', 
+                          'DECORATOR_DETAILS', 'IMPORT_DETAILS'}
+            for label in labels or []:
+                if label in entity_types:
+                    return label
+            return None
+        
+        # Prepare lightweight data for stage 1 (hash + labels + primary label)
         stage1_data: List[dict] = []
         # Prepare full data for stage 2 (everything)
         entity_map: Dict[str, dict] = {}
@@ -490,11 +501,13 @@ class COMStore(Neo4jPropertyGraphStore):
         for entity in nodes:
             c_hash = entity.content_hash
             sanitized_labels = entity.labels
+            primary_label = _extract_entity_type_label(sanitized_labels)
             
             # Stage 1: lightweight match and label addition
             stage1_data.append({
                 "content_hash": c_hash,
-                "labels": sanitized_labels
+                "labels": sanitized_labels,
+                "primary_label": primary_label
             })
             
             # Prepare full entity data for stage 2 (if needed)
@@ -512,14 +525,17 @@ class COMStore(Neo4jPropertyGraphStore):
         if not stage1_data:
             return
         
-        # Stage 1: Match existing nodes and add labels, return missing hashes
+        # Stage 1: Match existing nodes using primary label and content_hash
+        # This leverages label-scoped constraint indexes for optimal performance
         stage1_query = """
             UNWIND $data AS row
-            OPTIONAL MATCH (e {content_hash: row.content_hash})
-            WITH e, row
-            WHERE e IS NOT NULL
-            CALL apoc.create.addLabels(e, row.labels) YIELD node
-            RETURN row.content_hash AS matched_hash
+            CALL apoc.cypher.doIt(
+                'MATCH (e:' + row.primary_label + ' {content_hash: $content_hash}) 
+                 CALL apoc.create.addLabels(e, $labels) YIELD node
+                 RETURN $content_hash AS matched_hash',
+                {content_hash: row.content_hash, labels: row.labels}
+            ) YIELD value
+            RETURN value.matched_hash AS matched_hash
         """
         
         # Stage 2: Create only the missing nodes with full properties
@@ -554,7 +570,7 @@ class COMStore(Neo4jPropertyGraphStore):
                             if r.get("matched_hash"):
                                 matched_hashes.add(r["matched_hash"])
                         completed_count += 1
-                        if completed_count % 10 == 0 or completed_count == total_chunks:
+                        if completed_count % 5 == 0 or completed_count == total_chunks:
                             logging.info(f"Stage 1: Processed {completed_count}/{total_chunks} chunks, found {len(matched_hashes)} matches")
                     except Exception as e:
                         logging.error(f"Error in stage 1 parallel upsert: {e}")
@@ -565,7 +581,7 @@ class COMStore(Neo4jPropertyGraphStore):
                 for r in result:
                     if r.get("matched_hash"):
                         matched_hashes.add(r["matched_hash"])
-                if idx % 10 == 0 or idx == total_chunks:
+                if idx % 5 == 0 or idx == total_chunks:
                     logging.info(f"Stage 1: Processed {idx}/{total_chunks} chunks, found {len(matched_hashes)} matches")
         
         logging.info(f"Stage 1 complete: Found {len(matched_hashes)} existing nodes")
