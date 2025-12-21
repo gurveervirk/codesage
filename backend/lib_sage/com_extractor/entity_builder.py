@@ -13,10 +13,11 @@ from typing_extensions import Any, Callable, Dict, List, Optional, Set, Tuple
 from typing_extensions import Literal
 
 from .models import Entity, Relationship
-from .source_utils import safe_get_source, safe_get_docstring, get_source_line_numbers
-from .signature_utils import get_typed_signature, _normalize_signature
-from .decorator_utils import get_function_method_labels, _resolve_decorator_details
-from .overload_utils import get_overloads_with_fallback
+from .utils.general_utils import extract_simple_name
+from .utils.source_utils import safe_get_source, safe_get_docstring, get_source_line_numbers
+from .utils.signature_utils import get_typed_signature, _normalize_signature
+from .utils.decorator_utils import get_function_method_labels, _resolve_decorator_details
+from .utils.overload_utils import get_overloads_with_fallback
 
 
 def _is_dunder(name: str) -> bool:
@@ -427,7 +428,7 @@ def _process_callable_with_overloads(
         obj_path,
         labels,
         {
-            "__name__": obj.__name__,
+            "__name__": extract_simple_name(obj.__name__),
         }
     )
     entities.append(main_entity)
@@ -495,7 +496,7 @@ def _process_callable_with_overloads(
                 obj_path,
                 ov_labels,
                 {
-                    "__name__": getattr(ov, "__name__", name),
+                    "__name__": extract_simple_name(getattr(ov, "__name__", name)),
                 },
             )
             entities.append(ov_entity)
@@ -565,7 +566,7 @@ def _process_import_statements(
         - Set[Tuple]: PUBLISHES relationships (entity_hash, ExternalEntityRef)
     """
     from .models import ExternalEntityRef
-    from .source_utils import get_unused_imports
+    from .utils.source_utils import get_unused_imports
     
     import_details = {"modules": {}}
     imported_entities: Set[str] = set()  # Track all imported entity FQNs for unused detection

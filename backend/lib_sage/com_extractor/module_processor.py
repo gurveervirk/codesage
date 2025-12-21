@@ -11,8 +11,9 @@ import logging
 import traceback
 from typing_extensions import Dict, List, Optional, Set, Tuple
 
-from .models import Entity, Relationship, ExternalEntityRef
-from .source_utils import (
+from .models import Entity, Relationship
+from .utils.general_utils import extract_simple_name
+from .utils.source_utils import (
     safe_get_source,
     safe_get_docstring,
     get_import_statements,
@@ -82,7 +83,7 @@ def process_module(
         labels.append(f"version:{version}")
     
     # Create main entity with minimal properties
-    root_entity = Entity(module_object.__name__, labels, {"__name__": module_object.__name__})
+    root_entity = Entity(module_object.__name__, labels, {"__name__": extract_simple_name(module_object.__name__)})
     
     # Store import info temporarily for decorator resolution (will be removed after children are processed)
     root_entity.properties["import_statements"] = all_import_statements

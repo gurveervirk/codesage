@@ -12,7 +12,8 @@ import traceback
 from typing_extensions import Any, Dict, List, Optional, Set, Tuple
 
 from .models import Entity, Relationship, ExternalEntityRef
-from .source_utils import (
+from .utils.general_utils import extract_simple_name
+from .utils.source_utils import (
     safe_get_source,
     safe_get_docstring,
     get_import_statements,
@@ -20,7 +21,7 @@ from .source_utils import (
     find_submodules_importlib_resources,
     get_fully_qualified_name,
 )
-from .decorator_utils import _visibility_label, _get_decorators_from_source, _resolve_decorator_details
+from .utils.decorator_utils import _visibility_label, _get_decorators_from_source, _resolve_decorator_details
 from .entity_builder import (
     _is_dunder,
     _get_entity_version,
@@ -182,7 +183,7 @@ def traverse_recursive(
             labels.append("DUNDER")
 
     # Create main entity with minimal properties
-    entity = Entity(obj_path, labels, {"__name__": obj.__name__})
+    entity = Entity(obj_path, labels, {"__name__": extract_simple_name(obj.__name__)})
     entities.append(entity)
     
     # Prepare import_details for MODULE entities
