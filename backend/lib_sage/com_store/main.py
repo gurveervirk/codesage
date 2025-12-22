@@ -9,7 +9,7 @@ from llama_index.core.graph_stores.types import (
 from llama_index.core import Settings
 from typing import Any, Dict, List, Optional, Tuple, Union
 from ..com_extractor import Entity, Relationship
-from .utils import check_if_not_null
+from .utils import check_if_not_null, _escape_regex_special_chars
 import logging
 import neo4j
 import json
@@ -18,11 +18,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 logging.basicConfig(level=logging.INFO)
 BASE_ENTITY_LABEL = "__Entity__"
 BASE_NODE_LABEL = "__Node__"
-
-FULL_TEXT_FULL_NAME_SEARCH_TEMPLATE = """
-Best matches for the entity {entity_name}:
-{matches}
-"""
 
 class COMStore(Neo4jPropertyGraphStore):
     """
@@ -129,6 +124,7 @@ class COMStore(Neo4jPropertyGraphStore):
         # content_hash is the primary unique identifier (includes name + content)
         # Constraints automatically create indexes AND guarantee uniqueness
         hash_constraints = [
+            f"CREATE CONSTRAINT entity_base_unique IF NOT EXISTS FOR (n:{BASE_ENTITY_LABEL}) REQUIRE n.content_hash IS UNIQUE",
             "CREATE CONSTRAINT root_module_unique IF NOT EXISTS FOR (n:ROOT_MODULE) REQUIRE n.content_hash IS UNIQUE",
             "CREATE CONSTRAINT module_unique IF NOT EXISTS FOR (n:MODULE) REQUIRE n.content_hash IS UNIQUE",
             "CREATE CONSTRAINT function_unique IF NOT EXISTS FOR (n:FUNCTION) REQUIRE n.content_hash IS UNIQUE",
@@ -206,109 +202,15 @@ class COMStore(Neo4jPropertyGraphStore):
         """
         self.database_query(import_details_index_query)
 
-        # Create vector indices
-        root_module_vector_index_query = """
-        CREATE VECTOR INDEX root_module_vector_index IF NOT EXISTS
-        FOR (m:`ROOT_MODULE`)
-        ON (m.`embedding`)
-        OPTIONS {indexConfig: {
-            `vector.dimensions`: 1024,
-            `vector.similarity_function`: 'cosine'
-        }}
-        """
-        self.database_query(root_module_vector_index_query)
-
-        function_vector_index_query = """
-        CREATE VECTOR INDEX function_vector_index IF NOT EXISTS
-        FOR (f:`FUNCTION`)
-        ON (f.`embedding`)
-        OPTIONS {indexConfig: {
-            `vector.dimensions`: 1024,
-            `vector.similarity_function`: 'cosine'
-        }}
-        """
-        self.database_query(function_vector_index_query)
-
-        module_vector_index_query = """
-        CREATE VECTOR INDEX module_vector_index IF NOT EXISTS
-        FOR (m:`MODULE`)
-        ON (m.`embedding`)
-        OPTIONS {indexConfig: {
-            `vector.dimensions`: 1024,
-            `vector.similarity_function`: 'cosine'
-        }}
-        """
-        self.database_query(module_vector_index_query)
-
-        class_vector_index_query = """
-        CREATE VECTOR INDEX class_vector_index IF NOT EXISTS
-        FOR (c:`CLASS`)
-        ON (c.`embedding`)
-        OPTIONS {indexConfig: {
-            `vector.dimensions`: 1024,
-            `vector.similarity_function`: 'cosine'
-        }}
-        """
-        self.database_query(class_vector_index_query)
-
-        method_vector_index_query = """
-        CREATE VECTOR INDEX method_vector_index IF NOT EXISTS
-        FOR (m:`METHOD`)
-        ON (m.`embedding`)
-        OPTIONS {indexConfig: {
-            `vector.dimensions`: 1024,
-            `vector.similarity_function`: 'cosine'
-        }}
-        """
-        self.database_query(method_vector_index_query)
-
         general_fts_query = """
         CREATE FULLTEXT INDEX general_fts_index IF NOT EXISTS FOR (n:__Entity__) ON EACH [n.name]
         """
         self.database_query(general_fts_query)
 
-    def query_vector_index(
-        self, index_name: str, query: Union[str, List[float]], top_k: int = 10,
-        **kwargs: Any
-    ) -> List[Dict]:
+        general_rel_fts_query = """
+        CREATE FULLTEXT INDEX general_rel_fts_index IF NOT EXISTS FOR ()-[r:EXPOSES|PUBLISHES]-() ON EACH [r.name]
         """
-        Query a vector index.
-
-        Args:
-            index_name (str): The name of the vector index, restricted to `method_vector_index`, `class_vector_index` and `module_vector_index`.
-            query (str or List[float]): The query or query vector embedding.
-            top_k (int): The number of results to return. Defaults to 10.
-
-        Returns:
-            List[Dict]: A list of dictionaries containing the query results.
-        """
-        query_vector = None
-
-        if isinstance(query, str):
-            query_vector = Settings.embed_model.get_query_embedding(query)
-        else:
-            query_vector = query
-
-        return_fields = ["name", "summary", "source"]
-        return_fields_str = ", ".join([f"n.{field} AS {field}" for field in return_fields])
-
-        query_str = f"""
-        CALL db.index.vector.queryNodes($index_name, $top_k, $query_vector)
-        YIELD node AS n, score
-        RETURN {return_fields_str}, score, labels(n) as labels
-        """
-        query_params = {
-            "index_name": index_name,
-            "top_k": top_k,
-            "query_vector": query_vector,
-        }
-
-        try:
-            records = self.database_query(query_str, query_params)
-            return records
-        except Exception as e:
-            logging.error(f"Error querying vector index '{index_name}': {e}")
-            return []
+        self.database_query(general_rel_fts_query)
 
     def query_fulltext_index(
         self, index_name: str, query: str,
@@ -341,56 +243,6 @@ class COMStore(Neo4jPropertyGraphStore):
             return records
         except Exception as e:
             logging.error(f"Error querying full-text index '{index_name}': {e}")
-            return []
-
-    def similarity_search_without_index(
-        self,
-        labels: List[str],
-        query: Union[str, List[float]],
-        top_k: int = 10,
-        **kwargs: Any,
-    ) -> List[Dict]:
-        """
-        Perform a similarity search without using an index.
-
-        Args:
-            labels (List[str]): A list of labels to query (e.g., ["MODULE", "CLASS", "METHOD"]).
-            query (str or List[float]): The query or query vector embedding.
-            top_k (int): The number of results to return. Defaults to 10.
-
-        Returns:
-            List[Dict]: A list of dictionaries containing the query results.
-        """
-        query_vector = None
-        if isinstance(query, str):
-            query_vector = Settings.embed_model.get_query_embedding(query)
-        else:
-            query_vector = query
-        return_fields = ["name", "source"]
-        return_fields_str = ", ".join([f"n.{field} AS {field}" for field in return_fields])
-
-        query_str = f"""
-        MATCH (n)
-        WHERE any(label in labels(n) WHERE label IN $labels)
-        AND n.{self.embedding_node_property} IS NOT NULL
-        WITH n,
-        vector.similarity.cosine(n.{self.embedding_node_property}, $query_vector) AS similarity
-        ORDER BY similarity DESC
-        LIMIT $top_k
-        RETURN {return_fields_str}, labels(n) AS all_labels, similarity AS score
-        """
-
-        query_params = {
-            "labels": labels,
-            "query_vector": query_vector,
-            "top_k": top_k,
-        }
-
-        try:
-            records = self.database_query(query_str, query_params)
-            return records
-        except Exception as e:
-            logging.error(f"Error performing similarity search: {e}")
             return []
 
     def database_query(
@@ -500,7 +352,8 @@ class COMStore(Neo4jPropertyGraphStore):
         
         for entity in nodes:
             c_hash = entity.content_hash
-            sanitized_labels = entity.labels
+            # Ensure BASE_ENTITY_LABEL is included for FTS
+            sanitized_labels = list(set(entity.labels + [BASE_ENTITY_LABEL]))
             primary_label = _extract_entity_type_label(sanitized_labels)
             
             # Stage 1: lightweight match and label addition
@@ -525,27 +378,23 @@ class COMStore(Neo4jPropertyGraphStore):
         if not stage1_data:
             return
         
-        # Stage 1: Match existing nodes using primary label and content_hash
-        # This leverages label-scoped constraint indexes for optimal performance
-        stage1_query = """
+        # Stage 1: Match existing nodes using the base entity label and content_hash
+        # This is more robust than matching by primary label as it handles label changes
+        stage1_query = f"""
             UNWIND $data AS row
-            CALL apoc.cypher.doIt(
-                'MATCH (e:' + row.primary_label + ' {content_hash: $content_hash}) 
-                 CALL apoc.create.addLabels(e, $labels) YIELD node
-                 RETURN $content_hash AS matched_hash',
-                {content_hash: row.content_hash, labels: row.labels}
-            ) YIELD value
-            RETURN value.matched_hash AS matched_hash
+            MATCH (e:{BASE_ENTITY_LABEL} {{content_hash: row.content_hash}})
+            SET e:$(row.labels)
+            RETURN row.content_hash AS matched_hash
         """
         
         # Stage 2: Create only the missing nodes with full properties
-        stage2_query = """
+        stage2_query = f"""
             UNWIND $data AS row
-            CREATE (e {content_hash: row.properties.content_hash})
+            CREATE (e:{BASE_ENTITY_LABEL} {{content_hash: row.properties.content_hash}})
             SET e += apoc.map.clean(row.properties, [], [])
             WITH e, row
-            CALL apoc.create.addLabels(e, row.labels) YIELD node
-            RETURN count(node) AS created_count
+            SET e:$(row.labels)
+            RETURN count(e) AS created_count
         """
         
         # Split into chunks
@@ -679,18 +528,12 @@ class COMStore(Neo4jPropertyGraphStore):
         
         logging.info(f"Upserting {len(params)} relationships: {relation_type_counts}")
         
-        upsert_rel_query = """
+        upsert_rel_query = f"""
             UNWIND $data AS row
-            CALL apoc.cypher.doIt(
-              'MATCH (source:' + row.source_label + ' {content_hash: $source_content_hash}) 
-               MATCH (target:' + row.target_label + ' {content_hash: $target_content_hash})
-               CALL apoc.merge.relationship(source, $label, {}, $properties, target) YIELD rel
-               RETURN $label as rel_type, 1 as created_count',
-              {source_content_hash: row.source_content_hash,
-               target_content_hash: row.target_content_hash,
-               properties: row.properties, label: row.label}
-            ) YIELD value
-            RETURN value.rel_type AS rel_type, value.created_count AS created_count
+            MATCH (source:{BASE_ENTITY_LABEL} {{content_hash: row.source_content_hash}})
+            MATCH (target:{BASE_ENTITY_LABEL} {{content_hash: row.target_content_hash}})
+            CALL apoc.merge.relationship(source, row.label, {{}}, row.properties, target) YIELD rel
+            RETURN row.label AS rel_type, count(rel) AS created_count
         """
         
         # Split into chunks
@@ -883,7 +726,6 @@ class COMStore(Neo4jPropertyGraphStore):
                       THEN apoc.convert.fromJsonMap(parentInfo)
                       ELSE {name: parentInfo, version: null, content_hash: null}
                  END AS parentData
-            // Try to match parent by name and version label if available
             OPTIONAL MATCH (p:CLASS {name: parentData.name})
             WHERE parentData.version IS NULL 
                OR ('version_' + replace(replace(replace(parentData.version, '.', '_'), ':', '_'), '-', '_')) IN labels(p)
@@ -891,8 +733,8 @@ class COMStore(Neo4jPropertyGraphStore):
             WHERE p IS NOT NULL
             MERGE (c)-[r:INHERITS]->(p)
             SET r.versions = apoc.coll.toSet(coalesce(r.versions, []) + [lbl IN labels(c) WHERE lbl STARTS WITH 'version_'])
-            WITH c, COLLECT({name: p.name, content_hash: p.content_hash}) AS parentInfo
-            SET c.NEW_INHERITED_ENTITIES = [p IN parentInfo | p.name + '::' + p.content_hash]
+            WITH c, COLLECT(p.content_hash) AS parentHashes
+            SET c.NEW_INHERITED_ENTITIES = parentHashes
             REMOVE c.INHERITS
             """
         )
@@ -908,7 +750,6 @@ class COMStore(Neo4jPropertyGraphStore):
                       THEN apoc.convert.fromJsonMap(exposedInfo)
                       ELSE {name: exposedInfo, version: null}
                  END AS exposedData
-            // Match by name and version label
             OPTIONAL MATCH (e {name: exposedData.name})
             WHERE exposedData.version IS NULL
                OR ('version_' + replace(replace(replace(exposedData.version, '.', '_'), ':', '_'), '-', '_')) IN labels(e)
@@ -921,7 +762,6 @@ class COMStore(Neo4jPropertyGraphStore):
             """
         )
         
-        # Process PUBLISHES with version-aware matching
         process_publishes_query = (
             """
             MATCH (m:MODULE|ROOT_MODULE)
@@ -932,7 +772,6 @@ class COMStore(Neo4jPropertyGraphStore):
                       THEN apoc.convert.fromJsonMap(publishedInfo)
                       ELSE {name: publishedInfo, version: null}
                  END AS publishedData
-            // Match by name and version label
             OPTIONAL MATCH (e {name: publishedData.name})
             WHERE publishedData.version IS NULL
                OR ('version_' + replace(replace(replace(publishedData.version, '.', '_'), ':', '_'), '-', '_')) IN labels(e)
@@ -994,67 +833,64 @@ class COMStore(Neo4jPropertyGraphStore):
 
     def _handle_inherited_methods(self):
         """
-        Create HAS_METHOD relations for inherited methods for all classes in the specified module.
-        Now handles methods with SIGNATURE property entities instead of inline signature properties.
+        Create INHERITS_METHOD and INHERITS_CLASS relations for inherited members.
+        Handles methods and nested classes iteratively to support inheritance chains.
         Uses content_hash for precise version-aware parent matching.
-        
-        This method runs iteratively to handle inheritance chains:
-        - Class C inherits from B, B inherits from A
-        - First iteration: B gets methods from A, C gets methods from B
-        - Second iteration: C gets newly inherited methods from B (that B got from A)
-        - Continues until no new methods are inherited (fixed-point)
         """
         handle_inheritance_query = (
             """
-MATCH (child:CLASS)
-WHERE child.NEW_INHERITED_ENTITIES IS NOT NULL
-WITH child, child.NEW_INHERITED_ENTITIES AS parentInfoList
+            MATCH (child:CLASS)
+            WHERE child.NEW_INHERITED_ENTITIES IS NOT NULL
+            WITH child, child.NEW_INHERITED_ENTITIES AS parentHashes
 
-REMOVE child.NEW_INHERITED_ENTITIES
+            REMOVE child.NEW_INHERITED_ENTITIES
 
-WITH child, parentInfoList
-UNWIND parentInfoList AS parentInfo
-WITH child, split(parentInfo, '::') AS parts
-WITH child, parts[0] AS parentName, parts[1] AS parentContentHash
-MATCH (parent:CLASS {name: parentName, content_hash: parentContentHash})-[:HAS_METHOD]->(member)
+            WITH child, parentHashes
+            UNWIND parentHashes AS parentContentHash
+            
+            MATCH (parent:CLASS {content_hash: parentContentHash})-[r:HAS_METHOD|INHERITS_METHOD|HAS_CLASS|INHERITS_CLASS]->(member)
 
-WHERE
-    NOT 'PRIVATE' IN labels(member)
+            WHERE NOT 'PRIVATE' IN labels(member)
+              AND (
+                (
+                    'METHOD' IN labels(member) AND
+                    (
+                        ('DUNDER' IN labels(member) AND NOT EXISTS { MATCH (child)-[:HAS_METHOD|INHERITS_METHOD]->({__name__: member.__name__}) })
+                        OR
+                        (NOT 'DUNDER' IN labels(member) AND NOT EXISTS { 
+                            MATCH (child)-[:HAS_METHOD|INHERITS_METHOD]->(childMethod {__name__: member.__name__})-[:HAS_SIGNATURE]->(childSig:SIGNATURE),
+                                  (member)-[:HAS_SIGNATURE]->(memberSig:SIGNATURE)
+                            WHERE childSig.value = memberSig.value
+                        })
+                    )
+                )
+                OR
+                (
+                    'CLASS' IN labels(member) AND
+                    NOT EXISTS { MATCH (child)-[:HAS_CLASS|INHERITS_CLASS]->({__name__: member.__name__}) }
+                )
+              )
 
-    AND (
-        (
-            'DUNDER' IN labels(member) AND
-            NOT EXISTS { MATCH (child)-[:HAS_METHOD]->({__name__: member.__name__}) }
-        )
-        OR
-        (
-            NOT 'DUNDER' IN labels(member) AND
-            NOT EXISTS { 
-                MATCH (child)-[:HAS_METHOD]->(childMethod {__name__: member.__name__})-[:HAS_SIGNATURE]->(childSig:SIGNATURE),
-                      (member)-[:HAS_SIGNATURE]->(memberSig:SIGNATURE)
-                WHERE childSig.value = memberSig.value
-            }
-        )
-    )
-
-WITH child, collect(DISTINCT member) AS members
-UNWIND members AS member
-MERGE (child)-[r:HAS_METHOD]->(member)
-SET r.versions = apoc.coll.toSet(coalesce(r.versions, []) + [lbl IN labels(child) WHERE lbl STARTS WITH 'version_'])
-
-WITH DISTINCT child, collect(member) AS newMembers
-WHERE size(newMembers) > 0
-WITH child, newMembers
-OPTIONAL MATCH (grandchild:CLASS)-[:INHERITS]->(child)
-WHERE grandchild IS NOT NULL
-WITH child, newMembers, [child.name + '::' + child.content_hash] AS childInfo, collect(DISTINCT grandchild) AS grandchildren
-FOREACH (gc IN grandchildren |
-    SET gc.NEW_INHERITED_ENTITIES = CASE 
-        WHEN gc.NEW_INHERITED_ENTITIES IS NULL THEN childInfo
-        ELSE gc.NEW_INHERITED_ENTITIES + childInfo
-    END
-)
-RETURN child.name AS ChildClass, size(newMembers) AS TotalParentMembersLabeled, size(grandchildren) AS GrandchildrenMarked
+            WITH child, member, 
+                 CASE WHEN 'METHOD' IN labels(member) THEN 'INHERITS_METHOD' ELSE 'INHERITS_CLASS' END AS relType
+            
+            CALL apoc.merge.relationship(child, relType, {}, {}, member) YIELD rel
+            SET rel.name = child.name + "." + member.__name__,
+                rel.versions = apoc.coll.toSet(coalesce(rel.versions, []) + [lbl IN labels(child) WHERE lbl STARTS WITH 'version_'])
+            
+            WITH DISTINCT child, count(rel) AS newCount
+            WHERE newCount > 0
+            
+            OPTIONAL MATCH (grandchild:CLASS)-[:INHERITS]->(child)
+            WHERE grandchild IS NOT NULL
+            WITH child, newCount, [child.content_hash] AS childHash, collect(DISTINCT grandchild) AS grandchildren
+            FOREACH (gc IN grandchildren |
+                SET gc.NEW_INHERITED_ENTITIES = CASE 
+                    WHEN gc.NEW_INHERITED_ENTITIES IS NULL THEN childHash
+                    ELSE gc.NEW_INHERITED_ENTITIES + childHash
+                END
+            )
+            RETURN child.name AS ChildClass, newCount AS TotalInherited, size(grandchildren) AS GrandchildrenMarked
             """
         )
         
@@ -1065,13 +901,13 @@ RETURN child.name AS ChildClass, size(newMembers) AS TotalParentMembersLabeled, 
             iteration += 1
             result = self.structured_query(handle_inheritance_query)
             
-            if not result or all(r.get('TotalParentMembersLabeled', 0) == 0 for r in result):
+            if not result or all(r.get('TotalInherited', 0) == 0 for r in result):
                 logging.info(f"Inheritance propagation completed after {iteration} iteration(s)")
                 break
             
-            total_inherited = sum(r.get('TotalParentMembersLabeled', 0) for r in result)
+            total_inherited = sum(r.get('TotalInherited', 0) for r in result)
             total_marked = sum(r.get('GrandchildrenMarked', 0) for r in result)
-            logging.info(f"Iteration {iteration}: {total_inherited} methods inherited, {total_marked} grandchildren marked for propagation")
+            logging.info(f"Iteration {iteration}: {total_inherited} members inherited, {total_marked} grandchildren marked for propagation")
         
         if iteration >= max_iterations:
             logging.warning(f"Inheritance propagation stopped after {max_iterations} iterations (possible circular inheritance)")
@@ -1155,7 +991,7 @@ RETURN child.name AS ChildClass, size(newMembers) AS TotalParentMembersLabeled, 
 
         self.upsert_nodes(entity_nodes)
     
-    def _fts_full_path_name(self, name: str) -> str:
+    def _fts_full_path_name(self, name: str) -> List[str]:
         """
         Perform a full-text search for the full path name of the entity.
 
@@ -1163,37 +999,35 @@ RETURN child.name AS ChildClass, size(newMembers) AS TotalParentMembersLabeled, 
             name (str): The name of the entity.
 
         Returns:
-            str: The full path name of the entity if found, otherwise an empty string.
+            List[str]: A list of full path names of the entity if found, otherwise an empty list.
         """
-        processed_name = name.replace(".", r".*\.")
-        name_till_dotunderscore = processed_name
-        if r".*\._" in name_till_dotunderscore:
-            name_till_dotunderscore = name_till_dotunderscore.split(r".*\._")[0] + r".*"
-
-        name_till_dotunderscore = f'/{name_till_dotunderscore}/'
+        # Escape special regex characters and then replace escaped dots with subtree match pattern
+        escaped_name = _escape_regex_special_chars(name)
+        processed_name = escaped_name.replace(r"\.", r".*\.")
+        
+        fts_pattern = f'/{processed_name}/'
         logging.info(f"Processed name for regex search: {processed_name}")
-        logging.info(f"Processed name for regex search till ._: {name_till_dotunderscore}")
+        logging.info(f"FTS pattern: {fts_pattern}")
 
-        # Prepare a Cypher query to search for the name in the database, using FTS with regex first, then direct match
+        # Prepare a Cypher query to search for the name in the database using FTS with regex
+        # Searches both node index (general_fts_index) and relationship index (general_rel_fts_index)
         full_text_search_query = (
             """
-            CALL db.index.fulltext.queryNodes($index_name, $name_till_dotunderscore)
+            CALL db.index.fulltext.queryNodes('general_fts_index', $fts_pattern)
             YIELD node AS n, score
-            WHERE n.name =~ $name
-            RETURN n.name AS name
+            RETURN n.name AS name, score
+            
+            UNION
+            
+            CALL db.index.fulltext.queryRelationships('general_rel_fts_index', $fts_pattern)
+            YIELD relationship AS r, score
+            RETURN r.name AS name, score
             """
         )
         records = self.structured_query(full_text_search_query, {
-            "index_name": "general_fts_index",
-            "name_till_dotunderscore": name_till_dotunderscore,
-            "name": processed_name
+            "fts_pattern": fts_pattern
         })
         if records:
-            records_str = "\n\n".join([f"{i + 1}. {record['name']}" for i, record in enumerate(records)])
-            result = FULL_TEXT_FULL_NAME_SEARCH_TEMPLATE.format(
-                entity_name=name,
-                matches=records_str
-            )
-            return result
+            return [record['name'] for record in records]
         
-        return ""
+        return []
