@@ -285,7 +285,7 @@ class COMStoreTools:
 
         # If no relevant nodes are found, process the name for regex search
         logging.info(f"No relevant nodes found for the name: {name}")
-        logging.info(f"Performing full-text search for the full path name of the entity: {name}")
+        logging.info(f"Performing regex search for the full path name of the entity: {name}")
         best_matches = self.store._fts_full_path_name(name)
 
         if best_matches:
@@ -297,7 +297,7 @@ class COMStoreTools:
             return dict_to_xml_string(data, "get_full_path_name_response")
             
         # Split the name by '.', merge first and last parts, and try to find the full path name
-        logging.info(f"Performing full-text search for the full path name of the entity with shortened name: {name}")
+        logging.info(f"Performing regex search for the full path name of the entity with shortened name: {name}")
         name_parts = name.split(".")
         shortened_name = name_parts[0] + "." + name_parts[-1]
         best_matches = self.store._fts_full_path_name(shortened_name)

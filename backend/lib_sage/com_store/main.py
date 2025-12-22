@@ -155,62 +155,6 @@ class COMStore(Neo4jPropertyGraphStore):
         for query in name_indices:
             self.database_query(query)
 
-        # Create full-text indices
-        root_module_index_query = """
-        CREATE FULLTEXT INDEX root_module_index IF NOT EXISTS FOR (n:`ROOT_MODULE`) ON EACH [n.`name`]
-        """
-        self.database_query(root_module_index_query)
-
-        function_index_query = """
-        CREATE FULLTEXT INDEX function_index IF NOT EXISTS FOR (n:`FUNCTION`) ON EACH [n.`name`]
-        """
-        self.database_query(function_index_query)
-
-        module_index_query = """
-        CREATE FULLTEXT INDEX module_index IF NOT EXISTS FOR (n:`MODULE`) ON EACH [n.`name`]
-        """
-        self.database_query(module_index_query)
-
-        class_index_query = """
-        CREATE FULLTEXT INDEX class_index IF NOT EXISTS FOR (n:`CLASS`) ON EACH [n.`name`]
-        """
-        self.database_query(class_index_query)
-
-        method_index_query = """
-        CREATE FULLTEXT INDEX method_index IF NOT EXISTS FOR (n:`METHOD`) ON EACH [n.`name`]
-        """
-        self.database_query(method_index_query)
-
-        # Create full-text indices for property entity types
-        resolved_signature_index_query = """
-        CREATE FULLTEXT INDEX resolved_signature_index IF NOT EXISTS FOR (n:`RESOLVED_SIGNATURE`) ON EACH [n.`name`]
-        """
-        self.database_query(resolved_signature_index_query)
-
-        source_index_query = """
-        CREATE FULLTEXT INDEX source_index IF NOT EXISTS FOR (n:`SOURCE`) ON EACH [n.`name`]
-        """
-        self.database_query(source_index_query)
-
-        decorator_details_index_query = """
-        CREATE FULLTEXT INDEX decorator_details_index IF NOT EXISTS FOR (n:`DECORATOR_DETAILS`) ON EACH [n.`name`]
-        """
-        self.database_query(decorator_details_index_query)
-
-        import_details_index_query = """
-        CREATE FULLTEXT INDEX import_details_index IF NOT EXISTS FOR (n:`IMPORT_DETAILS`) ON EACH [n.`name`]
-        """
-        self.database_query(import_details_index_query)
-
-        general_fts_query = """
-        CREATE FULLTEXT INDEX general_fts_index IF NOT EXISTS FOR (n:__Entity__) ON EACH [n.name]
-        """
-        self.database_query(general_fts_query)
-
-        general_rel_fts_query = """
-        CREATE FULLTEXT INDEX general_rel_fts_index IF NOT EXISTS FOR ()-[r:EXPOSES|PUBLISHES]-() ON EACH [r.name]
-        """
-        self.database_query(general_rel_fts_query)
 
     def query_fulltext_index(
         self, index_name: str, query: str,
@@ -993,7 +937,7 @@ class COMStore(Neo4jPropertyGraphStore):
     
     def _fts_full_path_name(self, name: str) -> List[str]:
         """
-        Perform a full-text search for the full path name of the entity.
+        Perform a regex search for the full path name of the entity.
 
         Args:
             name (str): The name of the entity.
@@ -1005,27 +949,28 @@ class COMStore(Neo4jPropertyGraphStore):
         escaped_name = _escape_regex_special_chars(name)
         processed_name = escaped_name.replace(r"\.", r".*\.")
         
-        fts_pattern = f'/{processed_name}/'
+        # Construct regex pattern: .*processed_name.*
+        cypher_regex = f".*{processed_name}.*"
         logging.info(f"Processed name for regex search: {processed_name}")
-        logging.info(f"FTS pattern: {fts_pattern}")
+        logging.info(f"Cypher regex: {cypher_regex}")
 
-        # Prepare a Cypher query to search for the name in the database using FTS with regex
-        # Searches both node index (general_fts_index) and relationship index (general_rel_fts_index)
-        full_text_search_query = (
+        # Prepare a Cypher query to search for the name in the database using regex
+        # Searches both nodes and relationships
+        regex_search_query = (
             """
-            CALL db.index.fulltext.queryNodes('general_fts_index', $fts_pattern)
-            YIELD node AS n, score
-            RETURN n.name AS name, score
+            MATCH (n:__Entity__)
+            WHERE n.name =~ $cypher_regex
+            RETURN n.name AS name
             
             UNION
             
-            CALL db.index.fulltext.queryRelationships('general_rel_fts_index', $fts_pattern)
-            YIELD relationship AS r, score
-            RETURN r.name AS name, score
+            MATCH ()-[r:EXPOSES|PUBLISHES|INHERITS_METHOD|INHERITS_CLASS]->()
+            WHERE r.name =~ $cypher_regex
+            RETURN r.name AS name
             """
         )
-        records = self.structured_query(full_text_search_query, {
-            "fts_pattern": fts_pattern
+        records = self.structured_query(regex_search_query, {
+            "cypher_regex": cypher_regex
         })
         if records:
             return [record['name'] for record in records]
