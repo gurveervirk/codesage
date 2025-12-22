@@ -782,9 +782,12 @@ class COMStore(Neo4jPropertyGraphStore):
         Uses content_hash for precise version-aware parent matching.
         """
         handle_inheritance_query = (
-            """
+            f"""
             MATCH (child:CLASS)
             WHERE child.NEW_INHERITED_ENTITIES IS NOT NULL
+            WITH child
+            LIMIT {self.batch_size}
+            
             WITH child, child.NEW_INHERITED_ENTITIES AS parentHashes
 
             REMOVE child.NEW_INHERITED_ENTITIES
@@ -792,33 +795,33 @@ class COMStore(Neo4jPropertyGraphStore):
             WITH child, parentHashes
             UNWIND parentHashes AS parentContentHash
             
-            MATCH (parent:CLASS {content_hash: parentContentHash})-[r:HAS_METHOD|INHERITS_METHOD|HAS_CLASS|INHERITS_CLASS]->(member)
+            MATCH (parent:CLASS {{content_hash: parentContentHash}})-[r:HAS_METHOD|INHERITS_METHOD|HAS_CLASS|INHERITS_CLASS]->(member)
 
             WHERE NOT 'PRIVATE' IN labels(member)
               AND (
                 (
                     'METHOD' IN labels(member) AND
                     (
-                        ('DUNDER' IN labels(member) AND NOT EXISTS { MATCH (child)-[:HAS_METHOD|INHERITS_METHOD]->({__name__: member.__name__}) })
+                        ('DUNDER' IN labels(member) AND NOT EXISTS {{ MATCH (child)-[:HAS_METHOD|INHERITS_METHOD]->({{__name__: member.__name__}}) }})
                         OR
-                        (NOT 'DUNDER' IN labels(member) AND NOT EXISTS { 
-                            MATCH (child)-[:HAS_METHOD|INHERITS_METHOD]->(childMethod {__name__: member.__name__})-[:HAS_SIGNATURE]->(childSig:SIGNATURE),
-                                  (member)-[:HAS_SIGNATURE]->(memberSig:SIGNATURE)
-                            WHERE childSig.value = memberSig.value
-                        })
+                        (NOT 'DUNDER' IN labels(member) AND NOT EXISTS {{ 
+                            MATCH (child)-[:HAS_METHOD|INHERITS_METHOD]->(childMethod {{__name__: member.__name__}})-[:HAS_SOURCE]->(childSource:SOURCE),
+                                  (member)-[:HAS_SOURCE]->(memberSource:SOURCE)
+                            WHERE childSource.signature = memberSource.signature
+                        }})
                     )
                 )
                 OR
                 (
                     'CLASS' IN labels(member) AND
-                    NOT EXISTS { MATCH (child)-[:HAS_CLASS|INHERITS_CLASS]->({__name__: member.__name__}) }
+                    NOT EXISTS {{ MATCH (child)-[:HAS_CLASS|INHERITS_CLASS]->({{__name__: member.__name__}}) }}
                 )
               )
 
             WITH child, member, 
                  CASE WHEN 'METHOD' IN labels(member) THEN 'INHERITS_METHOD' ELSE 'INHERITS_CLASS' END AS relType
             
-            CALL apoc.merge.relationship(child, relType, {}, {}, member) YIELD rel
+            CALL apoc.merge.relationship(child, relType, {{}}, {{}}, member) YIELD rel
             SET rel.name = child.name + "." + member.__name__,
                 rel.versions = apoc.coll.toSet(coalesce(rel.versions, []) + [lbl IN labels(child) WHERE lbl STARTS WITH 'version_'])
             
@@ -872,7 +875,7 @@ class COMStore(Neo4jPropertyGraphStore):
     def _embed_nodes(self):
         """
         Embed newly created nodes.
-        Excludes property entity types (SIGNATURE, RESOLVED_SIGNATURE, DOCSTRING, SOURCE, DECORATOR_DETAILS, IMPORT_DETAILS).
+        Excludes property entity types (RESOLVED_SIGNATURE, SOURCE, DECORATOR_DETAILS, IMPORT_DETAILS).
         """
         retrieve_new_nodes = (
             """
@@ -880,9 +883,7 @@ class COMStore(Neo4jPropertyGraphStore):
             WHERE NOT e:INTERNAL
             AND NOT e:PRIVATE
             AND NOT e:DUNDER
-            AND NOT e:SIGNATURE
             AND NOT e:RESOLVED_SIGNATURE
-            AND NOT e:DOCSTRING
             AND NOT e:SOURCE
             AND NOT e:DECORATOR_DETAILS
             AND NOT e:IMPORT_DETAILS
@@ -893,11 +894,12 @@ class COMStore(Neo4jPropertyGraphStore):
             properties(e) AS properties
             """
         )
+        
         new_nodes = self.structured_query(retrieve_new_nodes)
         if not new_nodes:
             return
         
-        logging.info(f"Found {len(new_nodes)} new nodes to embed.")
+        logging.info(f"Found {len(new_nodes)} new nodes to embed in this batch.")
 
         entity_nodes, summaries = [], []
         # Create EntityNode objects for each node
@@ -910,11 +912,11 @@ class COMStore(Neo4jPropertyGraphStore):
             entity_nodes.append(entity_node)
             summary = entity_node.properties.get("summary", "")
     
-            # For MODULE, ROOT_MODULE, and CLASS, fetch docstring from DOCSTRING property entity
+            # For MODULE, ROOT_MODULE, and CLASS, fetch docstring from SOURCE property entity
             if node["type"] in ("ROOT_MODULE", "MODULE", "CLASS"):
                 docstring_query = """
-                MATCH (e {name: $name})-[:HAS_DOCSTRING]->(d:DOCSTRING)
-                RETURN d.value AS docstring
+                MATCH (e {name: $name})-[:HAS_SOURCE]->(s:SOURCE)
+                RETURN s.docstring AS docstring
                 """
                 docstring_result = self.structured_query(docstring_query, {"name": node["name"]})
                 if docstring_result and docstring_result[0].get("docstring"):
