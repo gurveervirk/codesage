@@ -62,3 +62,4 @@ If any section is unclear or missing, please provide feedback so this guide can 
 - If you are unsure about something, ask for clarification before proceeding.
 - Do not create extra Markdown files to explain your changes (NO SUMMARY or EXPLANATION files).
 - Do not create unnecessary tests or documentation unless explicitly asked.
+- Do not add any comments, unless explicitly asked.
