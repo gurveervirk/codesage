@@ -1307,7 +1307,7 @@ class COMStoreTools:
                 params["root_module"] = root_module
             
             result = self.store.database_query(query, params)
-            result = self.store.database_query(query, {"entity_name": entity_name})
+
             if result and len(result) > 0:
                 return result[0].get("computed_path")
             return None

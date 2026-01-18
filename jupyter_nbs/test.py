@@ -1,7 +1,9 @@
 # %%
 import sys
+from pathlib import Path
 
-sys.path.append(r'/Users/gurveersinghvirk/Documents/github/CodeSage/backend')  # Adjust the path as needed to import from backend/lib_sage
+backend_path = Path(__file__).parent.parent / "backend"
+sys.path.append(str(backend_path))
 
 # %%
 from lib_sage.com_extractor import process_package

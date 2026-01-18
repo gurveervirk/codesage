@@ -263,10 +263,8 @@ def install_package(venv_path: Path, package_spec: str) -> bool:
     
     try:
         logger.info(f"Installing {package_spec}")
-        cmd = [str(python_exe), "-m", "pip", "install", "--quiet", package_spec]
-        # Include pydantic as it's required for com_extractor
-        if "pydantic" not in package_spec.lower():
-            cmd += ["pydantic"]
+        required_dependencies = ["pydantic"]
+        cmd = [str(python_exe), "-m", "pip", "install", "--quiet", package_spec, *required_dependencies]
         subprocess.run(
             cmd,
             check=True,
