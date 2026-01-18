@@ -1,0 +1,173 @@
+{
+  "files_in_context": [
+    {
+      "path": "benchmarks/GitChameleonBenchmark/tests",
+      "record_state": "stale",
+      "record_source": "file_mentioned",
+      "cline_read_date": 1766654203241,
+      "cline_edit_date": null,
+      "user_edit_date": null
+    },
+    {
+      "path": "benchmarks/GitChameleonBenchmark/tests",
+      "record_state": "stale",
+      "record_source": "user_edited",
+      "cline_read_date": 1766654203241,
+      "cline_edit_date": null,
+      "user_edit_date": 1766654228799
+    },
+    {
+      "path": "benchmarks/GitChameleonBenchmark/tests/Cline/sample_266.py",
+      "record_state": "active",
+      "record_source": "cline_edited",
+      "cline_read_date": 1766654231568,
+      "cline_edit_date": 1766654231568,
+      "user_edit_date": null
+    },
+    {
+      "path": "benchmarks/GitChameleonBenchmark/tests",
+      "record_state": "stale",
+      "record_source": "user_edited",
+      "cline_read_date": 1766654203241,
+      "cline_edit_date": null,
+      "user_edit_date": 1766654241846
+    },
+    {
+      "path": "benchmarks/GitChameleonBenchmark/tests",
+      "record_state": "stale",
+      "record_source": "user_edited",
+      "cline_read_date": 1766654203241,
+      "cline_edit_date": null,
+      "user_edit_date": 1766654244182
+    },
+    {
+      "path": "benchmarks/GitChameleonBenchmark/tests/Cline/sample_267.py",
+      "record_state": "active",
+      "record_source": "cline_edited",
+      "cline_read_date": 1766654246841,
+      "cline_edit_date": 1766654246841,
+      "user_edit_date": null
+    },
+    {
+      "path": "benchmarks/GitChameleonBenchmark/tests",
+      "record_state": "stale",
+      "record_source": "user_edited",
+      "cline_read_date": 1766654203241,
+      "cline_edit_date": null,
+      "user_edit_date": 1766654271647
+    },
+    {
+      "path": "benchmarks/GitChameleonBenchmark/tests/Cline/sample_268.py",
+      "record_state": "active",
+      "record_source": "cline_edited",
+      "cline_read_date": 1766654274311,
+      "cline_edit_date": 1766654274311,
+      "user_edit_date": null
+    },
+    {
+      "path": "benchmarks/GitChameleonBenchmark/tests",
+      "record_state": "stale",
+      "record_source": "user_edited",
+      "cline_read_date": 1766654203241,
+      "cline_edit_date": null,
+      "user_edit_date": 1766654289703
+    },
+    {
+      "path": "benchmarks/GitChameleonBenchmark/tests/Cline/sample_269.py",
+      "record_state": "active",
+      "record_source": "cline_edited",
+      "cline_read_date": 1766654292370,
+      "cline_edit_date": 1766654292370,
+      "user_edit_date": null
+    },
+    {
+      "path": "benchmarks/GitChameleonBenchmark/tests",
+      "record_state": "stale",
+      "record_source": "user_edited",
+      "cline_read_date": 1766654203241,
+      "cline_edit_date": null,
+      "user_edit_date": 1766654306449
+    },
+    {
+      "path": "benchmarks/GitChameleonBenchmark/tests/Cline/sample_270.py",
+      "record_state": "active",
+      "record_source": "cline_edited",
+      "cline_read_date": 1766654309112,
+      "cline_edit_date": 1766654309112,
+      "user_edit_date": null
+    },
+    {
+      "path": "benchmarks/GitChameleonBenchmark/tests",
+      "record_state": "stale",
+      "record_source": "user_edited",
+      "cline_read_date": 1766654203241,
+      "cline_edit_date": null,
+      "user_edit_date": 1766654319873
+    },
+    {
+      "path": "benchmarks/GitChameleonBenchmark/tests/Cline/sample_271.py",
+      "record_state": "active",
+      "record_source": "cline_edited",
+      "cline_read_date": 1766654322536,
+      "cline_edit_date": 1766654322536,
+      "user_edit_date": null
+    },
+    {
+      "path": "benchmarks/GitChameleonBenchmark/tests",
+      "record_state": "stale",
+      "record_source": "user_edited",
+      "cline_read_date": 1766654203241,
+      "cline_edit_date": null,
+      "user_edit_date": 1766654332186
+    },
+    {
+      "path": "benchmarks/GitChameleonBenchmark/tests/Cline/sample_272.py",
+      "record_state": "active",
+      "record_source": "cline_edited",
+      "cline_read_date": 1766654334841,
+      "cline_edit_date": 1766654334841,
+      "user_edit_date": null
+    },
+    {
+      "path": "benchmarks/GitChameleonBenchmark/tests",
+      "record_state": "active",
+      "record_source": "user_edited",
+      "cline_read_date": 1766654203241,
+      "cline_edit_date": null,
+      "user_edit_date": 1766654339868
+    },
+    {
+      "path": "benchmarks/GitChameleonBenchmark/tests/Cline/sample_273.py",
+      "record_state": "active",
+      "record_source": "cline_edited",
+      "cline_read_date": 1766654342533,
+      "cline_edit_date": 1766654342533,
+      "user_edit_date": null
+    }
+  ],
+  "model_usage": [
+    {
+      "ts": 1766654203187,
+      "model_id": "copilot/gpt-4.1",
+      "model_provider_id": "vscode-lm",
+      "mode": "act"
+    },
+    {
+      "ts": 1766654213326,
+      "model_id": "gpt-4.1",
+      "model_provider_id": "vscode-lm",
+      "mode": "act"
+    }
+  ],
+  "environment_history": [
+    {
+      "ts": 1766654203186,
+      "os_name": "darwin",
+      "os_version": "25.2.0",
+      "os_arch": "arm64",
+      "host_name": "Visual Studio Code",
+      "host_version": "1.107.1",
+      "cline_version": "3.46.1"
+    }
+  ]
+}

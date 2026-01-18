@@ -1,0 +1,8 @@
+- Date: 25 Dec 2025
+- Added `use codesage_library_explorer` to the base input prompt to cline
+- Cline correctly used my custom mcp specific global cline rule, based on [context7's example rule](https://context7.com/docs/installation#cline) like so:
+  - Always use codesage_library_explorer when I need code generation, setup or configuration steps, or library/API documentation. This means you should automatically use the codesage_library_explorer MCP tools to get library and internal entity information without me having to explicitly ask. All code generated or updated must be based on the information you get from the tools.
+  - It used the `list_libraries`, `search_definitions`, `get_definitions` tools and completed the code accordingly.
+- Drawbacks noticed:
+  - Haven't considered library dependencies at all
+  - Haven't considered python version dependencies
