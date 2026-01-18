@@ -31,27 +31,38 @@ def dict_to_xml_string(data: Dict[str, Any], root_tag: str = "response") -> str:
         Formatted XML string
     """
     def _add_element(parent: ET.Element, key: str, value: Any) -> None:
-        """Recursively add elements to the XML tree."""
-        if value is None:
-            elem = ET.SubElement(parent, key)
-            elem.text = ""
-        elif isinstance(value, dict):
-            elem = ET.SubElement(parent, key)
+        """Recursively add elements to the XML tree, skipping empty ones."""
+        if value is None or value == [] or value == {}:
+            return
+        
+        if isinstance(value, str) and not value.strip():
+            return
+
+        if isinstance(value, dict):
+            elem = ET.Element(key)
             for k, v in value.items():
                 _add_element(elem, k, v)
+            if len(elem) > 0:
+                parent.append(elem)
         elif isinstance(value, list):
-            elem = ET.SubElement(parent, key)
+            elem = ET.Element(key)
             for item in value:
                 if isinstance(item, dict):
-                    item_elem = ET.SubElement(elem, "item")
+                    item_elem = ET.Element("item")
                     for k, v in item.items():
                         _add_element(item_elem, k, v)
-                else:
+                    if len(item_elem) > 0:
+                        elem.append(item_elem)
+                elif item is not None and str(item).strip() != "":
                     item_elem = ET.SubElement(elem, "item")
                     item_elem.text = _escape_xml(item)
+            if len(elem) > 0:
+                parent.append(elem)
         else:
-            elem = ET.SubElement(parent, key)
-            elem.text = _escape_xml(value)
+            text = _escape_xml(value)
+            if text.strip() != "":
+                elem = ET.SubElement(parent, key)
+                elem.text = text
     
     root = ET.Element(root_tag)
     for key, value in data.items():

@@ -26,8 +26,8 @@ class COMStore(Neo4jPropertyGraphStore):
     It provides ways to create, update, and query entities and relationships in the database. The database stores the Python Modular Tree structure in the form of nodes and relationships.
 
     Schema:
-    - Nodes: MODULE, CLASS, METHOD
-    - Relationships: HAS_CLASS, HAS_METHOD, INHERITS, EXPOSES, PUBLISHES
+    - Nodes: DISTRIBUTION_PACKAGE, IMPORT_PACKAGE, MODULE, CLASS, METHOD
+    - Relationships: PROVIDES, HAS_SUBMODULE, HAS_CLASS, HAS_METHOD, INTERNAL_INHERITS, EXTERNAL_INHERITS, EXPOSES, PUBLISHES, EXPOSES_ALL, PUBLISHES_ALL
     """
     stores_text: bool = True
     flat_metadata: bool = True
@@ -44,11 +44,11 @@ class COMStore(Neo4jPropertyGraphStore):
     _is_enterprise: bool = PrivateAttr()
     custom_fts_indices: Any = []
 
-    _root_modules: List[Dict] = PrivateAttr()
+    _distribution_packages: List[Dict] = PrivateAttr()
     _children: List[Dict] = PrivateAttr()
-    _root_modules_index: int = PrivateAttr()
+    _distribution_packages_index: int = PrivateAttr()
     _children_index: int = PrivateAttr()
-    _last_root_modules_query: Dict = PrivateAttr()
+    _last_distribution_packages_query: Dict = PrivateAttr()
     _last_children_query: Dict = PrivateAttr()
 
     def __init__(
@@ -102,11 +102,11 @@ class COMStore(Neo4jPropertyGraphStore):
             [index_name, node_label, embedding_node_property, text_node_property],
         )
         self.create_required_indices()
-        self._root_modules = []
+        self._distribution_packages = []
         self._children = []
-        self._root_modules_index = 0
+        self._distribution_packages_index = 0
         self._children_index = 0
-        self._last_root_modules_query = {}
+        self._last_distribution_packages_query = {}
         self._last_children_query = {}
 
     def create_required_indices(self) -> None:
@@ -125,7 +125,8 @@ class COMStore(Neo4jPropertyGraphStore):
         # Constraints automatically create indexes AND guarantee uniqueness
         hash_constraints = [
             f"CREATE CONSTRAINT entity_base_unique IF NOT EXISTS FOR (n:{BASE_ENTITY_LABEL}) REQUIRE n.content_hash IS UNIQUE",
-            "CREATE CONSTRAINT root_module_unique IF NOT EXISTS FOR (n:ROOT_MODULE) REQUIRE n.content_hash IS UNIQUE",
+            "CREATE CONSTRAINT distribution_package_unique IF NOT EXISTS FOR (n:DISTRIBUTION_PACKAGE) REQUIRE n.content_hash IS UNIQUE",
+            "CREATE CONSTRAINT import_package_unique IF NOT EXISTS FOR (n:IMPORT_PACKAGE) REQUIRE n.content_hash IS UNIQUE",
             "CREATE CONSTRAINT module_unique IF NOT EXISTS FOR (n:MODULE) REQUIRE n.content_hash IS UNIQUE",
             "CREATE CONSTRAINT function_unique IF NOT EXISTS FOR (n:FUNCTION) REQUIRE n.content_hash IS UNIQUE",
             "CREATE CONSTRAINT class_unique IF NOT EXISTS FOR (n:CLASS) REQUIRE n.content_hash IS UNIQUE",
@@ -141,7 +142,8 @@ class COMStore(Neo4jPropertyGraphStore):
         
         # Create separate indices on name for query performance
         name_indices = [
-            "CREATE INDEX root_module_name_idx IF NOT EXISTS FOR (n:ROOT_MODULE) ON (n.name)",
+            "CREATE INDEX distribution_package_name_idx IF NOT EXISTS FOR (n:DISTRIBUTION_PACKAGE) ON (n.name)",
+            "CREATE INDEX import_package_name_idx IF NOT EXISTS FOR (n:IMPORT_PACKAGE) ON (n.name)",
             "CREATE INDEX module_name_idx IF NOT EXISTS FOR (n:MODULE) ON (n.name)",
             "CREATE INDEX function_name_idx IF NOT EXISTS FOR (n:FUNCTION) ON (n.name)",
             "CREATE INDEX class_name_idx IF NOT EXISTS FOR (n:CLASS) ON (n.name)",
@@ -280,8 +282,8 @@ class COMStore(Neo4jPropertyGraphStore):
         
         # Helper to extract primary entity type label
         def _extract_entity_type_label(labels: List[str]) -> Optional[str]:
-            """Extract primary entity type label (ROOT_MODULE, MODULE, CLASS, etc.)"""
-            entity_types = {'ROOT_MODULE', 'MODULE', 'FUNCTION', 'CLASS', 'METHOD', 
+            """Extract primary entity type label (DISTRIBUTION_PACKAGE, IMPORT_PACKAGE, MODULE, CLASS, etc.)"""
+            entity_types = {'DISTRIBUTION_PACKAGE', 'IMPORT_PACKAGE', 'MODULE', 'FUNCTION', 'CLASS', 'METHOD', 
                           'RESOLVED_SIGNATURE', 'SOURCE', 
                           'DECORATOR_DETAILS', 'IMPORT_DETAILS'}
             for label in labels or []:
@@ -434,8 +436,8 @@ class COMStore(Neo4jPropertyGraphStore):
             return {k: v for k, v in serialized_props.items() if v is not None}
         
         def _extract_entity_type_label(labels: List[str]) -> Optional[str]:
-            """Extract primary entity type label (ROOT_MODULE, MODULE, CLASS, etc.)"""
-            entity_types = {'ROOT_MODULE', 'MODULE', 'FUNCTION', 'CLASS', 'METHOD', 
+            """Extract primary entity type label (DISTRIBUTION_PACKAGE, IMPORT_PACKAGE, MODULE, CLASS, etc.)"""
+            entity_types = {'DISTRIBUTION_PACKAGE', 'IMPORT_PACKAGE', 'MODULE', 'FUNCTION', 'CLASS', 'METHOD', 
                           'RESOLVED_SIGNATURE', 'SOURCE', 
                           'DECORATOR_DETAILS', 'IMPORT_DETAILS'}
             for label in labels or []:
@@ -542,7 +544,8 @@ class COMStore(Neo4jPropertyGraphStore):
             entities: List[Entity], 
             relations: List[Relationship], 
             other_relations: Dict[str, List[Tuple]],
-            embed_nodes: Optional[bool] = False
+            embed_nodes: Optional[bool] = False,
+            version: Optional[str] = None
         ) -> None:
         """
         Upsert entities and relationships into Neo4j.
@@ -552,7 +555,19 @@ class COMStore(Neo4jPropertyGraphStore):
             entities (List[Entity]): List of entity nodes to upsert.
             relations (List[Relationship]): List of relationships to upsert.
             other_relations (Dict[str, List[Tuple]]): Dictionary containing other relations.
+            embed_nodes (bool): Whether to generate embeddings for the nodes.
+            version (Optional[str]): The version of the module being processed.
         """
+        # Try to detect version from entities if not provided
+        if not version and entities:
+            for entity in entities:
+                for label in entity.labels:
+                    if label.startswith("version:"):
+                        version = label.split(":", 1)[1]
+                        break
+                if version:
+                    break
+
         # Upsert nodes and relationships directly using our custom Entity/Relationship models
         try:
             logging.info(f"Upserting {len(entities)} nodes and {len(relations)} relationships")
@@ -567,15 +582,12 @@ class COMStore(Neo4jPropertyGraphStore):
             self._embed_nodes()
 
         # Add INHERITS, EXPOSES, and PUBLISHES relations as properties to the respective nodes
-        self._add_other_relations_as_properties(other_relations)
+        self._add_other_relations_as_properties(other_relations, source_version=version)
 
         # Process INHERITS, EXPOSES, and PUBLISHES relations
         self._process_other_relations()
 
-        # Handle inherited methods
-        self._handle_inherited_methods()
-
-    def _add_other_relations_as_properties(self, other_relations: Dict[str, List[Tuple]]):
+    def _add_other_relations_as_properties(self, other_relations: Dict[str, List[Tuple]], source_version: Optional[str] = None):
         """
         Add INHERITS, EXPOSES, and PUBLISHES relations as properties to the respective nodes.
         Now works with (content_hash, ExternalEntityRef) tuples.
@@ -583,27 +595,60 @@ class COMStore(Neo4jPropertyGraphStore):
         Args:
             other_relations (Dict[str, List[Tuple]]): Dictionary containing INHERITS, EXPOSES, and PUBLISHES relations.
                 Each tuple is (from_content_hash, ExternalEntityRef)
+            source_version (Optional[str]): The version of the source entity.
         """
         from ..com_extractor import ExternalEntityRef
         
-        inherits_relations = other_relations.get("INHERITS", [])
+        internal_inherits = other_relations.get("INTERNAL_INHERITS", [])
+        external_inherits = other_relations.get("EXTERNAL_INHERITS", [])
         exposes_relations = other_relations.get("EXPOSES", [])
         publishes_relations = other_relations.get("PUBLISHES", [])
+        exposes_all_relations = other_relations.get("EXPOSES_ALL", [])
+        publishes_all_relations = other_relations.get("PUBLISHES_ALL", [])
         
-        # Convert (name, ExternalEntityRef) tuples to (name, target_info_dict) for INHERITS
-        # INHERITS uses entity name (not content_hash) as key since it's class-level
-        inherits_processed = []
-        for from_name, to_ref in inherits_relations:
+        # Convert (content_hash, ExternalEntityRef) tuples to (content_hash, target_info_dict) for INTERNAL_INHERITS
+        internal_inherits_processed = []
+        for from_hash, to_ref in internal_inherits:
             if isinstance(to_ref, ExternalEntityRef):
                 # Store as dict with name and version
                 target_info = {
                     "name": to_ref.name,
-                    "version": to_ref.version
+                    "version": to_ref.version,
+                    "source_version": source_version,
+                    "alias": to_ref.alias
                 }
-                inherits_processed.append((from_name, json.dumps(target_info)))
+                internal_inherits_processed.append((from_hash, json.dumps(target_info)))
             else:
                 # Legacy format: just name
-                inherits_processed.append((from_name, to_ref))
+                target_info = {
+                    "name": to_ref,
+                    "version": None,
+                    "source_version": source_version,
+                    "alias": None
+                }
+                internal_inherits_processed.append((from_hash, json.dumps(target_info)))
+
+        # Convert (content_hash, ExternalEntityRef) tuples to (content_hash, target_info_dict) for EXTERNAL_INHERITS
+        external_inherits_processed = []
+        for from_hash, to_ref in external_inherits:
+            if isinstance(to_ref, ExternalEntityRef):
+                # Store as dict with name and version
+                target_info = {
+                    "name": to_ref.name,
+                    "version": to_ref.version,
+                    "source_version": source_version,
+                    "alias": to_ref.alias
+                }
+                external_inherits_processed.append((from_hash, json.dumps(target_info)))
+            else:
+                # Legacy format: just name
+                target_info = {
+                    "name": to_ref,
+                    "version": None,
+                    "source_version": source_version,
+                    "alias": None
+                }
+                external_inherits_processed.append((from_hash, json.dumps(target_info)))
         
         # Convert (content_hash, ExternalEntityRef) tuples to (content_hash, target_info_dict) for EXPOSES/PUBLISHES
         exposes_processed = []
@@ -611,28 +656,90 @@ class COMStore(Neo4jPropertyGraphStore):
             if isinstance(to_ref, ExternalEntityRef):
                 target_info = {
                     "name": to_ref.name,
-                    "version": to_ref.version
+                    "version": to_ref.version,
+                    "source_version": source_version,
+                    "alias": to_ref.alias
                 }
                 exposes_processed.append((from_hash, json.dumps(target_info)))
             else:
-                exposes_processed.append((from_hash, to_ref))
+                target_info = {
+                    "name": to_ref,
+                    "version": None,
+                    "source_version": source_version,
+                    "alias": None
+                }
+                exposes_processed.append((from_hash, json.dumps(target_info)))
         
         publishes_processed = []
         for from_hash, to_ref in publishes_relations:
             if isinstance(to_ref, ExternalEntityRef):
                 target_info = {
                     "name": to_ref.name,
-                    "version": to_ref.version
+                    "version": to_ref.version,
+                    "source_version": source_version,
+                    "alias": to_ref.alias
                 }
                 publishes_processed.append((from_hash, json.dumps(target_info)))
             else:
-                publishes_processed.append((from_hash, to_ref))
+                target_info = {
+                    "name": to_ref,
+                    "version": None,
+                    "source_version": source_version,
+                    "alias": None
+                }
+                publishes_processed.append((from_hash, json.dumps(target_info)))
         
-        add_inherits_query = (
+        # Convert (content_hash, ExternalEntityRef) tuples to (content_hash, target_info_dict) for EXPOSES_ALL/PUBLISHES_ALL
+        exposes_all_processed = []
+        for from_hash, to_ref in exposes_all_relations:
+            if isinstance(to_ref, ExternalEntityRef):
+                target_info = {
+                    "name": to_ref.name,
+                    "version": to_ref.version,
+                    "source_version": source_version,
+                    "alias": to_ref.alias
+                }
+                exposes_all_processed.append((from_hash, json.dumps(target_info)))
+            else:
+                target_info = {
+                    "name": to_ref,
+                    "version": None,
+                    "source_version": source_version,
+                    "alias": None
+                }
+                exposes_all_processed.append((from_hash, json.dumps(target_info)))
+        
+        publishes_all_processed = []
+        for from_hash, to_ref in publishes_all_relations:
+            if isinstance(to_ref, ExternalEntityRef):
+                target_info = {
+                    "name": to_ref.name,
+                    "version": to_ref.version,
+                    "source_version": source_version,
+                    "alias": to_ref.alias
+                }
+                publishes_all_processed.append((from_hash, json.dumps(target_info)))
+            else:
+                target_info = {
+                    "name": to_ref,
+                    "version": None,
+                    "source_version": source_version,
+                    "alias": None
+                }
+                publishes_all_processed.append((from_hash, json.dumps(target_info)))
+
+        add_internal_inherits_query = (
             """
             UNWIND $inherits_relations AS rel
-            MATCH (c:CLASS {name: rel[0]})
-            SET c.INHERITS = apoc.coll.toSet(coalesce(c.INHERITS, []) + [rel[1]])
+            MATCH (c:CLASS {content_hash: rel[0]})
+            SET c.INTERNAL_INHERITS = apoc.coll.toSet(coalesce(c.INTERNAL_INHERITS, []) + [rel[1]])
+            """
+        )
+        add_external_inherits_query = (
+            """
+            UNWIND $inherits_relations AS rel
+            MATCH (c:CLASS {content_hash: rel[0]})
+            SET c.EXTERNAL_INHERITS = apoc.coll.toSet(coalesce(c.EXTERNAL_INHERITS, []) + [rel[1]])
             """
         )
         add_exposes_query = (
@@ -649,9 +756,26 @@ class COMStore(Neo4jPropertyGraphStore):
             SET m.PUBLISHES = apoc.coll.toSet(coalesce(m.PUBLISHES, []) + [rel[1]])
             """
         )
-        self.structured_query(add_inherits_query, {"inherits_relations": inherits_processed})
+        add_exposes_all_query = (
+            """
+            UNWIND $exposes_all_relations AS rel
+            MATCH (m {content_hash: rel[0]})
+            SET m.EXPOSES_ALL = apoc.coll.toSet(coalesce(m.EXPOSES_ALL, []) + [rel[1]])
+            """
+        )
+        add_publishes_all_query = (
+            """
+            UNWIND $publishes_all_relations AS rel
+            MATCH (m {content_hash: rel[0]})
+            SET m.PUBLISHES_ALL = apoc.coll.toSet(coalesce(m.PUBLISHES_ALL, []) + [rel[1]])
+            """
+        )
+        self.structured_query(add_internal_inherits_query, {"inherits_relations": internal_inherits_processed})
+        self.structured_query(add_external_inherits_query, {"inherits_relations": external_inherits_processed})
         self.structured_query(add_exposes_query, {"exposes_relations": exposes_processed})
         self.structured_query(add_publishes_query, {"publishes_relations": publishes_processed})
+        self.structured_query(add_exposes_all_query, {"exposes_all_relations": exposes_all_processed})
+        self.structured_query(add_publishes_all_query, {"publishes_all_relations": publishes_all_processed})
 
     def _process_other_relations(self):
         """
@@ -659,48 +783,90 @@ class COMStore(Neo4jPropertyGraphStore):
         Now handles version-aware matching using JSON-encoded target information.
         Clear info from the INHERITS and EXPOSES property arrays of the nodes if the relations could be created successfully.
         """
-        # Process INHERITS with version-aware matching
-        process_inherits_query = (
+        # Process INTERNAL_INHERITS with version-aware matching
+        process_internal_inherits_query = (
             """
             MATCH (c:CLASS)
-            WHERE c.INHERITS IS NOT NULL
-            UNWIND c.INHERITS AS parentInfo
+            WHERE c.INTERNAL_INHERITS IS NOT NULL
+            UNWIND c.INTERNAL_INHERITS AS parentInfo
             WITH c, parentInfo,
                  CASE WHEN parentInfo STARTS WITH '{' 
                       THEN apoc.convert.fromJsonMap(parentInfo)
-                      ELSE {name: parentInfo, version: null, content_hash: null}
+                      ELSE {name: parentInfo, version: null, content_hash: null, source_version: null, alias: null}
                  END AS parentData
             OPTIONAL MATCH (p:CLASS {name: parentData.name})
             WHERE parentData.version IS NULL 
                OR ('version_' + replace(replace(replace(parentData.version, '.', '_'), ':', '_'), '-', '_')) IN labels(p)
             WITH c, parentInfo, p, parentData
             WHERE p IS NOT NULL
-            MERGE (c)-[r:INHERITS]->(p)
-            SET r.versions = apoc.coll.toSet(coalesce(r.versions, []) + [lbl IN labels(c) WHERE lbl STARTS WITH 'version_'])
-            WITH c, COLLECT(p.content_hash) AS parentHashes
-            SET c.NEW_INHERITED_ENTITIES = parentHashes
-            REMOVE c.INHERITS
+            MERGE (c)-[r:INTERNAL_INHERITS]->(p)
+            SET r.alias = parentData.alias
+            SET r.versions = apoc.coll.toSet(coalesce(r.versions, []) + 
+                CASE WHEN parentData.source_version IS NOT NULL 
+                     THEN ['version_' + replace(replace(replace(parentData.source_version, '.', '_'), ':', '_'), '-', '_')]
+                     ELSE [lbl IN labels(c) WHERE lbl STARTS WITH 'version_'] 
+                END
+            )
+            WITH c, COLLECT(p.content_hash) AS parentHashes, COLLECT(parentInfo) as processedInfos
+            SET c.NEW_Internally_INHERITED_ENTITIES = parentHashes
+            SET c.INTERNAL_INHERITS = [info IN c.INTERNAL_INHERITS WHERE NOT info IN processedInfos]
+            """
+        )
+        
+        # Process EXTERNAL_INHERITS with version-aware matching
+        process_external_inherits_query = (
+            """
+            MATCH (c:CLASS)
+            WHERE c.EXTERNAL_INHERITS IS NOT NULL
+            UNWIND c.EXTERNAL_INHERITS AS parentInfo
+            WITH c, parentInfo,
+                 CASE WHEN parentInfo STARTS WITH '{' 
+                      THEN apoc.convert.fromJsonMap(parentInfo)
+                      ELSE {name: parentInfo, version: null, content_hash: null, source_version: null, alias: null}
+                 END AS parentData
+            OPTIONAL MATCH (p:CLASS {name: parentData.name})
+            WHERE parentData.version IS NULL 
+               OR ('version_' + replace(replace(replace(parentData.version, '.', '_'), ':', '_'), '-', '_')) IN labels(p)
+            WITH c, parentInfo, p, parentData
+            WHERE p IS NOT NULL
+            MERGE (c)-[r:EXTERNAL_INHERITS]->(p)
+            SET r.alias = parentData.alias
+            SET r.versions = apoc.coll.toSet(coalesce(r.versions, []) + 
+                CASE WHEN parentData.source_version IS NOT NULL 
+                     THEN ['version_' + replace(replace(replace(parentData.source_version, '.', '_'), ':', '_'), '-', '_')]
+                     ELSE [lbl IN labels(c) WHERE lbl STARTS WITH 'version_'] 
+                END
+            )
+            WITH c, COLLECT(p.content_hash) AS parentHashes, COLLECT(parentInfo) as processedInfos
+            SET c.NEW_Externally_INHERITED_ENTITIES = parentHashes
+            SET c.EXTERNAL_INHERITS = [info IN c.EXTERNAL_INHERITS WHERE NOT info IN processedInfos]
             """
         )
         
         # Process EXPOSES with version-aware matching
         process_exposes_query = (
             """
-            MATCH (m:MODULE|ROOT_MODULE)
+            MATCH (m:MODULE|IMPORT_PACKAGE)
             WHERE m.EXPOSES IS NOT NULL
             UNWIND m.EXPOSES AS exposedInfo
             WITH m, exposedInfo,
                  CASE WHEN exposedInfo STARTS WITH '{'
                       THEN apoc.convert.fromJsonMap(exposedInfo)
-                      ELSE {name: exposedInfo, version: null}
+                      ELSE {name: exposedInfo, version: null, source_version: null, alias: null}
                  END AS exposedData
             OPTIONAL MATCH (e {name: exposedData.name})
             WHERE exposedData.version IS NULL
                OR ('version_' + replace(replace(replace(exposedData.version, '.', '_'), ':', '_'), '-', '_')) IN labels(e)
-            WITH m, exposedInfo, e
+            WITH m, exposedInfo, e, exposedData
             WHERE e IS NOT NULL
             MERGE (m)-[r:EXPOSES]->(e)
-            SET r.versions = apoc.coll.toSet(coalesce(r.versions, []) + [lbl IN labels(m) WHERE lbl STARTS WITH 'version_'])
+            SET r.alias = exposedData.alias
+            SET r.versions = apoc.coll.toSet(coalesce(r.versions, []) + 
+                CASE WHEN exposedData.source_version IS NOT NULL 
+                     THEN ['version_' + replace(replace(replace(exposedData.source_version, '.', '_'), ':', '_'), '-', '_')]
+                     ELSE [lbl IN labels(m) WHERE lbl STARTS WITH 'version_'] 
+                END
+            )
             WITH m, COLLECT(exposedInfo) AS processedExposes
             SET m.EXPOSES = [info IN m.EXPOSES WHERE NOT info IN processedExposes]
             """
@@ -708,31 +874,44 @@ class COMStore(Neo4jPropertyGraphStore):
         
         process_publishes_query = (
             """
-            MATCH (m:MODULE|ROOT_MODULE)
+            MATCH (m:MODULE|IMPORT_PACKAGE)
             WHERE m.PUBLISHES IS NOT NULL
             UNWIND m.PUBLISHES AS publishedInfo
             WITH m, publishedInfo,
                  CASE WHEN publishedInfo STARTS WITH '{'
                       THEN apoc.convert.fromJsonMap(publishedInfo)
-                      ELSE {name: publishedInfo, version: null}
+                      ELSE {name: publishedInfo, version: null, source_version: null, alias: null}
                  END AS publishedData
             OPTIONAL MATCH (e {name: publishedData.name})
             WHERE publishedData.version IS NULL
                OR ('version_' + replace(replace(replace(publishedData.version, '.', '_'), ':', '_'), '-', '_')) IN labels(e)
-            WITH m, publishedInfo, e
+            WITH m, publishedInfo, e, publishedData
             WHERE e IS NOT NULL
             MERGE (m)-[r:PUBLISHES]->(e)
-            SET r.versions = apoc.coll.toSet(coalesce(r.versions, []) + [lbl IN labels(m) WHERE lbl STARTS WITH 'version_'])
+            SET r.alias = publishedData.alias
+            SET r.versions = apoc.coll.toSet(coalesce(r.versions, []) + 
+                CASE WHEN publishedData.source_version IS NOT NULL 
+                     THEN ['version_' + replace(replace(replace(publishedData.source_version, '.', '_'), ':', '_'), '-', '_')]
+                     ELSE [lbl IN labels(m) WHERE lbl STARTS WITH 'version_'] 
+                END
+            )
             WITH m, COLLECT(publishedInfo) AS processedPublishes
             SET m.PUBLISHES = [info IN m.PUBLISHES WHERE NOT info IN processedPublishes]
             """
         )
         
-        cleanup_empty_INHERITS_query = (
+        cleanup_empty_INTERNAL_INHERITS_query = (
             """
             MATCH (n)
-            WHERE n.INHERITS IS NOT NULL AND size(n.INHERITS) = 0
-            REMOVE n.INHERITS
+            WHERE n.INTERNAL_INHERITS IS NOT NULL AND size(n.INTERNAL_INHERITS) = 0
+            REMOVE n.INTERNAL_INHERITS
+            """
+        )
+        cleanup_empty_EXTERNAL_INHERITS_query = (
+            """
+            MATCH (n)
+            WHERE n.EXTERNAL_INHERITS IS NOT NULL AND size(n.EXTERNAL_INHERITS) = 0
+            REMOVE n.EXTERNAL_INHERITS
             """
         )
         cleanup_empty_EXPOSES_query = (
@@ -749,116 +928,92 @@ class COMStore(Neo4jPropertyGraphStore):
             REMOVE n.PUBLISHES
             """
         )
-        add_names_to_EXPOSES_rels_query = (
+        
+        process_exposes_all_query = (
             """
-            MATCH (n)-[r:EXPOSES]->(m)
-            WHERE r.name IS NULL
-            SET r.name = n.name + "." + m.__name__
-            RETURN count(r)
-            """
-        )
-        add_names_to_PUBLISHES_rels_query = (
-            """
-            MATCH (n)-[r:PUBLISHES]->(m)
-            WHERE r.name IS NULL
-            SET r.name = n.name + "." + m.__name__
-            RETURN count(r)
-            """
-        )
-
-        self.structured_query(process_inherits_query)
-        self.structured_query(process_exposes_query)
-        self.structured_query(process_publishes_query)
-        self.structured_query(cleanup_empty_INHERITS_query)
-        self.structured_query(cleanup_empty_EXPOSES_query)
-        self.structured_query(cleanup_empty_PUBLISHES_query)
-        self.structured_query(add_names_to_EXPOSES_rels_query)
-        self.structured_query(add_names_to_PUBLISHES_rels_query)
-
-    def _handle_inherited_methods(self):
-        """
-        Create INHERITS_METHOD and INHERITS_CLASS relations for inherited members.
-        Handles methods and nested classes iteratively to support inheritance chains.
-        Uses content_hash for precise version-aware parent matching.
-        """
-        handle_inheritance_query = (
-            f"""
-            MATCH (child:CLASS)
-            WHERE child.NEW_INHERITED_ENTITIES IS NOT NULL
-            WITH child
-            LIMIT {self.batch_size}
-            
-            WITH child, child.NEW_INHERITED_ENTITIES AS parentHashes
-
-            REMOVE child.NEW_INHERITED_ENTITIES
-
-            WITH child, parentHashes
-            UNWIND parentHashes AS parentContentHash
-            
-            MATCH (parent:CLASS {{content_hash: parentContentHash}})-[r:HAS_METHOD|INHERITS_METHOD|HAS_CLASS|INHERITS_CLASS]->(member)
-
-            WHERE NOT 'PRIVATE' IN labels(member)
-              AND (
-                (
-                    'METHOD' IN labels(member) AND
-                    (
-                        ('DUNDER' IN labels(member) AND NOT EXISTS {{ MATCH (child)-[:HAS_METHOD|INHERITS_METHOD]->({{__name__: member.__name__}}) }})
-                        OR
-                        (NOT 'DUNDER' IN labels(member) AND NOT EXISTS {{ 
-                            MATCH (child)-[:HAS_METHOD|INHERITS_METHOD]->(childMethod {{__name__: member.__name__}})-[:HAS_SOURCE]->(childSource:SOURCE),
-                                  (member)-[:HAS_SOURCE]->(memberSource:SOURCE)
-                            WHERE childSource.signature = memberSource.signature
-                        }})
-                    )
-                )
-                OR
-                (
-                    'CLASS' IN labels(member) AND
-                    NOT EXISTS {{ MATCH (child)-[:HAS_CLASS|INHERITS_CLASS]->({{__name__: member.__name__}}) }}
-                )
-              )
-
-            WITH child, member, 
-                 CASE WHEN 'METHOD' IN labels(member) THEN 'INHERITS_METHOD' ELSE 'INHERITS_CLASS' END AS relType
-            
-            CALL apoc.merge.relationship(child, relType, {{}}, {{}}, member) YIELD rel
-            SET rel.name = child.name + "." + member.__name__,
-                rel.versions = apoc.coll.toSet(coalesce(rel.versions, []) + [lbl IN labels(child) WHERE lbl STARTS WITH 'version_'])
-            
-            WITH DISTINCT child, count(rel) AS newCount
-            WHERE newCount > 0
-            
-            OPTIONAL MATCH (grandchild:CLASS)-[:INHERITS]->(child)
-            WHERE grandchild IS NOT NULL
-            WITH child, newCount, [child.content_hash] AS childHash, collect(DISTINCT grandchild) AS grandchildren
-            FOREACH (gc IN grandchildren |
-                SET gc.NEW_INHERITED_ENTITIES = CASE 
-                    WHEN gc.NEW_INHERITED_ENTITIES IS NULL THEN childHash
-                    ELSE gc.NEW_INHERITED_ENTITIES + childHash
+            MATCH (m:MODULE|IMPORT_PACKAGE)
+            WHERE m.EXPOSES_ALL IS NOT NULL
+            UNWIND m.EXPOSES_ALL AS exposedInfo
+            WITH m, exposedInfo,
+                 CASE WHEN exposedInfo STARTS WITH '{'
+                      THEN apoc.convert.fromJsonMap(exposedInfo)
+                      ELSE {name: exposedInfo, version: null, source_version: null, alias: null}
+                 END AS exposedData
+            OPTIONAL MATCH (e {name: exposedData.name})
+            WHERE exposedData.version IS NULL
+               OR ('version_' + replace(replace(replace(exposedData.version, '.', '_'), ':', '_'), '-', '_')) IN labels(e)
+            WITH m, exposedInfo, e, exposedData
+            WHERE e IS NOT NULL
+            MERGE (m)-[r:EXPOSES_ALL]->(e)
+            SET r.alias = exposedData.alias
+            SET r.versions = apoc.coll.toSet(coalesce(r.versions, []) + 
+                CASE WHEN exposedData.source_version IS NOT NULL 
+                     THEN ['version_' + replace(replace(replace(exposedData.source_version, '.', '_'), ':', '_'), '-', '_')]
+                     ELSE [lbl IN labels(m) WHERE lbl STARTS WITH 'version_'] 
                 END
             )
-            RETURN child.name AS ChildClass, newCount AS TotalInherited, size(grandchildren) AS GrandchildrenMarked
+            WITH m, COLLECT(exposedInfo) AS processedExposes
+            SET m.EXPOSES_ALL = [info IN m.EXPOSES_ALL WHERE NOT info IN processedExposes]
             """
         )
         
-        max_iterations = 100
-        iteration = 0
-        
-        while iteration < max_iterations:
-            iteration += 1
-            result = self.structured_query(handle_inheritance_query)
-            
-            if not result or all(r.get('TotalInherited', 0) == 0 for r in result):
-                logging.info(f"Inheritance propagation completed after {iteration} iteration(s)")
-                break
-            
-            total_inherited = sum(r.get('TotalInherited', 0) for r in result)
-            total_marked = sum(r.get('GrandchildrenMarked', 0) for r in result)
-            logging.info(f"Iteration {iteration}: {total_inherited} members inherited, {total_marked} grandchildren marked for propagation")
-        
-        if iteration >= max_iterations:
-            logging.warning(f"Inheritance propagation stopped after {max_iterations} iterations (possible circular inheritance)")
+        process_publishes_all_query = (
+            """
+            MATCH (m:MODULE|IMPORT_PACKAGE)
+            WHERE m.PUBLISHES_ALL IS NOT NULL
+            UNWIND m.PUBLISHES_ALL AS publishedInfo
+            WITH m, publishedInfo,
+                 CASE WHEN publishedInfo STARTS WITH '{'
+                      THEN apoc.convert.fromJsonMap(publishedInfo)
+                      ELSE {name: publishedInfo, version: null, source_version: null, alias: null}
+                 END AS publishedData
+            OPTIONAL MATCH (e {name: publishedData.name})
+            WHERE publishedData.version IS NULL
+               OR ('version_' + replace(replace(replace(publishedData.version, '.', '_'), ':', '_'), '-', '_')) IN labels(e)
+            WITH m, publishedInfo, e, publishedData
+            WHERE e IS NOT NULL
+            MERGE (m)-[r:PUBLISHES_ALL]->(e)
+            SET r.alias = publishedData.alias
+            SET r.versions = apoc.coll.toSet(coalesce(r.versions, []) + 
+                CASE WHEN publishedData.source_version IS NOT NULL 
+                     THEN ['version_' + replace(replace(replace(publishedData.source_version, '.', '_'), ':', '_'), '-', '_')]
+                     ELSE [lbl IN labels(m) WHERE lbl STARTS WITH 'version_'] 
+                END
+            )
+            WITH m, COLLECT(publishedInfo) AS processedPublishes
+            SET m.PUBLISHES_ALL = [info IN m.PUBLISHES_ALL WHERE NOT info IN processedPublishes]
+            """
+        )
 
+        cleanup_empty_EXPOSES_ALL_query = (
+            """
+            MATCH (n)
+            WHERE n.EXPOSES_ALL IS NOT NULL AND size(n.EXPOSES_ALL) = 0
+            REMOVE n.EXPOSES_ALL
+            """
+        )
+
+        cleanup_empty_PUBLISHES_ALL_query = (
+            """
+            MATCH (n)
+            WHERE n.PUBLISHES_ALL IS NOT NULL AND size(n.PUBLISHES_ALL) = 0
+            REMOVE n.PUBLISHES_ALL
+            """
+        )
+
+        self.structured_query(process_internal_inherits_query)
+        self.structured_query(process_external_inherits_query)
+        self.structured_query(process_exposes_query)
+        self.structured_query(process_publishes_query)
+        self.structured_query(process_exposes_all_query)
+        self.structured_query(process_publishes_all_query)
+        self.structured_query(cleanup_empty_INTERNAL_INHERITS_query)
+        self.structured_query(cleanup_empty_EXTERNAL_INHERITS_query)
+        self.structured_query(cleanup_empty_EXPOSES_query)
+        self.structured_query(cleanup_empty_PUBLISHES_query)
+        self.structured_query(cleanup_empty_EXPOSES_ALL_query)
+        self.structured_query(cleanup_empty_PUBLISHES_ALL_query)
+    
     def _remove_empty_values(self, input_dict):
         """
         Remove entries with empty values from the dictionary.
@@ -912,8 +1067,8 @@ class COMStore(Neo4jPropertyGraphStore):
             entity_nodes.append(entity_node)
             summary = entity_node.properties.get("summary", "")
     
-            # For MODULE, ROOT_MODULE, and CLASS, fetch docstring from SOURCE property entity
-            if node["type"] in ("ROOT_MODULE", "MODULE", "CLASS"):
+            # For MODULE, IMPORT_PACKAGE, and CLASS, fetch docstring from SOURCE property entity
+            if node["type"] in ("IMPORT_PACKAGE", "MODULE", "CLASS"):
                 docstring_query = """
                 MATCH (e {name: $name})-[:HAS_SOURCE]->(s:SOURCE)
                 RETURN s.docstring AS docstring
@@ -936,45 +1091,3 @@ class COMStore(Neo4jPropertyGraphStore):
             node.properties[self.embedding_node_property] = embeddings[i]
 
         self.upsert_nodes(entity_nodes)
-    
-    def _fts_full_path_name(self, name: str) -> List[str]:
-        """
-        Perform a regex search for the full path name of the entity.
-
-        Args:
-            name (str): The name of the entity.
-
-        Returns:
-            List[str]: A list of full path names of the entity if found, otherwise an empty list.
-        """
-        # Escape special regex characters and then replace escaped dots with subtree match pattern
-        escaped_name = _escape_regex_special_chars(name)
-        processed_name = escaped_name.replace(r"\.", r".*\.")
-        
-        # Construct regex pattern: .*processed_name.*
-        cypher_regex = f".*{processed_name}.*"
-        logging.info(f"Processed name for regex search: {processed_name}")
-        logging.info(f"Cypher regex: {cypher_regex}")
-
-        # Prepare a Cypher query to search for the name in the database using regex
-        # Searches both nodes and relationships
-        regex_search_query = (
-            """
-            MATCH (n:__Entity__)
-            WHERE n.name =~ $cypher_regex
-            RETURN n.name AS name
-            
-            UNION
-            
-            MATCH ()-[r:EXPOSES|PUBLISHES|INHERITS_METHOD|INHERITS_CLASS]->()
-            WHERE r.name =~ $cypher_regex
-            RETURN r.name AS name
-            """
-        )
-        records = self.structured_query(regex_search_query, {
-            "cypher_regex": cypher_regex
-        })
-        if records:
-            return [record['name'] for record in records]
-        
-        return []

@@ -6,17 +6,18 @@ entities and relationships from Python packages.
 """
 
 import importlib
-import importlib.metadata
 import logging
 import subprocess
 import sys
 import traceback
 from typing_extensions import Dict, List, Optional, Tuple
 
-try:
-    from importlib.metadata import packages_distributions
-except ImportError:
-    packages_distributions = None
+from .utils.metadata_utils import (
+    get_distribution_top_level_modules,
+    get_package_version,
+    get_package_metadata,
+    PackageNotFoundError
+)
 
 from .models import Entity, Relationship
 from .module_processor import process_module, _parse_name_and_version
@@ -47,25 +48,12 @@ def get_top_level_modules_for_package(package_name: str) -> List[str]:
         logging.debug(f"Package name {package_name} is not directly importable, will check distribution metadata")
     
     # Check distribution metadata for all matching packages
-    # Use packages_distributions if available (Python 3.10+), otherwise use fallback
-    if packages_distributions is not None:
-        mapping = packages_distributions()
-        
-        for top_module, distributions in mapping.items():
-            # Check if package_name is in any of the distributions for this top-level module
-            if package_name in distributions:
-                if top_module not in top_level_modules:
-                    top_level_modules.append(top_module)
-    else:
-        try:
-            dist = importlib.metadata.distribution(package_name)
-            if dist.read_text('top_level.txt'):
-                for line in dist.read_text('top_level.txt').strip().split('\n'):
-                    top_module = line.strip()
-                    if top_module and top_module not in top_level_modules:
-                        top_level_modules.append(top_module)
-        except Exception as e:
-            logging.debug(f"Could not read top_level.txt for {package_name}: {e}")
+    # Use metadata utils to find top-level modules (supports Python < 3.10 via fallback)
+    dist_modules = get_distribution_top_level_modules(package_name)
+    
+    for mod in dist_modules:
+        if mod not in top_level_modules:
+            top_level_modules.append(mod)
 
     if not top_level_modules:
         logging.warning(f"No top-level modules found for package {package_name}")
@@ -161,12 +149,15 @@ def process_package(
                 py_version = f"{sys.version_info.major}.{sys.version_info.minor}"
                 logging.error(f"Package '{install_spec}' may not be compatible with Python {py_version}")
                 logging.error(f"Installation error details: {error_output}")
-            return [], [], {"INHERITS": [], "EXPOSES": [], "PUBLISHES": []}
+            return [], [], {
+                "INHERITS": [], "EXPOSES": [], "PUBLISHES": [],
+                "EXPOSES_ALL": [], "PUBLISHES_ALL": []
+            }
     
     # Verify installed version matches requested version
     if version:
         try:
-            installed_version = importlib.metadata.version(pkg_name)
+            installed_version = get_package_version(pkg_name)
             if version in installed_version:
                 logging.info(f"Package {pkg_name}=={version} is installed")
             else:
@@ -184,7 +175,7 @@ def process_package(
                 
                 subprocess.run(reinstall_cmd, check=True, capture_output=True)
                 # Verify again after reinstall
-                installed_version = importlib.metadata.version(pkg_name)
+                installed_version = get_package_version(pkg_name)
                 if installed_version != version:
                     logging.error(f"Failed to install version {version}. Current version: {installed_version}")
                     return [], [], {"INHERITS": [], "EXPOSES": [], "PUBLISHES": []}
@@ -201,22 +192,67 @@ def process_package(
                 py_version = f"{sys.version_info.major}.{sys.version_info.minor}"
                 logging.error(f"Package '{pkg_name}=={version}' may not be compatible with Python {py_version}")
                 logging.error(f"Try using a different Python version or a different package version")
-            return [], [], {"INHERITS": [], "EXPOSES": [], "PUBLISHES": []}
-        except importlib.metadata.PackageNotFoundError:
+            return [], [], {
+                "INHERITS": [], "EXPOSES": [], "PUBLISHES": [],
+                "EXPOSES_ALL": [], "PUBLISHES_ALL": []
+            }
+        except PackageNotFoundError:
             logging.error(f"Package '{pkg_name}' metadata not found")
-            return [], [], {"INHERITS": [], "EXPOSES": [], "PUBLISHES": []}
+            return [], [], {
+                "INTERNAL_INHERITS": [], "EXTERNAL_INHERITS": [], "EXPOSES": [], "PUBLISHES": [],
+                "EXPOSES_ALL": [], "PUBLISHES_ALL": []
+            }
     
     # Get top-level modules after version verification
     top_level_modules = get_top_level_modules_for_package(pkg_name)
     if not top_level_modules:
         logging.error(f"Package '{pkg_name}' not found after installation.")
-        return [], [], {"INHERITS": [], "EXPOSES": [], "PUBLISHES": []}
+        return [], [], {
+            "INTERNAL_INHERITS": [], "EXTERNAL_INHERITS": [], "EXPOSES": [], "PUBLISHES": [],
+            "EXPOSES_ALL": [], "PUBLISHES_ALL": []
+        }
     
     # Process all top-level modules and combine results
     all_entities: List[Entity] = []
     all_relations: List[Relationship] = []
-    combined_other_relations: Dict[str, List] = {"INHERITS": [], "EXPOSES": [], "PUBLISHES": []}
+    combined_other_relations: Dict[str, List] = {
+        "INTERNAL_INHERITS": [], 
+        "EXTERNAL_INHERITS": [], 
+        "EXPOSES": [], 
+        "PUBLISHES": [],
+        "EXPOSES_ALL": [],
+        "PUBLISHES_ALL": []
+    }
     
+    # Create DISTRIBUTION_PACKAGE entity with metadata
+    dist_entity = None
+    try:
+        # We use the installed version if available, otherwise the requested version or None
+        current_version = get_package_version(pkg_name)
+        
+        # Use reconciled metadata (combines local and PyPI data)
+        metadata = get_package_metadata(pkg_name, current_version)
+        
+        dist_props = {
+            "version": current_version,
+            "python_requires": metadata.get("python_requires"),
+            "supported_python_versions": metadata.get("supported_python_versions"),
+            "dependencies": metadata.get("dependencies"),
+            "extras": metadata.get("extras"),
+            "pypi_metadata_found": metadata.get("pypi_metadata_found")
+        }
+        
+        dist_entity = Entity(
+            name=pkg_name,
+            labels=["DISTRIBUTION_PACKAGE"],
+            properties=dist_props
+        )
+        all_entities.append(dist_entity)
+        logging.info(f"Created DISTRIBUTION_PACKAGE entity for '{pkg_name}' version {current_version}")
+        
+    except PackageNotFoundError:
+        logging.warning(f"Could not create DISTRIBUTION_PACKAGE for {pkg_name}: metadata not found")
+
     logging.info(f"Processing package '{pkg_name}' with {len(top_level_modules)} top-level module(s): {top_level_modules}")
     
     for top_level_module in top_level_modules:
@@ -224,11 +260,25 @@ def process_package(
         try:
             entities, relations, other_relations = process_module(top_level_module, version=version)
             
+            # Link DISTRIBUTION_PACKAGE to IMPORT_PACKAGE (root of the module)
+            if dist_entity and entities:
+                # The first entity returned by process_module is the root module (IMPORT_PACKAGE)
+                import_pkg_entity = entities[0]
+                # Verify it's an IMPORT_PACKAGE just to be safe
+                if "IMPORT_PACKAGE" in import_pkg_entity.labels:
+                    rel = Relationship(
+                        from_entity=dist_entity,
+                        to_entity=import_pkg_entity,
+                        label="PROVIDES",
+                        properties={}
+                    )
+                    all_relations.append(rel)
+            
             all_entities.extend(entities)
             all_relations.extend(relations)
             
             # Combine other_relations
-            for rel_type in ["INHERITS", "EXPOSES", "PUBLISHES"]:
+            for rel_type in ["INTERNAL_INHERITS", "EXTERNAL_INHERITS", "EXPOSES", "PUBLISHES", "EXPOSES_ALL", "PUBLISHES_ALL"]:
                 if rel_type in other_relations:
                     combined_other_relations[rel_type].extend(other_relations[rel_type])
 
@@ -238,7 +288,7 @@ def process_package(
             continue
     
     # Deduplicate other_relations
-    for rel_type in ["INHERITS", "EXPOSES", "PUBLISHES"]:
+    for rel_type in ["INTERNAL_INHERITS", "EXTERNAL_INHERITS", "EXPOSES", "PUBLISHES", "EXPOSES_ALL", "PUBLISHES_ALL"]:
         combined_other_relations[rel_type] = list(set(combined_other_relations[rel_type]))
     
     logging.info(f"Completed processing package '{pkg_name}': "

@@ -192,11 +192,13 @@ def traverse_recursive(
         import_statements = get_import_statements(source)
         import_as_aliases = get_import_as_aliases(source, obj_path)
         # Process import statements with full context to get EXPOSES/PUBLISHES relationships
-        import_details, _, exposes_rels, publishes_rels = _process_import_statements(
+        exported_names = getattr(obj, "__all__", None)
+        import_details, _, relations = _process_import_statements(
             import_statements,
             entity_name=obj_path,
             entity_content_hash=entity.content_hash,
-            root_module_name=root_module_path
+            root_module_name=root_module_path,
+            exported_names=exported_names
         )
         # Store import_statements and aliases for decorator resolution (temporary, will be in property entity)
         entity.properties["import_statements"] = import_statements
@@ -204,8 +206,10 @@ def traverse_recursive(
         
         # Add EXPOSES and PUBLISHES relationships to other_relations
         if other_relations is not None:
-            other_relations["EXPOSES"].update(exposes_rels)
-            other_relations["PUBLISHES"].update(publishes_rels)
+            other_relations["EXPOSES"].update(relations["EXPOSES"])
+            other_relations["PUBLISHES"].update(relations["PUBLISHES"])
+            other_relations["EXPOSES_ALL"].update(relations["EXPOSES_ALL"])
+            other_relations["PUBLISHES_ALL"].update(relations["PUBLISHES_ALL"])
     
     # For CLASS entities, get decorators
     decorators = []
@@ -246,8 +250,12 @@ def traverse_recursive(
                         base_version = _get_entity_version(base_path) if not base_path.startswith(root_module_path + ".") else version
                         # Create ExternalEntityRef for the base class
                         base_ref = ExternalEntityRef(name=base_path, version=base_version)
-                        # Store as (child_name, ExternalEntityRef)
-                        other_relations["INHERITS"].add((obj_path, base_ref))
+                        # Store as (child_content_hash, ExternalEntityRef)
+                        # Determine internal vs external inheritance
+                        if base_path.startswith(root_module_path + "."):
+                            other_relations["INTERNAL_INHERITS"].add((entity.content_hash, base_ref))
+                        else:
+                            other_relations["EXTERNAL_INHERITS"].add((entity.content_hash, base_ref))
                 except Exception:
                     pass
 
@@ -336,7 +344,14 @@ def _process_single_external_class(
     """
     entities: List[Entity] = []
     relations: List[Relationship] = []
-    other_relations: Dict[str, Set[Tuple]] = {"INHERITS": set(), "EXPOSES": set(), "PUBLISHES": set()}
+    other_relations: Dict[str, Set[Tuple]] = {
+        "INTERNAL_INHERITS": set(), 
+        "EXTERNAL_INHERITS": set(), 
+        "EXPOSES": set(), 
+        "PUBLISHES": set(),
+        "EXPOSES_ALL": set(),
+        "PUBLISHES_ALL": set()
+    }
     
     # Skip if already processed
     class_key = f"{class_fqn}@{version}" if version else class_fqn
@@ -455,14 +470,16 @@ def _process_external_parent_classes(
         
         # Accumulate other_relations from external classes if accumulator provided
         if all_other_relations is not None:
-            for rel_type in ["INHERITS", "EXPOSES", "PUBLISHES"]:
+            for rel_type in ["INTERNAL_INHERITS", "EXTERNAL_INHERITS", "EXPOSES", "PUBLISHES"]:
                 if rel_type in ext_other_relations:
                     all_other_relations[rel_type].update(ext_other_relations[rel_type])
         
         # Recursively process any parent classes that this external class inherits from
-        if ext_other_relations["INHERITS"]:
+        combined_inherits = ext_other_relations["INTERNAL_INHERITS"].union(ext_other_relations["EXTERNAL_INHERITS"])
+        
+        if combined_inherits:
             recursive_entities, recursive_relations = _process_external_parent_classes(
-                ext_other_relations["INHERITS"],
+                combined_inherits,
                 processed_external_classes,
                 current_module_name,
                 all_other_relations  # Pass accumulator through recursion

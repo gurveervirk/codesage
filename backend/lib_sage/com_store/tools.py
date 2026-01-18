@@ -2,7 +2,7 @@
 Tool methods for COMStore that return XML-formatted responses for agent/MCP use.
 These methods are separated from the main COMStore class for better organization.
 """
-from typing import List, Optional
+from typing import Optional
 from llama_index.core import Settings
 from .xml_utils import dict_to_xml_string
 from .main import COMStore
@@ -27,9 +27,9 @@ class COMStoreTools:
         """
         self.store = store
 
-    def retrieve_relevant_root_modules(self, query: str, top_k: int) -> str:
+    def retrieve_relevant_distribution_packages(self, query: str, top_k: int) -> str:
         """
-        Retrieve all relevant root modules based on the query, using similarity search, and store them for pagination.
+        Retrieve all relevant distribution packages based on the query, using similarity search, and store them for pagination.
 
         Args:
             query (str): The query string.
@@ -37,19 +37,19 @@ class COMStoreTools:
 
         Returns:
             str: XML-formatted string containing:
-                - results: Top k relevant root modules based on the query, each with:
-                    - name (str): Module name
+                - results: Top k relevant distribution packages based on the query, each with:
+                    - name (str): Package name
                     - score (float): Similarity score
-                    - summary (str): Module summary
+                    - summary (str): Package summary
                 - query_info: Information about the query
                 - system_message (str): Informational message
         """
         # Clean input params
         top_k = int(top_k)
 
-        # Create a Cypher query to return all root modules based on similarity to the query
-        retrieve_root_modules_query = """
-            MATCH (m:ROOT_MODULE)
+        # Create a Cypher query to return all distribution packages based on similarity to the query
+        retrieve_distribution_packages_query = """
+            MATCH (m:DISTRIBUTION_PACKAGE)
             WHERE m.embedding IS NOT NULL
             WITH m,
                 vector.similarity.cosine(m.embedding, $query_vector) AS similarity
@@ -61,24 +61,24 @@ class COMStoreTools:
             "query_vector": Settings.embed_model.get_query_embedding(query)
         }
 
-        # Execute the query to retrieve all relevant root modules
-        results = self.store.database_query(retrieve_root_modules_query, query_params)
+        # Execute the query to retrieve all relevant distribution packages
+        results = self.store.database_query(retrieve_distribution_packages_query, query_params)
 
         # Store the results
-        self.store._root_modules = results
-        self.store._root_modules_index = top_k
-        self.store._last_root_modules_query = {"query": query, "top_k": top_k}
+        self.store._distribution_packages = results
+        self.store._distribution_packages_index = top_k
+        self.store._last_distribution_packages_query = {"query": query, "top_k": top_k}
 
         data = {
-            "results": self.store._root_modules[:top_k],
+            "results": self.store._distribution_packages[:top_k],
             "query_info": {
                 "query": query,
                 "top_k": top_k,
                 "total_found": len(results)
             },
-            "system_message": f"Retrieved top {top_k} relevant root modules from {len(results)} total matches."
+            "system_message": f"Retrieved top {top_k} relevant distribution packages from {len(results)} total matches."
         }
-        return dict_to_xml_string(data, "retrieve_relevant_root_modules_response")
+        return dict_to_xml_string(data, "retrieve_relevant_distribution_packages_response")
     
     def retrieve_relevant_children_in_subtree(self, query: str, parent_name: str, top_k: int) -> str:
         """
@@ -107,7 +107,7 @@ class COMStoreTools:
 
         # Use a cypher query to return all IMMEDIATE children of the parent entity, sorted by similarity to the query
         sort_and_return_children_query = """
-            MATCH (parent {name: $parent_name})-[:HAS_SUBMODULE|HAS_CLASS|HAS_METHOD|HAS_FUNCTION|EXPOSES|PUBLISHES]->(child)
+            MATCH (parent {name: $parent_name})-[:HAS_SUBMODULE|HAS_CLASS|HAS_METHOD|HAS_FUNCTION|EXPOSES|PUBLISHES|PROVIDES|EXPOSES_ALL|PUBLISHES_ALL]->(child)
             WHERE child.embedding IS NOT NULL
             WITH parent, child,
                 vector.similarity.cosine(child.embedding, $query_vector) AS similarity
@@ -163,7 +163,7 @@ class COMStoreTools:
         Retrieve the next top_k entities from the stored list.
 
         Args:
-            from_ (str): "ROOT_MODULE" or "CHILDREN", indicating which list to retrieve from.
+            from_ (str): "DISTRIBUTION_PACKAGE" or "CHILDREN", indicating which list to retrieve from.
             top_k (int): The number of entities to retrieve.
 
         Returns:
@@ -173,39 +173,39 @@ class COMStoreTools:
                 - system_message (str): Informational message
         """
         top_k = int(top_k)
-        if from_ == "ROOT_MODULE":
-            if self.store._root_modules == None or self.store._root_modules_index == -1:
+        if from_ == "DISTRIBUTION_PACKAGE":
+            if self.store._distribution_packages == None or self.store._distribution_packages_index == -1:
                 data = {
                     "results": [],
                     "pagination_info": {
-                        "source": "ROOT_MODULE",
-                        "error": "No ROOT_MODULE query has been made yet or all entities have been retrieved."
+                        "source": "DISTRIBUTION_PACKAGE",
+                        "error": "No DISTRIBUTION_PACKAGE query has been made yet or all entities have been retrieved."
                     },
-                    "system_message": "No ROOT_MODULE query has been made yet or all entities have been retrieved."
+                    "system_message": "No DISTRIBUTION_PACKAGE query has been made yet or all entities have been retrieved."
                 }
                 return dict_to_xml_string(data, "next_entities_response")
             
-            start_index = self.store._root_modules_index
-            end_index = min(start_index + top_k, len(self.store._root_modules))
-            entities = self.store._root_modules[start_index:end_index]
-            self.store._root_modules_index = end_index
-            all_retrieved = end_index == len(self.store._root_modules)
+            start_index = self.store._distribution_packages_index
+            end_index = min(start_index + top_k, len(self.store._distribution_packages))
+            entities = self.store._distribution_packages[start_index:end_index]
+            self.store._distribution_packages_index = end_index
+            all_retrieved = end_index == len(self.store._distribution_packages)
             
             if all_retrieved:
-                self.store._root_modules_index = -1
-                self.store._last_root_modules_query = {}
+                self.store._distribution_packages_index = -1
+                self.store._last_distribution_packages_query = {}
             
             data = {
                 "results": entities,
                 "pagination_info": {
-                    "source": "ROOT_MODULE",
+                    "source": "DISTRIBUTION_PACKAGE",
                     "start_index": start_index,
                     "end_index": end_index,
                     "has_more": not all_retrieved,
                     "all_retrieved": all_retrieved
                 },
                 "system_message": f"Retrieved entities {start_index+1} to {end_index}." + 
-                                 (" ALL RELEVANT ROOT MODULES RETRIEVED." if all_retrieved else f" {len(self.store._root_modules) - end_index} more available.")
+                                 (" ALL RELEVANT DISTRIBUTION PACKAGES RETRIEVED." if all_retrieved else f" {len(self.store._distribution_packages) - end_index} more available.")
             }
             return dict_to_xml_string(data, "next_entities_response")
 
@@ -245,255 +245,7 @@ class COMStoreTools:
             }
             return dict_to_xml_string(data, "next_entities_response")
         else:
-            raise ValueError("`from` must be either 'ROOT_MODULE' or 'CHILDREN'")
-
-    def get_full_path_name(self, name: str) -> str:
-        """
-        Get the full path name of the entity.
-
-        Args:
-            name (str): The name of the entity.
-
-        Returns:
-            str: XML-formatted string containing:
-                - exact_match (str): The full path name of the entity if found
-                - best_matches: List of best matches if no exact match is found
-                - system_message (str): Informational message
-        """
-        retrieve_node_by_name_query = (
-            """
-            OPTIONAL MATCH (n1:METHOD|FUNCTION|CLASS|MODULE {name: $name})
-            WITH collect(n1)[0] AS direct_match
-            OPTIONAL MATCH ()-[r:EXPOSES|PUBLISHES]->(n2:METHOD|FUNCTION|CLASS|MODULE)
-            WHERE direct_match IS NULL AND r.name = $name
-            WITH direct_match, collect(n2)[0] AS exposed_match
-            WITH COALESCE(direct_match, exposed_match) AS found_node
-            RETURN found_node.name AS name
-            """
-        )
-
-        # Execute the query to retrieve the node by name
-        retrieved_node = self.store.structured_query(retrieve_node_by_name_query, {"name": name})
-
-        if retrieved_node and retrieved_node[0]["name"]:
-            data = {
-                "exact_match": retrieved_node[0]["name"],
-                "best_matches": [],
-                "system_message": f"Found exact match for entity: '{name}'"
-            }
-            return dict_to_xml_string(data, "get_full_path_name_response")
-
-        # If no relevant nodes are found, process the name for regex search
-        logging.info(f"No relevant nodes found for the name: {name}")
-        logging.info(f"Performing regex search for the full path name of the entity: {name}")
-        best_matches = self.store._fts_full_path_name(name)
-
-        if best_matches:
-            data = {
-                "exact_match": "",
-                "best_matches": best_matches,
-                "system_message": f"No exact match found. Best matches for entity: '{name}'"
-            }
-            return dict_to_xml_string(data, "get_full_path_name_response")
-            
-        # Split the name by '.', merge first and last parts, and try to find the full path name
-        logging.info(f"Performing regex search for the full path name of the entity with shortened name: {name}")
-        name_parts = name.split(".")
-        shortened_name = name_parts[0] + "." + name_parts[-1]
-        best_matches = self.store._fts_full_path_name(shortened_name)
-
-        if best_matches:
-            data = {
-                "exact_match": "",
-                "best_matches": best_matches,
-                "system_message": f"No exact match found. Best matches for entity: '{name}' (using shortened search)"
-            }
-            return dict_to_xml_string(data, "get_full_path_name_response")
-        
-        # If no relevant nodes are found, return a message indicating that the full path name could not be found
-        logging.warning(f"No full path name found for the entity: {name}")
-
-        data = {
-            "exact_match": "",
-            "best_matches": [],
-            "system_message": f"No full path name found for entity: '{name}'"
-        }
-        return dict_to_xml_string(data, "get_full_path_name_response")
-    
-    def get_full_path_names(self, names) -> str:
-        """
-        Get the full path names of multiple entities.
-
-        Args:
-            names (str | List[str]): Entity names to search for. If string, will be split by commas and each name trimmed.
-
-        Returns:
-            str: XML-formatted string containing full path name results for each entity
-        """
-        # Normalize names: convert string to list if needed
-        if isinstance(names, str):
-            names = [name.strip() for name in names.split(',') if name.strip()]
-        
-        results = []
-        for name in names:
-            retrieve_node_by_name_query = (
-                """
-                OPTIONAL MATCH (n1:METHOD|FUNCTION|CLASS|MODULE {name: $name})
-                WITH collect(n1)[0] AS direct_match
-                OPTIONAL MATCH ()-[r:EXPOSES|PUBLISHES]->(n2:METHOD|FUNCTION|CLASS|MODULE)
-                WHERE direct_match IS NULL AND r.name = $name
-                WITH direct_match, collect(n2)[0] AS exposed_match
-                WITH COALESCE(direct_match, exposed_match) AS found_node
-                RETURN found_node.name AS name
-                """
-            )
-            retrieved_node = self.store.structured_query(retrieve_node_by_name_query, {"name": name})
-
-            if retrieved_node and retrieved_node[0]["name"]:
-                results.append({
-                    "query_name": name,
-                    "exact_match": retrieved_node[0]["name"],
-                    "best_matches": [],
-                    "found": True
-                })
-            else:
-                # Try FTS search
-                best_matches = self.store._fts_full_path_name(name)
-                if best_matches:
-                    results.append({
-                        "query_name": name,
-                        "exact_match": "",
-                        "best_matches": best_matches,
-                        "found": False
-                    })
-                else:
-                    # Try shortened name
-                    name_parts = name.split(".")
-                    shortened_name = name_parts[0] + "." + name_parts[-1]
-                    best_matches = self.store._fts_full_path_name(shortened_name)
-                    if best_matches:
-                        results.append({
-                            "query_name": name,
-                            "exact_match": "",
-                            "best_matches": best_matches,
-                            "found": False
-                        })
-                    else:
-                        results.append({
-                            "query_name": name,
-                            "exact_match": "",
-                            "best_matches": [],
-                            "found": False
-                        })
-
-        data = {
-            "results": results,
-            "system_message": f"Processed {len(names)} entity name(s)."
-        }
-        return dict_to_xml_string(data, "get_full_path_names_response")
-    
-    def get_signatures(self, entity_names) -> str:
-        """
-        Get signatures for multiple entities.
-
-        Args:
-            entity_names (str | List[str]): Entity names to search for. If string, will be split by commas and each name trimmed.
-
-        Returns:
-            str: XML-formatted string containing signature and type for each entity
-        """
-        # Normalize entity_names: convert string to list if needed
-        if isinstance(entity_names, str):
-            entity_names = [name.strip() for name in entity_names.split(',') if name.strip()]
-        
-        # Prepare a Cypher query to retrieve signatures for the entities
-        query = (
-"""
-UNWIND $entity_names AS entity_name
-OPTIONAL MATCH (e1:METHOD|FUNCTION|CLASS)
-WHERE e1.name = entity_name
-WITH entity_name, collect(e1)[0] AS direct_match
-OPTIONAL MATCH ()-[r:EXPOSES|PUBLISHES]->(e2:METHOD|FUNCTION|CLASS)
-WHERE direct_match IS NULL AND r.name = entity_name
-WITH entity_name, direct_match, collect(e2)[0] AS exposed_match
-WITH entity_name, COALESCE(direct_match, exposed_match) AS found_entity
-CALL apoc.when(
-  found_entity IS NULL AND entity_name CONTAINS '.',
-  '
-    WITH entity_name
-WITH entity_name,
-     apoc.text.indexesOf(entity_name, ".") AS ids
-WITH entity_name, ids,
-     CASE
-       WHEN size(ids) = 0 THEN -1
-       ELSE ids[size(ids) - 1]
-     END AS lastDot
-WITH entity_name, lastDot,
-     substring(entity_name, 0, lastDot) AS class_path,
-     substring(entity_name, lastDot + 1) AS method_name
-OPTIONAL MATCH (c1:CLASS)
-WHERE c1.name = class_path
-WITH entity_name, class_path, method_name, collect(c1)[0] AS class_direct_match
-OPTIONAL MATCH ()-[r:EXPOSES|PUBLISHES]->(c2:CLASS)
-WHERE class_direct_match IS NULL AND r.name = class_path
-WITH entity_name, method_name, class_direct_match, collect(c2)[0] AS class_exposed_match
-WITH entity_name, method_name,
-     COALESCE(class_direct_match, class_exposed_match) AS found_class
-OPTIONAL MATCH (found_class)-[:HAS_METHOD]->(method:METHOD {__name__: method_name})
-RETURN method AS method_match;
-  ',
-  'RETURN NULL AS method_match',
-  {entity_name: entity_name}
-) YIELD value
-WITH entity_name, COALESCE(found_entity, value.method_match) AS final_entity
-OPTIONAL MATCH (final_entity)-[:HAS_METHOD]->(init:METHOD {__name__: "__init__"})-[:HAS_SOURCE]->(init_source:SOURCE)
-WHERE "CLASS" IN labels(final_entity)
-OPTIONAL MATCH (final_entity)-[:HAS_SOURCE]->(entity_source:SOURCE)
-WHERE final_entity IS NOT NULL AND NOT "CLASS" IN labels(final_entity)
-RETURN apoc.map.fromPairs(
-  collect([
-    entity_name,
-    CASE
-      WHEN final_entity IS NULL THEN NULL
-      ELSE {
-        signature: CASE
-          WHEN "CLASS" IN labels(final_entity) THEN init_source.signature
-          ELSE entity_source.signature
-        END,
-        type: [label IN labels(final_entity) WHERE label IN ["CLASS", "FUNCTION", "METHOD"]][0]
-      }
-    END
-  ])
-) AS signatures
-"""
-        )
-
-        signatures_result = self.store.structured_query(query, {"entity_names": entity_names})[0]["signatures"]
-        
-        # Convert the result to a list format for XML
-        signatures = []
-        for entity_name in entity_names:
-            sig_info = signatures_result.get(entity_name)
-            if sig_info:
-                signatures.append({
-                    "entity_name": entity_name,
-                    "signature": sig_info.get("signature", ""),
-                    "type": sig_info.get("type", ""),
-                    "found": True
-                })
-            else:
-                signatures.append({
-                    "entity_name": entity_name,
-                    "signature": "",
-                    "type": "",
-                    "found": False
-                })
-        
-        data = {
-            "signatures": signatures,
-            "system_message": f"Retrieved signatures for {len(entity_names)} entity/entities."
-        }
-        return dict_to_xml_string(data, "get_signatures_response")
+            raise ValueError("`from` must be either 'DISTRIBUTION_PACKAGE' or 'CHILDREN'")
 
     def list_libraries(
             self,
@@ -519,7 +271,7 @@ RETURN apoc.map.fromPairs(
         
         # Build the query with optional filtering and version aggregation
         query = """
-        MATCH (lib:ROOT_MODULE)
+        MATCH (lib:DISTRIBUTION_PACKAGE)
         """
         
         query_params = {}
@@ -588,6 +340,7 @@ RETURN apoc.map.fromPairs(
         """
         Search for code definitions (functions, classes, methods) within a provided library.
         Acts like VS Code's file search (Cmd/Ctrl + P) within a project.
+        *Note*: All params are case-sensitive.
         
         Args:
             library (str): Name of the library to search within. Must be a simple name.
@@ -667,16 +420,95 @@ RETURN apoc.map.fromPairs(
             MATCH (n:__Entity__)
             WHERE n.name =~ $cypher_regex
               AND ($version_label IS NULL OR $version_label IN labels(n))
-              AND (ANY(lbl IN labels(n) WHERE lbl IN ['FUNCTION', 'CLASS', 'METHOD', 'MODULE', 'ROOT_MODULE']))
+              AND (ANY(lbl IN labels(n) WHERE lbl IN ['FUNCTION', 'CLASS', 'METHOD', 'MODULE', 'DISTRIBUTION_PACKAGE', 'IMPORT_PACKAGE']))
             RETURN n.name AS fqn, [lbl IN labels(n) WHERE NOT lbl STARTS WITH 'version_'] AS labels
 
-            UNION ALL
+            UNION
 
-            MATCH ()-[r:EXPOSES|PUBLISHES|INHERITS_METHOD|INHERITS_CLASS]->(target)
+            MATCH ()-[r:EXPOSES|PUBLISHES|PROVIDES]->(target)
             WHERE r.name =~ $cypher_regex
               AND ($version_label IS NULL OR $version_label IN r.versions)
-              AND (ANY(lbl IN labels(target) WHERE lbl IN ['FUNCTION', 'CLASS', 'METHOD', 'MODULE', 'ROOT_MODULE']))
+              AND (ANY(lbl IN labels(target) WHERE lbl IN ['FUNCTION', 'CLASS', 'METHOD', 'MODULE', 'DISTRIBUTION_PACKAGE', 'IMPORT_PACKAGE']))
             RETURN r.name AS fqn, [lbl IN labels(target) WHERE NOT lbl STARTS WITH 'version_'] AS labels
+
+            UNION
+
+            MATCH path = (child:CLASS)-[:INHERITS]->()-[:INHERITS|HAS_METHOD|HAS_CLASS*]->(member)
+            WHERE child.name STARTS WITH $library
+              AND ($version_label IS NULL OR $version_label IN labels(child))
+              AND NOT 'PRIVATE' IN labels(member)
+              AND (member:FUNCTION OR member:CLASS OR member:METHOD)
+              AND NOT type(last(relationships(path))) = 'INHERITS'
+            
+            WITH child, member, path,
+                 endNode(head([r IN relationships(path) WHERE type(r) <> 'INHERITS'])) AS first_member,
+                 reduce(s = child.name, r IN relationships(path) | 
+                    CASE type(r)
+                        WHEN 'INHERITS' THEN s
+                        ELSE s + "." + endNode(r).__name__
+                    END
+                 ) AS fqn
+            
+            WHERE fqn =~ $cypher_regex
+              AND NOT EXISTS {
+                  MATCH (child)-[:HAS_METHOD|HAS_CLASS]->(override)
+                  WHERE override.__name__ = first_member.__name__
+                    AND (
+                        (
+                            'CLASS' IN labels(first_member) 
+                            AND 'CLASS' IN labels(override)
+                        )
+                        OR
+                        (
+                            'METHOD' IN labels(first_member)
+                            AND 'METHOD' IN labels(override)
+                            AND (
+                                'DUNDER' IN labels(first_member)
+                                OR
+                                (
+                                    NOT 'DUNDER' IN labels(first_member)
+                                    AND EXISTS {
+                                        MATCH (override)-[:HAS_SOURCE]->(os:SOURCE),
+                                              (first_member)-[:HAS_SOURCE]->(ms:SOURCE)
+                                        WHERE os.signature = ms.signature
+                                    }
+                                )
+                            )
+                        )
+                    )
+              }
+            
+            WITH fqn, collect({member: member, depth: length(path)}) as candidates
+            UNWIND candidates as c1
+            WITH fqn, candidates, c1
+            WHERE NONE(c2 IN candidates WHERE 
+                c2.depth < c1.depth 
+                AND (
+                    (
+                        'CLASS' IN labels(c1.member)
+                        AND 'CLASS' IN labels(c2.member)
+                    )
+                    OR
+                    (
+                        'METHOD' IN labels(c1.member)
+                        AND 'METHOD' IN labels(c2.member)
+                        AND (
+                            'DUNDER' IN labels(c1.member)
+                            OR
+                            (
+                                NOT 'DUNDER' IN labels(c1.member)
+                                AND EXISTS {
+                                    MATCH (m2)-[:HAS_SOURCE]->(s2:SOURCE),
+                                          (m1)-[:HAS_SOURCE]->(s1:SOURCE)
+                                    WHERE m2 = c2.member AND m1 = c1.member AND s2.signature = s1.signature
+                                }
+                            )
+                        )
+                    )
+                )
+            )
+            
+            RETURN fqn, [lbl IN labels(c1.member) WHERE NOT lbl STARTS WITH 'version_'] AS labels
         }
         WITH fqn, labels
         WITH collect({fqn: fqn, labels: labels}) AS all_results
@@ -691,11 +523,34 @@ RETURN apoc.map.fromPairs(
             total_count
         """
         
+        # Shadowing Logic Explanation:
+        # 1. Head Shadowing (Namespace Shadowing):
+        #    - Handled by `first_member` and the `NOT EXISTS` clause.
+        #    - Scenario: Child.Nested shadows Parent.Nested.
+        #    - If Child.Nested exists, we must NOT access Parent.Nested.method, even if Child.Nested is empty.
+        #    - The `first_member` identifies the entry point of the inherited path (e.g., Parent.Nested).
+        #    - We check if the Child has a direct member with the same name (Child.Nested).
+        #    - If so, we discard the path from Parent.Nested.
+        #
+        # 2. Tail Shadowing (Deep Inheritance / Overriding):
+        #    - Handled by the `NONE(...)` filter on `candidates`.
+        #    - Scenario: Child inherits from Parent, Parent inherits from Grandparent. Both define `method`.
+        #    - We get two paths to `method` (one via Parent, one via Grandparent).
+        #    - We group by FQN and filter candidates.
+        #    - We keep a candidate only if there is NO other candidate that is "closer" (shorter depth) AND has the same signature.
+        #    - If signatures differ, we keep both (Overloading).
+        #
+        # 3. Versioning on Inherited Members:
+        #    - We do NOT filter inherited members by version.
+        #    - We only enforce version on the `child` class (the entry point).
+        #    - This ensures we find members inherited from base classes that might be version-agnostic or from other libraries.
+        
         query_params = {
             "cypher_regex": cypher_regex,
             "version_label": version_label,
             "skip": skip,
-            "page_size": page_size
+            "page_size": page_size,
+            "library": library
         }
         
         try:
@@ -707,7 +562,7 @@ RETURN apoc.map.fromPairs(
                     "next_page": None,
                     "current_page": page,
                     "total_results": 0,
-                    "system_message": f"No definitions found matching search terms in library '{library}'."
+                    "system_message": f"No definitions found matching search terms in library '{library}'. Try using more lenient search terms, or use 'list_libraries' to see available libraries, or 'library_map' to see the full structure of a library."
                 }
                 return dict_to_xml_string(data, "search_definitions_response")
             
@@ -780,10 +635,10 @@ RETURN apoc.map.fromPairs(
             UNWIND $entity_names AS entity_name
             OPTIONAL MATCH (versioned1:`{version_label}` {{name: entity_name}})
             WITH entity_name, collect(versioned1)[0] AS versioned_direct
-            OPTIONAL MATCH ()-[r:EXPOSES|PUBLISHES]->(versioned2:`{version_label}`)
+            OPTIONAL MATCH ()-[r:EXPOSES|PUBLISHES|INHERITS_METHOD|INHERITS_CLASS]->(versioned2:`{version_label}`)
             WHERE versioned_direct IS NULL AND r.name = entity_name
-            WITH entity_name, versioned_direct, collect(versioned2)[0] AS versioned_exposed,
-                 COALESCE(versioned_direct, versioned_exposed) AS versioned_entity
+            WITH entity_name, versioned_direct, collect(versioned2)[0] AS versioned_exposed
+            WITH entity_name, COALESCE(versioned_direct, versioned_exposed) AS versioned_entity
             OPTIONAL MATCH (any_entity {{name: entity_name}})
             RETURN entity_name,
                    versioned_entity IS NOT NULL AS version_exists,
@@ -817,31 +672,52 @@ RETURN apoc.map.fromPairs(
                 UNWIND $entity_names AS entity_name
                 OPTIONAL MATCH (end1:`{version_label}` {{name: entity_name}})
                 WITH entity_name, collect(end1)[0] AS direct_match
-                OPTIONAL MATCH ()-[r:EXPOSES|PUBLISHES]->(end2:`{version_label}`)
+                OPTIONAL MATCH ()-[r:EXPOSES|PUBLISHES|INHERITS_METHOD|INHERITS_CLASS]->(end2:`{version_label}`)
                 WHERE direct_match IS NULL AND r.name = entity_name
                 WITH entity_name, direct_match, collect(end2)[0] AS exposed_match
                 WITH entity_name, COALESCE(direct_match, exposed_match) AS end
-                OPTIONAL MATCH (end)-[:HAS_SOURCE]->(source:SOURCE)
+                OPTIONAL MATCH (end)-[:HAS_SOURCE]->(source:SOURCE:`{version_label}`)
+                WITH entity_name, end, collect(source)[0] AS source
             """
         else:
             get_definitions_query = """
                 UNWIND $entity_names AS entity_name
                 OPTIONAL MATCH (end1 {name: entity_name})
                 WITH entity_name, collect(end1)[0] AS direct_match
-                OPTIONAL MATCH ()-[r:EXPOSES|PUBLISHES]->(end2)
+                OPTIONAL MATCH ()-[r:EXPOSES|PUBLISHES|INHERITS_METHOD|INHERITS_CLASS]->(end2)
                 WHERE direct_match IS NULL AND r.name = entity_name
                 WITH entity_name, direct_match, collect(end2)[0] AS exposed_match
                 WITH entity_name, COALESCE(direct_match, exposed_match) AS end
                 OPTIONAL MATCH (end)-[:HAS_SOURCE]->(source:SOURCE)
+                WITH entity_name, end, collect(source)[0] AS source
+            """
+        
+        if version_label:
+            get_definitions_query += f"""
+                OPTIONAL MATCH (end)-[:HAS_RESOLVED_SIGNATURE]->(resolved_sig:RESOLVED_SIGNATURE:`{version_label}`)
+                WITH entity_name, end, source, collect(resolved_sig)[0] AS resolved_sig
+                OPTIONAL MATCH (end)-[:HAS_METHOD]->(init:`{version_label}` {{__name__: "__init__"}})
+                WHERE "CLASS" IN labels(end)
+                WITH entity_name, end, source, resolved_sig, collect(init)[0] AS init
+                OPTIONAL MATCH (init)-[:HAS_SOURCE]->(init_source:SOURCE:`{version_label}`)
+                WITH entity_name, end, source, resolved_sig, init, collect(init_source)[0] AS init_source
+                OPTIONAL MATCH (init)-[:HAS_RESOLVED_SIGNATURE]->(init_resolved_sig:RESOLVED_SIGNATURE:`{version_label}`)
+                WITH entity_name, end, source, resolved_sig, init, init_source, collect(init_resolved_sig)[0] AS init_resolved_sig
+            """
+        else:
+            get_definitions_query += """
+                OPTIONAL MATCH (end)-[:HAS_RESOLVED_SIGNATURE]->(resolved_sig:RESOLVED_SIGNATURE)
+                WITH entity_name, end, source, collect(resolved_sig)[0] AS resolved_sig
+                OPTIONAL MATCH (end)-[:HAS_METHOD]->(init {__name__: "__init__"})
+                WHERE "CLASS" IN labels(end)
+                WITH entity_name, end, source, resolved_sig, collect(init)[0] AS init
+                OPTIONAL MATCH (init)-[:HAS_SOURCE]->(init_source:SOURCE)
+                WITH entity_name, end, source, resolved_sig, init, collect(init_source)[0] AS init_source
+                OPTIONAL MATCH (init)-[:HAS_RESOLVED_SIGNATURE]->(init_resolved_sig:RESOLVED_SIGNATURE)
+                WITH entity_name, end, source, resolved_sig, init, init_source, collect(init_resolved_sig)[0] AS init_resolved_sig
             """
         
         get_definitions_query += """
-            OPTIONAL MATCH (end)-[:HAS_RESOLVED_SIGNATURE]->(resolved_sig:RESOLVED_SIGNATURE)
-            OPTIONAL MATCH (end:CLASS)-[:HAS_METHOD]->(init {__name__: "__init__"})
-            OPTIONAL MATCH (init)-[:HAS_SOURCE]->(init_source:SOURCE)
-            OPTIONAL MATCH (init)-[:HAS_RESOLVED_SIGNATURE]->(init_resolved_sig:RESOLVED_SIGNATURE)
-            WHERE "CLASS" IN labels(end)
-            WITH entity_name, end, source, resolved_sig, init, init_source, init_resolved_sig
             RETURN 
                 entity_name AS query_name,
                 CASE WHEN end IS NOT NULL THEN end.name ELSE "" END AS fqn,
@@ -867,9 +743,17 @@ RETURN apoc.map.fromPairs(
         results = self.store.structured_query(get_definitions_query, query_params)
         
         found_count = sum(1 for r in results if r['found'])
+        
+        if found_count == 0:
+            system_message = f"None of the requested entities ({', '.join(entity_names)}) could be found. If you are unsure of the exact names, try using the 'search_definitions' tool to find them."
+            definitions = []
+        else:
+            system_message = f"Retrieved {len(entity_names)} definition(s). Found {found_count} entities."
+            definitions = results
+
         data = {
-            "definitions": results,
-            "system_message": f"Retrieved {len(entity_names)} definition(s). Found {found_count} entities."
+            "definitions": definitions,
+            "system_message": system_message
         }
         return dict_to_xml_string(data, "get_definitions_response")
 
@@ -940,7 +824,7 @@ RETURN apoc.map.fromPairs(
             query = f"""
             MATCH (root:`{version_label}` {{name: $library_name}})
             CALL apoc.path.subgraphAll(root, {{
-                relationshipFilter: 'HAS_SUBMODULE>|HAS_CLASS>|HAS_METHOD>|HAS_FUNCTION>|EXPOSES>|PUBLISHES>',
+                relationshipFilter: 'HAS_SUBMODULE>|HAS_CLASS>|HAS_METHOD>|HAS_FUNCTION>|EXPOSES>|PUBLISHES>|INHERITS_METHOD>|INHERITS_CLASS>|PROVIDES>',
                 maxLevel: $depth
             }})
             YIELD nodes, relationships
@@ -1123,12 +1007,12 @@ RETURN apoc.map.fromPairs(
             query = f"""
             MATCH (old_root:`{old_version_label}` {{name: $parent_entity}})
             CALL apoc.path.subgraphAll(old_root, {{
-                relationshipFilter: 'HAS_SUBMODULE>|HAS_CLASS>|HAS_METHOD>|HAS_FUNCTION>|EXPOSES>|PUBLISHES>'
+                relationshipFilter: 'HAS_SUBMODULE>|HAS_CLASS>|HAS_METHOD>|HAS_FUNCTION>|EXPOSES>|PUBLISHES>|INHERITS_METHOD>|INHERITS_CLASS>'
             }})
             YIELD nodes AS old_nodes, relationships AS old_rels
             MATCH (new_root:`{new_version_label}` {{name: $parent_entity}})
             CALL apoc.path.subgraphAll(new_root, {{
-                relationshipFilter: 'HAS_SUBMODULE>|HAS_CLASS>|HAS_METHOD>|HAS_FUNCTION>|EXPOSES>|PUBLISHES>'
+                relationshipFilter: 'HAS_SUBMODULE>|HAS_CLASS>|HAS_METHOD>|HAS_FUNCTION>|EXPOSES>|PUBLISHES>|INHERITS_METHOD>|INHERITS_CLASS>'
             }})
             YIELD nodes AS new_nodes, relationships AS new_rels
             WITH old_nodes, old_rels, new_nodes, new_rels
@@ -1393,7 +1277,7 @@ RETURN apoc.map.fromPairs(
         }}
         
         OPTIONAL MATCH path = shortestPath(
-            (root:ROOT_MODULE{root_version_filter} {root_name_filter})-[:HAS_SUBMODULE|HAS_CLASS|HAS_METHOD|HAS_FUNCTION|EXPOSES|PUBLISHES*]->(e)
+            (root:ROOT_MODULE{root_version_filter} {root_name_filter})-[:HAS_SUBMODULE|HAS_CLASS|HAS_METHOD|HAS_FUNCTION|EXPOSES|PUBLISHES|INHERITS_METHOD|INHERITS_CLASS*]->(e)
         )
         
         WITH e, path,

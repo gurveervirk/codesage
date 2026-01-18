@@ -12,6 +12,7 @@ class ExternalEntityRef(BaseModel):
     name: str
     version: Optional[str] = None
     content_hash: Optional[str] = None
+    alias: Optional[str] = None
     
     class Config:
         frozen = True  # Make the model immutable and hashable
@@ -23,7 +24,7 @@ class ExternalEntityRef(BaseModel):
     
     def __hash__(self):
         """Make ExternalEntityRef hashable for use in sets."""
-        return hash((self.name, self.version, self.content_hash))
+        return hash((self.name, self.version, self.content_hash, self.alias))
     
     def __eq__(self, other):
         """Equality comparison for ExternalEntityRef."""

@@ -18,6 +18,7 @@ from .utils.source_utils import safe_get_source, safe_get_docstring, get_source_
 from .utils.signature_utils import get_typed_signature, _normalize_signature
 from .utils.decorator_utils import get_function_method_labels, _resolve_decorator_details
 from .utils.overload_utils import get_overloads_with_fallback
+from .utils.metadata_utils import get_package_version, PackageNotFoundError
 
 
 def _is_dunder(name: str) -> bool:
@@ -169,7 +170,6 @@ def _get_entity_version(entity_path: str) -> Optional[str]:
     """
     try:
         import importlib
-        import importlib.metadata
         import sys
         
         # Extract the root package name (first component)
@@ -183,9 +183,9 @@ def _get_entity_version(entity_path: str) -> Optional[str]:
         
         # Try to get version from importlib.metadata
         try:
-            version = importlib.metadata.version(root_package)
+            version = get_package_version(root_package)
             return version
-        except importlib.metadata.PackageNotFoundError:
+        except PackageNotFoundError:
             pass
         
         # Try to get version from __version__ attribute if module is loaded
@@ -201,9 +201,9 @@ def _get_entity_version(entity_path: str) -> Optional[str]:
             public_package = root_package[1:]  # Remove leading underscore
             try:
                 # Try to get version from the public package
-                public_version = importlib.metadata.version(public_package)
+                public_version = get_package_version(public_package)
                 return public_version
-            except importlib.metadata.PackageNotFoundError:
+            except PackageNotFoundError:
                 pass
             
             # Try __version__ from public package
@@ -533,8 +533,9 @@ def _process_import_statements(
     import_statements: str,
     entity_name: Optional[str] = None,
     entity_content_hash: Optional[str] = None,
-    root_module_name: Optional[str] = None
-) -> Tuple[Dict, Set[str], Set[Tuple], Set[Tuple]]:
+    root_module_name: Optional[str] = None,
+    exported_names: Optional[List[str]] = None
+) -> Tuple[Dict, Set[str], Dict[str, Set[Tuple]]]:
     """
     Process import statements from source code and extract import details.
     
@@ -557,24 +558,28 @@ def _process_import_statements(
         entity_name: The name of the entity (module/ROOT_MODULE) being processed
         entity_content_hash: The content_hash of the entity for relationship tracking
         root_module_name: The root module name to determine internal vs external imports
+        exported_names: List of names exported by the module (from __all__), used for PUBLISHES detection
     
     Returns:
         Tuple containing:
         - Dict: Structured import information
         - Set[str]: Set of imported entity FQNs
-        - Set[Tuple]: EXPOSES relationships (entity_hash, ExternalEntityRef)
-        - Set[Tuple]: PUBLISHES relationships (entity_hash, ExternalEntityRef)
+        - Dict[str, Set[Tuple]]: Dictionary of relationships by type (EXPOSES, PUBLISHES, EXPOSES_ALL, PUBLISHES_ALL)
     """
     from .models import ExternalEntityRef
     from .utils.source_utils import get_unused_imports
     
     import_details = {"modules": {}}
     imported_entities: Set[str] = set()  # Track all imported entity FQNs for unused detection
-    exposes_relations: Set[Tuple] = set()
-    publishes_relations: Set[Tuple] = set()
+    relations = {
+        "EXPOSES": set(),
+        "PUBLISHES": set(),
+        "EXPOSES_ALL": set(),
+        "PUBLISHES_ALL": set()
+    }
     
     if not import_statements:
-        return import_details, imported_entities, exposes_relations, publishes_relations
+        return import_details, imported_entities, relations
     
     try:
         tree = ast.parse(import_statements)
@@ -620,35 +625,65 @@ def _process_import_statements(
                         "entities": []
                     }
                 
-                # Process each imported entity
-                for alias in node.names:
-                    imported_entity_name = alias.name
-                    
+                # Helper to process a single imported name
+                def add_imported_entity(name, alias_name=None):
                     # Try to determine the actual FQN by importing the entity
-                    entity_fqn = f"{module_name}.{imported_entity_name}"
+                    entity_fqn = f"{module_name}.{name}"
                     try:
                         import importlib
                         imported_module = importlib.import_module(module_name)
-                        if hasattr(imported_module, imported_entity_name):
-                            imported_obj = getattr(imported_module, imported_entity_name)
+                        if hasattr(imported_module, name):
+                            imported_obj = getattr(imported_module, name)
                             # Try to get the actual module where the object is defined
-                            if hasattr(imported_obj, '__module__'):
+                            if hasattr(imported_obj, '__module__') and imported_obj.__module__:
                                 actual_module = imported_obj.__module__
                                 if hasattr(imported_obj, '__qualname__'):
                                     entity_fqn = f"{actual_module}.{imported_obj.__qualname__}"
                                 else:
-                                    entity_fqn = f"{actual_module}.{imported_entity_name}"
+                                    entity_fqn = f"{actual_module}.{name}"
                     except Exception as e:
-                        logging.debug(f"Could not resolve actual FQN for {module_name}.{imported_entity_name}: {e}")
+                        logging.debug(f"Could not resolve actual FQN for {module_name}.{name}: {e}")
                     
                     entity_info = {
-                        "name": imported_entity_name,
+                        "name": name,
                         "fqn": entity_fqn,
-                        "alias": alias.asname,
+                        "alias": alias_name,
                         "used": None  # Will be determined later
                     }
                     import_details["modules"][module_name]["entities"].append(entity_info)
                     imported_entities.add(entity_fqn)
+
+                # Process each imported entity
+                for alias in node.names:
+                    if alias.name == "*":
+                        # Handle wildcard import
+                        entity_info = {
+                            "name": "*",
+                            "fqn": f"{module_name}.*",
+                            "alias": None,
+                            "used": None 
+                        }
+                        import_details["modules"][module_name]["entities"].append(entity_info)
+
+                        # Determine EXPOSES_ALL / PUBLISHES_ALL relationships
+                        # Logic:
+                        # - Internal imports (EXPOSES_ALL): Always accepted (common in internal facades/__init__.py).
+                        # - External imports (PUBLISHES_ALL): Only accepted if the module has NO __all__ defined (implicit export).
+                        #   If __all__ is defined, 'from M import *' does NOT automatically re-export M's contents into the module's public entrypoint.
+                        if entity_name and entity_content_hash and root_module_name:
+                            import_version = import_details["modules"][module_name]["version"]
+                            import_ref = ExternalEntityRef(name=module_name, version=import_version)
+
+                            if module_name.startswith(root_module_name + "."):
+                                # Internal wildcard import -> EXPOSES_ALL
+                                relations["EXPOSES_ALL"].add((entity_content_hash, import_ref))
+                            elif exported_names is None:
+                                # External wildcard import -> PUBLISHES_ALL
+                                # Only if __all__ is NOT defined (implicit export)
+                                relations["PUBLISHES_ALL"].add((entity_content_hash, import_ref))
+
+                    else:
+                        add_imported_entity(alias.name, alias.asname)
     
     except Exception as e:
         logging.warning(f"Error processing import statements: {e}")
@@ -670,7 +705,8 @@ def _process_import_statements(
                         
                         # Determine relationship type
                         import_version = module_info["version"]
-                        import_ref = ExternalEntityRef(name=entity_fqn, version=import_version)
+                        import_alias = entity_info.get("alias")
+                        import_ref = ExternalEntityRef(name=entity_fqn, version=import_version, alias=import_alias)
                         
                         # Check for _<package> pattern (PUBLISHES)
                         from_root = entity_name.split(".")[0]
@@ -685,16 +721,29 @@ def _process_import_statements(
                             is_publishes = True
                         
                         if is_publishes:
-                            publishes_relations.add((entity_content_hash, import_ref))
+                            relations["PUBLISHES"].add((entity_content_hash, import_ref))
                         elif entity_fqn.startswith(root_module_name + "."):
                             # Internal import that's unused -> EXPOSES
-                            exposes_relations.add((entity_content_hash, import_ref))
+                            # Only if not an immediate child (avoid duplication with HAS_SUBMODULE/HAS_CLASS)
+                            is_immediate_child = (
+                                entity_fqn.startswith(entity_name + ".") and 
+                                "." not in entity_fqn[len(entity_name) + 1:]
+                            )
+                            if not is_immediate_child:
+                                relations["EXPOSES"].add((entity_content_hash, import_ref))
                         else:
                             # External unused import -> PUBLISHES
-                            publishes_relations.add((entity_content_hash, import_ref))
+                            # Only if explicitly exported via __all__ or redundant alias (import x as x)
+                            local_name = entity_info["alias"] if entity_info["alias"] else entity_info["name"]
+                            
+                            is_in_all = exported_names and local_name in exported_names
+                            is_redundant_alias = entity_info["alias"] is not None and entity_info["alias"] == entity_info["name"]
+
+                            if is_in_all or is_redundant_alias:
+                                relations["PUBLISHES"].add((entity_content_hash, import_ref))
                     else:
                         entity_info["used"] = True
         except Exception as e:
             logging.warning(f"Error determining unused imports for {entity_name}: {e}")
     
-    return import_details, imported_entities, exposes_relations, publishes_relations
+    return import_details, imported_entities, relations

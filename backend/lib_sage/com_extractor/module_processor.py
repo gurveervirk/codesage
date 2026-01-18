@@ -69,7 +69,14 @@ def process_module(
     entities: List[Entity] = []
     relations: List[Relationship] = []
     processed_paths: Set[str] = set()
-    other_relations: Dict[str, Set[Tuple]] = {"INHERITS": set(), "EXPOSES": set(), "PUBLISHES": set()}
+    other_relations: Dict[str, Set[Tuple]] = {
+        "INTERNAL_INHERITS": set(), 
+        "EXTERNAL_INHERITS": set(), 
+        "EXPOSES": set(), 
+        "PUBLISHES": set(),
+        "EXPOSES_ALL": set(),
+        "PUBLISHES_ALL": set()
+    }
 
     module_object = importlib.import_module(name_only)
 
@@ -78,7 +85,7 @@ def process_module(
     all_import_statements = get_import_statements(source)
     import_as_aliases = get_import_as_aliases(source, module_object.__name__)
     
-    labels = ["ROOT_MODULE"]
+    labels = ["IMPORT_PACKAGE"]
     if version:
         labels.append(f"version:{version}")
     
@@ -91,17 +98,20 @@ def process_module(
     
     entities.append(root_entity)
     
-    # Process import statements with full context to get EXPOSES/PUBLISHES relationships for ROOT_MODULE
-    import_details, _, exposes_rels, publishes_rels = _process_import_statements(
+    # Process import statements with full context to get EXPOSES/PUBLISHES relationships for IMPORT_PACKAGE
+    exported_names = getattr(module_object, "__all__", None)
+    import_details, _, import_relations = _process_import_statements(
         all_import_statements,
         entity_name=module_object.__name__,
         entity_content_hash=root_entity.content_hash,
-        root_module_name=module_object.__name__
+        root_module_name=module_object.__name__,
+        exported_names=exported_names
     )
     
-    # Add EXPOSES and PUBLISHES relationships to other_relations
-    other_relations["EXPOSES"].update(exposes_rels)
-    other_relations["PUBLISHES"].update(publishes_rels)
+    # Add relationships to other_relations
+    for rel_type, rels in import_relations.items():
+        if rel_type in other_relations:
+            other_relations[rel_type].update(rels)
     
     # Create property entities for ROOT_MODULE
     prop_entities, prop_relations = _create_property_entities_and_relations(
