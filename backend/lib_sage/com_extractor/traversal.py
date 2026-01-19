@@ -88,7 +88,7 @@ def process_member(
         if entities:
             relations.append(Relationship(parent_entity, entities[0], relation_type, {}))
 
-    elif inspect.isfunction(obj) and parent_entity.label in {"ROOT_MODULE", "MODULE"}:
+    elif inspect.isfunction(obj) and parent_entity.label in {"IMPORT_PACKAGE", "MODULE"}:
         obj_path = get_fully_qualified_name(obj)
 
         if not obj_path.startswith(root_module_path + "."):

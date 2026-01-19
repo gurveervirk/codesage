@@ -252,7 +252,7 @@ class COMStoreTools:
             search_terms = None,
         ) -> str:
         """
-        Get a list of all ROOT_MODULE entities (libraries) in the knowledge graph.
+        Get a list of all IMPORT_PACKAGE entities (libraries) in the knowledge graph.
         
         Args:
             search_terms (str | List[str], optional): Search terms to filter libraries by name, using case-insensitive partial matching. If string, will be split by commas and each term trimmed. Defaults to None.
@@ -767,7 +767,7 @@ class COMStoreTools:
         Generate a hierarchical map of a library showing all entities in nested form.
         
         Args:
-            library_name (str): Name of the ROOT_MODULE (library) to map
+            library_name (str): Name of the IMPORT_PACKAGE (library) to map
             version (str): Version of the library (e.g., "4.28")
             depth (int): Directory/entity traversal depth. 0 = full depth (default), >0 = limited depth.
         
@@ -1242,11 +1242,11 @@ class COMStoreTools:
     ) -> Optional[str]:
         """
         Get the shortest API call path for an entity.
-        This method traverses from ROOT_MODULE to the entity and builds the API call path.
+        This method traverses from IMPORT_PACKAGE to the entity and builds the API call path.
         
         Args:
             entity_name (str): The name of the entity to compute path for
-            root_module (Optional[str]): The name of the ROOT_MODULE to start from. If None, uses any ROOT_MODULE.
+            root_module (Optional[str]): The name of the IMPORT_PACKAGE to start from. If None, uses any IMPORT_PACKAGE.
             root_module_version (Optional[str]): Version label for the root module (e.g., 'version_1_24_0'). If None, no version filtering on root.
             version_label (Optional[str]): Optional version label for the target entity (e.g., 'version_1_24_0').
                                           If None, computes path without version filtering on target.
@@ -1272,12 +1272,12 @@ class COMStoreTools:
             MATCH (e:MODULE{version_filter} {{name: $entity_name}})
             RETURN e
             UNION
-            MATCH (e:ROOT_MODULE{version_filter} {{name: $entity_name}})
+            MATCH (e:IMPORT_PACKAGE{version_filter} {{name: $entity_name}})
             RETURN e
         }}
         
         OPTIONAL MATCH path = shortestPath(
-            (root:ROOT_MODULE{root_version_filter} {root_name_filter})-[:HAS_SUBMODULE|HAS_CLASS|HAS_METHOD|HAS_FUNCTION|EXPOSES|PUBLISHES|INHERITS_METHOD|INHERITS_CLASS*]->(e)
+            (root:IMPORT_PACKAGE{root_version_filter} {root_name_filter})-[:HAS_SUBMODULE|HAS_CLASS|HAS_METHOD|HAS_FUNCTION|EXPOSES|PUBLISHES|INHERITS_METHOD|INHERITS_CLASS*]->(e)
         )
         
         WITH e, path,

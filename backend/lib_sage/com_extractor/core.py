@@ -10,7 +10,7 @@ import logging
 import subprocess
 import sys
 import traceback
-from typing_extensions import Dict, List, Optional, Tuple
+from typing_extensions import Any, Dict, List, Optional, Tuple
 
 from .utils.metadata_utils import (
     get_distribution_top_level_modules,
@@ -21,6 +21,7 @@ from .utils.metadata_utils import (
 
 from .models import Entity, Relationship
 from .module_processor import process_module, _parse_name_and_version
+from .utils.alias_finder import find_aliases
 
 
 def get_top_level_modules_for_package(package_name: str) -> List[str]:
@@ -102,7 +103,7 @@ def process_package(
     
     This function finds all packages/distributions that contain the given package_name,
     processes each of their top-level modules, and combines the results.
-    Each top-level module is treated as a ROOT_MODULE.
+    Each top-level module is treated as a IMPORT_PACKAGE.
 
     Args:
         package_name (str): The name of the package.
@@ -215,7 +216,7 @@ def process_package(
     # Process all top-level modules and combine results
     all_entities: List[Entity] = []
     all_relations: List[Relationship] = []
-    combined_other_relations: Dict[str, List] = {
+    combined_other_relations: Dict[str, Any] = {
         "INTERNAL_INHERITS": [], 
         "EXTERNAL_INHERITS": [], 
         "EXPOSES": [], 
@@ -291,6 +292,17 @@ def process_package(
     for rel_type in ["INTERNAL_INHERITS", "EXTERNAL_INHERITS", "EXPOSES", "PUBLISHES", "EXPOSES_ALL", "PUBLISHES_ALL"]:
         combined_other_relations[rel_type] = list(set(combined_other_relations[rel_type]))
     
+    # Find aliases
+    try:
+        logging.info("Finding aliases for extracted entities...")
+        aliases = find_aliases(all_entities, all_relations, combined_other_relations)
+        combined_other_relations["ALIASES"] = aliases
+        logging.info(f"Found aliases for {len(aliases)} entities")
+    except Exception as e:
+        logging.error(f"Error finding aliases: {e}")
+        logging.error(traceback.format_exc())
+        combined_other_relations["ALIASES"] = {}
+
     logging.info(f"Completed processing package '{pkg_name}': "
                 f"{len(all_entities)} total entities, {len(all_relations)} total relations")
     

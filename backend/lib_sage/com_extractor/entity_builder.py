@@ -272,12 +272,12 @@ def _create_property_entities_and_relations(
     
     Args:
         parent_entity: The parent entity (METHOD, FUNCTION, CLASS, MODULE, etc.)
-        source_code: Source code string (used for MODULE/ROOT_MODULE only)
+        source_code: Source code string (used for MODULE/IMPORT_PACKAGE only)
         docstring: Docstring string
         signature: Raw signature string (for METHOD/FUNCTION/CLASS)
         resolved_signature: Type-resolved signature string
         decorators: List of decorator dicts with 'name', 'args', 'resolved_path', 'version'
-        import_details: Import details dict (for MODULE/ROOT_MODULE)
+        import_details: Import details dict (for MODULE/IMPORT_PACKAGE)
         version: Optional[str],
         source_obj: The source object for line number extraction (required for non-module entities)
         
@@ -288,7 +288,7 @@ def _create_property_entities_and_relations(
     prop_relations: List[Relationship] = []
     
     # Determine if this is a module entity (should store full source)
-    is_module = "MODULE" in parent_entity.labels or "ROOT_MODULE" in parent_entity.labels
+    is_module = "MODULE" in parent_entity.labels or "IMPORT_PACKAGE" in parent_entity.labels
     
     # SOURCE entity
     if (is_module and source_code) or (not is_module and (docstring or signature)):
@@ -299,7 +299,7 @@ def _create_property_entities_and_relations(
         if version:
             labels.append(f"version:{version}")
         
-        # For MODULE/ROOT_MODULE: store full source code
+        # For MODULE/IMPORT_PACKAGE: store full source code
         # For other entities: store line numbers instead
         properties = {}
         
@@ -350,7 +350,7 @@ def _create_property_entities_and_relations(
             Relationship(parent_entity, decorator_entity, "HAS_DECORATOR_DETAILS", {})
         )
     
-    # IMPORT_DETAILS entity (for MODULE/ROOT_MODULE)
+    # IMPORT_DETAILS entity (for MODULE/IMPORT_PACKAGE)
     if import_details:
         import_entity = _create_property_entity(
             parent_entity.name, "IMPORT_DETAILS", import_details, version
@@ -381,7 +381,7 @@ def _process_callable_with_overloads(
         name: Name of the callable
         obj_path: Fully qualified path of the callable
         entity_type: Either "FUNCTION" or "METHOD"
-        parent_entity: Parent entity (MODULE, ROOT_MODULE, or CLASS)
+        parent_entity: Parent entity (MODULE, IMPORT_PACKAGE, or CLASS)
         root_module_path: Root module path for decorator resolution
         version: Version label if applicable
         parent_obj: Parent object (for decorator resolution)
@@ -555,7 +555,7 @@ def _process_import_statements(
     
     Args:
         import_statements: String containing all import statements
-        entity_name: The name of the entity (module/ROOT_MODULE) being processed
+        entity_name: The name of the entity (module/IMPORT_PACKAGE) being processed
         entity_content_hash: The content_hash of the entity for relationship tracking
         root_module_name: The root module name to determine internal vs external imports
         exported_names: List of names exported by the module (from __all__), used for PUBLISHES detection

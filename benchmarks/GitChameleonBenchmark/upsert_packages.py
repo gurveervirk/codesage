@@ -408,9 +408,9 @@ def check_version_exists(
         # Sanitize version label
         version_label = f"version_{version.replace('.', '_').replace(':', '_').replace('-', '_')}"
         
-        # Query to check if ROOT_MODULE with this library name and version exists
+        # Query to check if DISTRIBUTION_PACKAGE with this library name and version exists
         check_query = """
-        MATCH (root:ROOT_MODULE {name: $library_name})
+        MATCH (root:DISTRIBUTION_PACKAGE {name: $library_name})
         WHERE $version_label IN labels(root)
         RETURN count(root) > 0 AS exists
         """

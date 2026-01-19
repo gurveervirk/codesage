@@ -113,7 +113,7 @@ def process_module(
         if rel_type in other_relations:
             other_relations[rel_type].update(rels)
     
-    # Create property entities for ROOT_MODULE
+    # Create property entities for IMPORT_PACKAGE
     prop_entities, prop_relations = _create_property_entities_and_relations(
         root_entity,
         source,
@@ -198,7 +198,7 @@ def process_module(
 
     # Clean up Alias Imports
     for entity in entities:
-        if entity.label not in ("ROOT_MODULE", "MODULE"):
+        if entity.label not in ("IMPORT_PACKAGE", "MODULE"):
             continue
 
         cleaned_import_aliases: List[Tuple[str, str]] = []
