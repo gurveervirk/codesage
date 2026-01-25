@@ -8,8 +8,8 @@ from llama_index.core.graph_stores.types import (
 )
 from llama_index.core import Settings
 from typing import Any, Dict, List, Optional, Tuple, Union
-from ..com_extractor import Entity, Relationship
-from .utils import check_if_not_null, _escape_regex_special_chars
+from ...com_extractor import Entity, Relationship
+from ..utils import check_if_not_null, _escape_regex_special_chars
 import logging
 import neo4j
 import json
@@ -597,7 +597,7 @@ class COMStore(Neo4jPropertyGraphStore):
                 Each tuple is (from_content_hash, ExternalEntityRef)
             source_version (Optional[str]): The version of the source entity.
         """
-        from ..com_extractor import ExternalEntityRef
+        from ...com_extractor import ExternalEntityRef
         
         internal_inherits = other_relations.get("INTERNAL_INHERITS", [])
         external_inherits = other_relations.get("EXTERNAL_INHERITS", [])

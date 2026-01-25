@@ -20,7 +20,7 @@ from .core import (
 )
 
 # Entity and Relationship models
-from .models import Entity, Relationship, ExternalEntityRef
+from .models import Entity, Relationship, ExternalEntityRef, ExtractionResult
 
 # Secondary/Internal API (for advanced users)
 from .module_processor import process_module
@@ -34,6 +34,7 @@ __all__ = [
     "Entity",
     "Relationship",
     "ExternalEntityRef",
+    "ExtractionResult",
     # Secondary API
     "process_module",
 ]

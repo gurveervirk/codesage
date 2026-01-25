@@ -4,7 +4,7 @@ These methods are separated from the main COMStore class for better organization
 """
 from typing import Optional
 from llama_index.core import Settings
-from .xml_utils import dict_to_xml_string
+from ..xml_utils import dict_to_xml_string
 from .main import COMStore
 import logging
 
@@ -360,7 +360,7 @@ class COMStoreTools:
                 - total_results (int): Total number of matching results
                 - system_message (str): Informational message
         """
-        from .utils import _escape_regex_special_chars
+        from ..utils import _escape_regex_special_chars
         
         # Normalize library: must be simple name
         if '.' in library:

@@ -11,7 +11,7 @@ import logging
 import traceback
 from typing_extensions import Dict, List, Optional, Set, Tuple
 
-from .models import Entity, Relationship
+from .models import Entity, Relationship, ExtractionResult
 from .utils.general_utils import extract_simple_name
 from .utils.source_utils import (
     safe_get_source,
@@ -46,7 +46,7 @@ def process_module(
     version: Optional[str] = None,
     include_external_parents: bool = True,
     _processed_external_classes: Optional[Set[str]] = None
-) -> Tuple[List[Entity], List[Relationship], Dict]:
+) -> ExtractionResult:
     """
     Process a module or object recursively.
 
@@ -57,7 +57,7 @@ def process_module(
         _processed_external_classes (Optional[Set[str]]): Internal tracking of processed external classes to avoid cycles.
 
     Returns:
-        Tuple[List[Entity], List[Relation], Dict]: List of entities, list of relations, and other relations.
+        ExtractionResult: Comparison of entities, relations, and other relations.
     """
     name_only, parsed_version = _parse_name_and_version(module_name, version)
     version = parsed_version
@@ -237,4 +237,4 @@ def process_module(
 
     logging.info(f"Processed {len(entities)} entities and {len(relations)} relations in {module_object.__name__}.")
 
-    return entities, relations, other_relations
+    return ExtractionResult(entities=entities, relations=relations, other_relations=other_relations)

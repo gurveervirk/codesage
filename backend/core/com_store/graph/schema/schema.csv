@@ -1,0 +1,2020 @@
+value
+"{
+  GENERATOR: {
+    count: 15,
+    relationships: {
+      HAS_RESOLVED_SIGNATURE: {
+        count: 0,
+        properties: {},
+        direction: out,
+        labels: [__Entity__, RESOLVED_SIGNATURE, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0]
+      },
+      HAS_SOURCE: {
+        count: 0,
+        properties: {},
+        direction: out,
+        labels: [__Entity__, SOURCE, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0]
+      },
+      HAS_METHOD: {
+        count: 131,
+        properties: {},
+        direction: in,
+        labels: [version_5_10_0]
+      }
+    },
+    type: node,
+    properties: {
+      name: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      },
+      content_hash: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      },
+      __name__: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      }
+    },
+    labels: []
+  },
+  RESOLVED_SIGNATURE: {
+    count: 19469,
+    relationships: {
+      HAS_RESOLVED_SIGNATURE: {
+        count: 130,
+        properties: {},
+        direction: in,
+        labels: [__Entity__, FUNCTION, METHOD, version_3_0_0, PUBLIC, DUNDER, PROTECTED, version_4_0_0, GENERATOR, version_2_0_9, version_4_8_0, version_5_10_0, version_5_8_0]
+      }
+    },
+    type: node,
+    properties: {
+      name: {
+        existence: false,
+        type: STRING,
+        indexed: true,
+        unique: false
+      },
+      content_hash: {
+        existence: false,
+        type: STRING,
+        indexed: true,
+        unique: true
+      },
+      value: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      }
+    },
+    labels: [__Entity__, version_3_0_0, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0]
+  },
+  CLASS: {
+    count: 18573,
+    relationships: {
+      INHERITS_METHOD: {
+        count: 0,
+        properties: {
+          name: {
+            existence: false,
+            type: STRING,
+            array: false,
+            indexed: false
+          },
+          versions: {
+            existence: false,
+            type: LIST,
+            array: true,
+            indexed: false
+          }
+        },
+        direction: out,
+        labels: [__Entity__, METHOD, version_3_0_0, PUBLIC, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0, DUNDER, PROTECTED]
+      },
+      INHERITS: {
+        count: 278,
+        properties: {
+          versions: {
+            existence: false,
+            type: LIST,
+            array: true,
+            indexed: false
+          }
+        },
+        direction: out,
+        labels: [__Entity__, CLASS, version_3_0_0, PUBLIC, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0, version_py_3_13_11]
+      },
+      HAS_CLASS: {
+        count: 120,
+        properties: {},
+        direction: in,
+        labels: [__Entity__, MODULE, version_3_0_0, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0]
+      },
+      HAS_SOURCE: {
+        count: 0,
+        properties: {},
+        direction: out,
+        labels: [__Entity__, SOURCE, version_3_0_0, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0]
+      },
+      HAS_METHOD: {
+        count: 0,
+        properties: {},
+        direction: out,
+        labels: [__Entity__, METHOD, version_3_0_0, PUBLIC, DUNDER, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0, PROTECTED]
+      }
+    },
+    type: node,
+    properties: {
+      name: {
+        existence: false,
+        type: STRING,
+        indexed: true,
+        unique: false
+      },
+      NEW_INHERITED_ENTITIES: {
+        existence: false,
+        type: LIST,
+        indexed: false,
+        unique: false
+      },
+      content_hash: {
+        existence: false,
+        type: STRING,
+        indexed: true,
+        unique: true
+      },
+      __name__: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      }
+    },
+    labels: [__Entity__, version_3_0_0, PUBLIC, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0]
+  },
+  DECORATOR_DETAILS: {
+    count: 3,
+    relationships: {
+      HAS_DECORATOR_DETAILS: {
+        count: 3,
+        properties: {},
+        direction: in,
+        labels: [FUNCTION]
+      }
+    },
+    type: node,
+    properties: {
+      name: {
+        existence: false,
+        type: STRING,
+        indexed: true,
+        unique: false
+      },
+      content_hash: {
+        existence: false,
+        type: STRING,
+        indexed: true,
+        unique: true
+      },
+      value: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      }
+    },
+    labels: [__Entity__, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0]
+  },
+  HAS_RESOLVED_SIGNATURE: {
+    count: 19469,
+    type: relationship,
+    properties: {}
+  },
+  HAS_DECORATOR_DETAILS: {
+    count: 3,
+    type: relationship,
+    properties: {}
+  },
+  EXPOSES: {
+    count: 7,
+    type: relationship,
+    properties: {
+      name: {
+        existence: false,
+        type: STRING,
+        array: false,
+        indexed: false
+      },
+      versions: {
+        existence: false,
+        type: LIST,
+        array: true,
+        indexed: false
+      }
+    }
+  },
+  version_2_0_9: {
+    count: 14,
+    relationships: {
+      INHERITS_METHOD: {
+        count: 870,
+        properties: {
+          name: {
+            existence: false,
+            type: STRING,
+            array: false,
+            indexed: false
+          },
+          versions: {
+            existence: false,
+            type: LIST,
+            array: true,
+            indexed: false
+          }
+        },
+        direction: in,
+        labels: [version_4_8_0]
+      },
+      HAS_RESOLVED_SIGNATURE: {
+        count: 0,
+        properties: {},
+        direction: out,
+        labels: [__Entity__, RESOLVED_SIGNATURE, version_2_0_9]
+      },
+      INHERITS: {
+        count: 99,
+        properties: {
+          versions: {
+            existence: false,
+            type: LIST,
+            array: true,
+            indexed: false
+          }
+        },
+        direction: in,
+        labels: [version_4_8_0]
+      },
+      HAS_SOURCE: {
+        count: 0,
+        properties: {},
+        direction: out,
+        labels: [__Entity__, SOURCE, version_2_0_9]
+      },
+      HAS_METHOD: {
+        count: 0,
+        properties: {},
+        direction: out,
+        labels: [__Entity__, METHOD, PUBLIC, DUNDER, version_2_0_9]
+      }
+    },
+    type: node,
+    properties: {
+      __name__: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      },
+      docstring: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      },
+      signature: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      },
+      name: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      },
+      content_hash: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      },
+      line_start: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      },
+      value: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      },
+      line_end: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      }
+    },
+    labels: []
+  },
+  HAS_SUBMODULE: {
+    count: 23536,
+    type: relationship,
+    properties: {}
+  },
+  HAS_FUNCTION: {
+    count: 222,
+    type: relationship,
+    properties: {}
+  },
+  ROOT_MODULE: {
+    count: 5,
+    relationships: {
+      HAS_IMPORT_DETAILS: {
+        count: 0,
+        properties: {},
+        direction: out,
+        labels: [__Entity__, IMPORT_DETAILS, version_3_0_0, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0]
+      },
+      EXPOSES: {
+        count: 0,
+        properties: {
+          name: {
+            existence: false,
+            type: STRING,
+            array: false,
+            indexed: false
+          },
+          versions: {
+            existence: false,
+            type: LIST,
+            array: true,
+            indexed: false
+          }
+        },
+        direction: out,
+        labels: [__Entity__, MODULE, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0]
+      },
+      HAS_SOURCE: {
+        count: 0,
+        properties: {},
+        direction: out,
+        labels: [__Entity__, SOURCE, version_3_0_0, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0]
+      },
+      HAS_SUBMODULE: {
+        count: 0,
+        properties: {},
+        direction: out,
+        labels: [__Entity__, MODULE, version_3_0_0, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0]
+      },
+      HAS_FUNCTION: {
+        count: 0,
+        properties: {},
+        direction: out,
+        labels: [__Entity__, FUNCTION, version_3_0_0, PROTECTED, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0]
+      }
+    },
+    type: node,
+    properties: {
+      name: {
+        existence: false,
+        type: STRING,
+        indexed: true,
+        unique: false
+      },
+      content_hash: {
+        existence: false,
+        type: STRING,
+        indexed: true,
+        unique: true
+      },
+      __name__: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      }
+    },
+    labels: [__Entity__, version_3_0_0, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0]
+  },
+  HAS_CLASS: {
+    count: 18564,
+    type: relationship,
+    properties: {}
+  },
+  HAS_METHOD: {
+    count: 18986,
+    type: relationship,
+    properties: {}
+  },
+  PROTECTED: {
+    count: 189,
+    relationships: {
+      INHERITS: {
+        count: 0,
+        properties: {
+          versions: {
+            existence: false,
+            type: LIST,
+            array: true,
+            indexed: false
+          }
+        },
+        direction: out,
+        labels: [__Entity__, CLASS, PUBLIC, version_py_3_13_11]
+      },
+      HAS_METHOD: {
+        count: 1093,
+        properties: {},
+        direction: in,
+        labels: [CLASS, version_4_0_0, version_5_10_0]
+      },
+      INHERITS_METHOD: {
+        count: 862,
+        properties: {
+          name: {
+            existence: false,
+            type: STRING,
+            array: false,
+            indexed: false
+          },
+          versions: {
+            existence: false,
+            type: LIST,
+            array: true,
+            indexed: false
+          }
+        },
+        direction: in,
+        labels: [__Entity__, CLASS, PUBLIC, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0]
+      },
+      HAS_RESOLVED_SIGNATURE: {
+        count: 0,
+        properties: {},
+        direction: out,
+        labels: [__Entity__, RESOLVED_SIGNATURE, version_3_0_0, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0]
+      },
+      HAS_SOURCE: {
+        count: 0,
+        properties: {},
+        direction: out,
+        labels: [__Entity__, SOURCE, version_3_0_0, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0]
+      },
+      HAS_FUNCTION: {
+        count: 7,
+        properties: {},
+        direction: in,
+        labels: [ROOT_MODULE, MODULE, version_3_0_0]
+      }
+    },
+    type: node,
+    properties: {
+      name: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      },
+      NEW_INHERITED_ENTITIES: {
+        existence: false,
+        type: LIST,
+        indexed: false,
+        unique: false
+      },
+      content_hash: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      },
+      __name__: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      }
+    },
+    labels: []
+  },
+  HAS_SOURCE: {
+    count: 77047,
+    type: relationship,
+    properties: {}
+  },
+  version_5_8_0: {
+    count: 88708,
+    relationships: {
+      HAS_IMPORT_DETAILS: {
+        count: 0,
+        properties: {},
+        direction: out,
+        labels: [__Entity__, IMPORT_DETAILS, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0]
+      },
+      INHERITS: {
+        count: 2028,
+        properties: {
+          versions: {
+            existence: false,
+            type: LIST,
+            array: true,
+            indexed: false
+          }
+        },
+        direction: out,
+        labels: [__Entity__, CLASS, version_3_0_0, PUBLIC, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0, version_py_3_13_11]
+      },
+      HAS_CLASS: {
+        count: 0,
+        properties: {},
+        direction: out,
+        labels: [__Entity__, CLASS, PUBLIC, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0]
+      },
+      HAS_METHOD: {
+        count: 0,
+        properties: {},
+        direction: out,
+        labels: [__Entity__, METHOD, version_3_0_0, PUBLIC, DUNDER, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0]
+      },
+      INHERITS_METHOD: {
+        count: 0,
+        properties: {
+          name: {
+            existence: false,
+            type: STRING,
+            array: false,
+            indexed: false
+          },
+          versions: {
+            existence: false,
+            type: LIST,
+            array: true,
+            indexed: false
+          }
+        },
+        direction: out,
+        labels: [__Entity__, METHOD, version_3_0_0, PUBLIC, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0, DUNDER, PROTECTED]
+      },
+      HAS_RESOLVED_SIGNATURE: {
+        count: 0,
+        properties: {},
+        direction: out,
+        labels: [__Entity__, RESOLVED_SIGNATURE, version_3_0_0, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0]
+      },
+      EXPOSES: {
+        count: 7,
+        properties: {
+          name: {
+            existence: false,
+            type: STRING,
+            array: false,
+            indexed: false
+          },
+          versions: {
+            existence: false,
+            type: LIST,
+            array: true,
+            indexed: false
+          }
+        },
+        direction: in,
+        labels: [ROOT_MODULE]
+      },
+      HAS_DECORATOR_DETAILS: {
+        count: 3,
+        properties: {},
+        direction: in,
+        labels: [FUNCTION]
+      },
+      HAS_SOURCE: {
+        count: 0,
+        properties: {},
+        direction: out,
+        labels: [__Entity__, SOURCE, version_3_0_0, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0]
+      },
+      HAS_SUBMODULE: {
+        count: 32,
+        properties: {},
+        direction: out,
+        labels: [__Entity__, MODULE, version_4_8_0, version_5_10_0, version_5_8_0, version_4_0_0]
+      },
+      HAS_FUNCTION: {
+        count: 7,
+        properties: {},
+        direction: in,
+        labels: [ROOT_MODULE, MODULE, version_3_0_0, version_4_0_0]
+      }
+    },
+    type: node,
+    properties: {
+      code: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      },
+      __name__: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      },
+      docstring: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      },
+      signature: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      },
+      name: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      },
+      NEW_INHERITED_ENTITIES: {
+        existence: false,
+        type: LIST,
+        indexed: false,
+        unique: false
+      },
+      content_hash: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      },
+      line_start: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      },
+      value: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      },
+      line_end: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      }
+    },
+    labels: []
+  },
+  version_4_8_0: {
+    count: 77013,
+    relationships: {
+      HAS_IMPORT_DETAILS: {
+        count: 0,
+        properties: {},
+        direction: out,
+        labels: [__Entity__, IMPORT_DETAILS, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0]
+      },
+      INHERITS: {
+        count: 2028,
+        properties: {
+          versions: {
+            existence: false,
+            type: LIST,
+            array: true,
+            indexed: false
+          }
+        },
+        direction: out,
+        labels: [__Entity__, CLASS, version_3_0_0, PUBLIC, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0, version_2_0_9]
+      },
+      HAS_CLASS: {
+        count: 0,
+        properties: {},
+        direction: out,
+        labels: [__Entity__, CLASS, PUBLIC, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0]
+      },
+      HAS_METHOD: {
+        count: 0,
+        properties: {},
+        direction: out,
+        labels: [__Entity__, METHOD, version_3_0_0, PUBLIC, DUNDER, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0]
+      },
+      INHERITS_METHOD: {
+        count: 0,
+        properties: {
+          name: {
+            existence: false,
+            type: STRING,
+            array: false,
+            indexed: false
+          },
+          versions: {
+            existence: false,
+            type: LIST,
+            array: true,
+            indexed: false
+          }
+        },
+        direction: out,
+        labels: [__Entity__, METHOD, version_3_0_0, PUBLIC, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0, DUNDER, version_2_0_9, PROTECTED]
+      },
+      HAS_RESOLVED_SIGNATURE: {
+        count: 0,
+        properties: {},
+        direction: out,
+        labels: [__Entity__, RESOLVED_SIGNATURE, version_3_0_0, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0]
+      },
+      EXPOSES: {
+        count: 7,
+        properties: {
+          name: {
+            existence: false,
+            type: STRING,
+            array: false,
+            indexed: false
+          },
+          versions: {
+            existence: false,
+            type: LIST,
+            array: true,
+            indexed: false
+          }
+        },
+        direction: in,
+        labels: [ROOT_MODULE]
+      },
+      HAS_DECORATOR_DETAILS: {
+        count: 3,
+        properties: {},
+        direction: in,
+        labels: [FUNCTION]
+      },
+      HAS_SOURCE: {
+        count: 0,
+        properties: {},
+        direction: out,
+        labels: [__Entity__, SOURCE, version_3_0_0, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0]
+      },
+      HAS_SUBMODULE: {
+        count: 29,
+        properties: {},
+        direction: out,
+        labels: [__Entity__, MODULE, version_4_8_0, version_5_10_0, version_5_8_0, version_4_0_0]
+      },
+      HAS_FUNCTION: {
+        count: 7,
+        properties: {},
+        direction: in,
+        labels: [ROOT_MODULE, MODULE, version_3_0_0, version_4_0_0]
+      }
+    },
+    type: node,
+    properties: {
+      code: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      },
+      __name__: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      },
+      docstring: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      },
+      signature: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      },
+      name: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      },
+      NEW_INHERITED_ENTITIES: {
+        existence: false,
+        type: LIST,
+        indexed: false,
+        unique: false
+      },
+      content_hash: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      },
+      line_start: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      },
+      value: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      },
+      line_end: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      }
+    },
+    labels: []
+  },
+  HAS_IMPORT_DETAILS: {
+    count: 16080,
+    type: relationship,
+    properties: {}
+  },
+  version_5_10_0: {
+    count: 89078,
+    relationships: {
+      HAS_IMPORT_DETAILS: {
+        count: 0,
+        properties: {},
+        direction: out,
+        labels: [__Entity__, IMPORT_DETAILS, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0]
+      },
+      HAS_CLASS: {
+        count: 0,
+        properties: {},
+        direction: out,
+        labels: [__Entity__, CLASS, PUBLIC, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0]
+      },
+      INHERITS: {
+        count: 0,
+        properties: {
+          versions: {
+            existence: false,
+            type: LIST,
+            array: true,
+            indexed: false
+          }
+        },
+        direction: out,
+        labels: [__Entity__, CLASS, PUBLIC, version_py_3_13_11, version_3_0_0, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0]
+      },
+      HAS_METHOD: {
+        count: 0,
+        properties: {},
+        direction: out,
+        labels: [__Entity__, METHOD, PUBLIC, DUNDER, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0, PROTECTED, GENERATOR]
+      },
+      INHERITS_METHOD: {
+        count: 0,
+        properties: {
+          name: {
+            existence: false,
+            type: STRING,
+            array: false,
+            indexed: false
+          },
+          versions: {
+            existence: false,
+            type: LIST,
+            array: true,
+            indexed: false
+          }
+        },
+        direction: out,
+        labels: [__Entity__, METHOD, version_3_0_0, PUBLIC, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0, DUNDER, PROTECTED]
+      },
+      HAS_RESOLVED_SIGNATURE: {
+        count: 0,
+        properties: {},
+        direction: out,
+        labels: [__Entity__, RESOLVED_SIGNATURE, version_3_0_0, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0]
+      },
+      EXPOSES: {
+        count: 7,
+        properties: {
+          name: {
+            existence: false,
+            type: STRING,
+            array: false,
+            indexed: false
+          },
+          versions: {
+            existence: false,
+            type: LIST,
+            array: true,
+            indexed: false
+          }
+        },
+        direction: in,
+        labels: [ROOT_MODULE]
+      },
+      HAS_DECORATOR_DETAILS: {
+        count: 3,
+        properties: {},
+        direction: in,
+        labels: [FUNCTION]
+      },
+      HAS_SOURCE: {
+        count: 0,
+        properties: {},
+        direction: out,
+        labels: [__Entity__, SOURCE, version_3_0_0, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0]
+      },
+      HAS_SUBMODULE: {
+        count: 34,
+        properties: {},
+        direction: out,
+        labels: [__Entity__, MODULE, version_4_8_0, version_5_10_0, version_5_8_0, version_4_0_0]
+      },
+      HAS_FUNCTION: {
+        count: 7,
+        properties: {},
+        direction: in,
+        labels: [ROOT_MODULE, MODULE, version_3_0_0, version_4_0_0]
+      }
+    },
+    type: node,
+    properties: {
+      code: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      },
+      __name__: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      },
+      docstring: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      },
+      signature: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      },
+      name: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      },
+      NEW_INHERITED_ENTITIES: {
+        existence: false,
+        type: LIST,
+        indexed: false,
+        unique: false
+      },
+      content_hash: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      },
+      line_start: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      },
+      value: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      },
+      line_end: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      }
+    },
+    labels: []
+  },
+  IMPORT_DETAILS: {
+    count: 16080,
+    relationships: {
+      HAS_IMPORT_DETAILS: {
+        count: 95,
+        properties: {},
+        direction: in,
+        labels: [__Entity__, ROOT_MODULE, MODULE, version_3_0_0, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0]
+      }
+    },
+    type: node,
+    properties: {
+      name: {
+        existence: false,
+        type: STRING,
+        indexed: true,
+        unique: false
+      },
+      content_hash: {
+        existence: false,
+        type: STRING,
+        indexed: true,
+        unique: true
+      },
+      value: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      }
+    },
+    labels: [__Entity__, version_4_0_0]
+  },
+  version_3_0_0: {
+    count: 309,
+    relationships: {
+      HAS_IMPORT_DETAILS: {
+        count: 0,
+        properties: {},
+        direction: out,
+        labels: [__Entity__, IMPORT_DETAILS, version_3_0_0, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0]
+      },
+      HAS_CLASS: {
+        count: 0,
+        properties: {},
+        direction: out,
+        labels: [__Entity__, CLASS, version_3_0_0, PUBLIC, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0]
+      },
+      INHERITS: {
+        count: 16542,
+        properties: {
+          versions: {
+            existence: false,
+            type: LIST,
+            array: true,
+            indexed: false
+          }
+        },
+        direction: out,
+        labels: [__Entity__, CLASS, version_3_0_0, PUBLIC, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0]
+      },
+      HAS_METHOD: {
+        count: 0,
+        properties: {},
+        direction: out,
+        labels: [__Entity__, METHOD, version_3_0_0, PUBLIC, DUNDER, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0]
+      },
+      INHERITS_METHOD: {
+        count: 0,
+        properties: {
+          name: {
+            existence: false,
+            type: STRING,
+            array: false,
+            indexed: false
+          },
+          versions: {
+            existence: false,
+            type: LIST,
+            array: true,
+            indexed: false
+          }
+        },
+        direction: out,
+        labels: [__Entity__, METHOD, version_3_0_0, PUBLIC, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0]
+      },
+      HAS_RESOLVED_SIGNATURE: {
+        count: 0,
+        properties: {},
+        direction: out,
+        labels: [__Entity__, RESOLVED_SIGNATURE, version_3_0_0, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0]
+      },
+      HAS_SOURCE: {
+        count: 0,
+        properties: {},
+        direction: out,
+        labels: [__Entity__, SOURCE, version_3_0_0, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0]
+      },
+      HAS_SUBMODULE: {
+        count: 0,
+        properties: {},
+        direction: out,
+        labels: [__Entity__, MODULE, version_3_0_0, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0]
+      },
+      HAS_FUNCTION: {
+        count: 0,
+        properties: {},
+        direction: out,
+        labels: [__Entity__, FUNCTION, version_3_0_0, PUBLIC, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0, PROTECTED]
+      }
+    },
+    type: node,
+    properties: {
+      code: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      },
+      __name__: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      },
+      docstring: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      },
+      signature: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      },
+      name: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      },
+      content_hash: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      },
+      line_start: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      },
+      value: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      },
+      line_end: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      }
+    },
+    labels: []
+  },
+  FUNCTION: {
+    count: 222,
+    relationships: {
+      HAS_RESOLVED_SIGNATURE: {
+        count: 0,
+        properties: {},
+        direction: out,
+        labels: [__Entity__, RESOLVED_SIGNATURE, version_3_0_0, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0]
+      },
+      HAS_DECORATOR_DETAILS: {
+        count: 0,
+        properties: {},
+        direction: out,
+        labels: [__Entity__, DECORATOR_DETAILS, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0]
+      },
+      HAS_SOURCE: {
+        count: 0,
+        properties: {},
+        direction: out,
+        labels: [__Entity__, SOURCE, version_3_0_0, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0]
+      },
+      HAS_FUNCTION: {
+        count: 7,
+        properties: {},
+        direction: in,
+        labels: [ROOT_MODULE, MODULE, version_3_0_0, version_4_0_0]
+      }
+    },
+    type: node,
+    properties: {
+      name: {
+        existence: false,
+        type: STRING,
+        indexed: true,
+        unique: false
+      },
+      content_hash: {
+        existence: false,
+        type: STRING,
+        indexed: true,
+        unique: true
+      },
+      __name__: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      }
+    },
+    labels: [__Entity__, version_3_0_0, PUBLIC, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0]
+  },
+  DUNDER: {
+    count: 18573,
+    relationships: {
+      INHERITS_METHOD: {
+        count: 862,
+        properties: {
+          name: {
+            existence: false,
+            type: STRING,
+            array: false,
+            indexed: false
+          },
+          versions: {
+            existence: false,
+            type: LIST,
+            array: true,
+            indexed: false
+          }
+        },
+        direction: in,
+        labels: [__Entity__, CLASS, PUBLIC, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0]
+      },
+      HAS_RESOLVED_SIGNATURE: {
+        count: 0,
+        properties: {},
+        direction: out,
+        labels: [__Entity__, RESOLVED_SIGNATURE, version_3_0_0, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0]
+      },
+      HAS_SOURCE: {
+        count: 0,
+        properties: {},
+        direction: out,
+        labels: [__Entity__, SOURCE, version_3_0_0, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0]
+      },
+      HAS_METHOD: {
+        count: 120,
+        properties: {},
+        direction: in,
+        labels: [__Entity__, CLASS, version_3_0_0, PUBLIC, version_4_0_0, version_2_0_9, version_4_8_0, version_5_10_0, version_5_8_0]
+      }
+    },
+    type: node,
+    properties: {
+      name: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      },
+      content_hash: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      },
+      __name__: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      }
+    },
+    labels: []
+  },
+  version_py_3_13_11: {
+    count: 14,
+    relationships: {
+      HAS_SOURCE: {
+        count: 0,
+        properties: {},
+        direction: out,
+        labels: [__Entity__, SOURCE, version_py_3_13_11]
+      },
+      INHERITS: {
+        count: 6,
+        properties: {
+          versions: {
+            existence: false,
+            type: LIST,
+            array: true,
+            indexed: false
+          }
+        },
+        direction: out,
+        labels: [__Entity__, CLASS, PUBLIC, version_py_3_13_11]
+      }
+    },
+    type: node,
+    properties: {
+      name: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      },
+      NEW_INHERITED_ENTITIES: {
+        existence: false,
+        type: LIST,
+        indexed: false,
+        unique: false
+      },
+      content_hash: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      },
+      __name__: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      },
+      docstring: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      }
+    },
+    labels: []
+  },
+  MODULE: {
+    count: 11885,
+    relationships: {
+      HAS_IMPORT_DETAILS: {
+        count: 0,
+        properties: {},
+        direction: out,
+        labels: [__Entity__, IMPORT_DETAILS, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0]
+      },
+      HAS_CLASS: {
+        count: 0,
+        properties: {},
+        direction: out,
+        labels: [__Entity__, CLASS, PUBLIC, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0]
+      },
+      EXPOSES: {
+        count: 7,
+        properties: {
+          name: {
+            existence: false,
+            type: STRING,
+            array: false,
+            indexed: false
+          },
+          versions: {
+            existence: false,
+            type: LIST,
+            array: true,
+            indexed: false
+          }
+        },
+        direction: in,
+        labels: [ROOT_MODULE]
+      },
+      HAS_SOURCE: {
+        count: 0,
+        properties: {},
+        direction: out,
+        labels: [__Entity__, SOURCE, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0]
+      },
+      HAS_SUBMODULE: {
+        count: 322,
+        properties: {},
+        direction: out,
+        labels: [__Entity__, MODULE, version_4_8_0, version_5_10_0, version_5_8_0, version_4_0_0]
+      },
+      HAS_FUNCTION: {
+        count: 0,
+        properties: {},
+        direction: out,
+        labels: [__Entity__, FUNCTION, PROTECTED, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0, PUBLIC]
+      }
+    },
+    type: node,
+    properties: {
+      name: {
+        existence: false,
+        type: STRING,
+        indexed: true,
+        unique: false
+      },
+      content_hash: {
+        existence: false,
+        type: STRING,
+        indexed: true,
+        unique: true
+      },
+      __name__: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      }
+    },
+    labels: [__Entity__, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0]
+  },
+  INHERITS: {
+    count: 18559,
+    type: relationship,
+    properties: {
+      versions: {
+        existence: false,
+        type: LIST,
+        array: true,
+        indexed: false
+      }
+    }
+  },
+  __Entity__: {
+    count: 162270,
+    relationships: {
+      HAS_IMPORT_DETAILS: {
+        count: 0,
+        properties: {},
+        direction: out,
+        labels: [__Entity__, IMPORT_DETAILS, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0]
+      },
+      INHERITS: {
+        count: 0,
+        properties: {
+          versions: {
+            existence: false,
+            type: LIST,
+            array: true,
+            indexed: false
+          }
+        },
+        direction: out,
+        labels: [__Entity__, CLASS, version_3_0_0, PUBLIC, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0, version_py_3_13_11]
+      },
+      HAS_CLASS: {
+        count: 0,
+        properties: {},
+        direction: out,
+        labels: [__Entity__, CLASS, PUBLIC, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0]
+      },
+      HAS_METHOD: {
+        count: 0,
+        properties: {},
+        direction: out,
+        labels: [__Entity__, METHOD, PUBLIC, DUNDER, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0]
+      },
+      INHERITS_METHOD: {
+        count: 0,
+        properties: {
+          name: {
+            existence: false,
+            type: STRING,
+            array: false,
+            indexed: false
+          },
+          versions: {
+            existence: false,
+            type: LIST,
+            array: true,
+            indexed: false
+          }
+        },
+        direction: out,
+        labels: [__Entity__, METHOD, version_3_0_0, PUBLIC, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0, DUNDER, PROTECTED]
+      },
+      HAS_RESOLVED_SIGNATURE: {
+        count: 0,
+        properties: {},
+        direction: out,
+        labels: [__Entity__, RESOLVED_SIGNATURE, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0]
+      },
+      EXPOSES: {
+        count: 7,
+        properties: {
+          name: {
+            existence: false,
+            type: STRING,
+            array: false,
+            indexed: false
+          },
+          versions: {
+            existence: false,
+            type: LIST,
+            array: true,
+            indexed: false
+          }
+        },
+        direction: in,
+        labels: [ROOT_MODULE]
+      },
+      HAS_DECORATOR_DETAILS: {
+        count: 3,
+        properties: {},
+        direction: in,
+        labels: [FUNCTION]
+      },
+      HAS_SOURCE: {
+        count: 0,
+        properties: {},
+        direction: out,
+        labels: [__Entity__, SOURCE, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0, version_py_3_13_11]
+      },
+      HAS_SUBMODULE: {
+        count: 13,
+        properties: {},
+        direction: out,
+        labels: [__Entity__, MODULE, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0]
+      },
+      HAS_FUNCTION: {
+        count: 7,
+        properties: {},
+        direction: in,
+        labels: [ROOT_MODULE, MODULE, version_3_0_0, version_4_0_0]
+      }
+    },
+    type: node,
+    properties: {
+      code: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      },
+      __name__: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      },
+      docstring: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      },
+      signature: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      },
+      name: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      },
+      NEW_INHERITED_ENTITIES: {
+        existence: false,
+        type: LIST,
+        indexed: false,
+        unique: false
+      },
+      content_hash: {
+        existence: false,
+        type: STRING,
+        indexed: true,
+        unique: true
+      },
+      line_start: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      },
+      value: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      },
+      line_end: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      }
+    },
+    labels: [RESOLVED_SIGNATURE, version_3_0_0, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0]
+  },
+  SOURCE: {
+    count: 77047,
+    relationships: {
+      HAS_SOURCE: {
+        count: 499,
+        properties: {},
+        direction: in,
+        labels: [__Entity__, ROOT_MODULE, MODULE, FUNCTION, CLASS, METHOD, version_3_0_0, PUBLIC, DUNDER, PROTECTED, version_4_0_0, GENERATOR, version_py_3_13_11, version_2_0_9, version_4_8_0, version_5_10_0, version_5_8_0]
+      }
+    },
+    type: node,
+    properties: {
+      code: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      },
+      docstring: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      },
+      signature: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      },
+      name: {
+        existence: false,
+        type: STRING,
+        indexed: true,
+        unique: false
+      },
+      content_hash: {
+        existence: false,
+        type: STRING,
+        indexed: true,
+        unique: true
+      },
+      line_start: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      },
+      line_end: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      }
+    },
+    labels: [__Entity__, version_3_0_0]
+  },
+  version_4_0_0: {
+    count: 45467,
+    relationships: {
+      HAS_IMPORT_DETAILS: {
+        count: 0,
+        properties: {},
+        direction: out,
+        labels: [__Entity__, IMPORT_DETAILS, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0]
+      },
+      INHERITS: {
+        count: 0,
+        properties: {
+          versions: {
+            existence: false,
+            type: LIST,
+            array: true,
+            indexed: false
+          }
+        },
+        direction: out,
+        labels: [__Entity__, CLASS, PUBLIC, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0, version_3_0_0]
+      },
+      HAS_CLASS: {
+        count: 0,
+        properties: {},
+        direction: out,
+        labels: [__Entity__, CLASS, PUBLIC, version_4_0_0]
+      },
+      HAS_METHOD: {
+        count: 0,
+        properties: {},
+        direction: out,
+        labels: [__Entity__, METHOD, PUBLIC, DUNDER, version_4_0_0, PROTECTED, version_4_8_0, version_5_10_0, version_5_8_0]
+      },
+      INHERITS_METHOD: {
+        count: 0,
+        properties: {
+          name: {
+            existence: false,
+            type: STRING,
+            array: false,
+            indexed: false
+          },
+          versions: {
+            existence: false,
+            type: LIST,
+            array: true,
+            indexed: false
+          }
+        },
+        direction: out,
+        labels: [__Entity__, METHOD, PUBLIC, DUNDER, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0, PROTECTED, version_3_0_0]
+      },
+      HAS_RESOLVED_SIGNATURE: {
+        count: 0,
+        properties: {},
+        direction: out,
+        labels: [__Entity__, RESOLVED_SIGNATURE, version_3_0_0, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0]
+      },
+      EXPOSES: {
+        count: 7,
+        properties: {
+          name: {
+            existence: false,
+            type: STRING,
+            array: false,
+            indexed: false
+          },
+          versions: {
+            existence: false,
+            type: LIST,
+            array: true,
+            indexed: false
+          }
+        },
+        direction: in,
+        labels: [ROOT_MODULE]
+      },
+      HAS_DECORATOR_DETAILS: {
+        count: 3,
+        properties: {},
+        direction: in,
+        labels: [FUNCTION]
+      },
+      HAS_SOURCE: {
+        count: 0,
+        properties: {},
+        direction: out,
+        labels: [__Entity__, SOURCE, version_3_0_0, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0]
+      },
+      HAS_SUBMODULE: {
+        count: 64,
+        properties: {},
+        direction: out,
+        labels: [__Entity__, MODULE, version_4_8_0, version_5_10_0, version_5_8_0, version_4_0_0]
+      },
+      HAS_FUNCTION: {
+        count: 0,
+        properties: {},
+        direction: out,
+        labels: [__Entity__, FUNCTION, PUBLIC, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0]
+      }
+    },
+    type: node,
+    properties: {
+      code: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      },
+      __name__: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      },
+      docstring: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      },
+      signature: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      },
+      name: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      },
+      content_hash: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      },
+      line_start: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      },
+      value: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      },
+      line_end: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      }
+    },
+    labels: []
+  },
+  METHOD: {
+    count: 18986,
+    relationships: {
+      INHERITS_METHOD: {
+        count: 862,
+        properties: {
+          name: {
+            existence: false,
+            type: STRING,
+            array: false,
+            indexed: false
+          },
+          versions: {
+            existence: false,
+            type: LIST,
+            array: true,
+            indexed: false
+          }
+        },
+        direction: in,
+        labels: [__Entity__, CLASS, version_3_0_0, PUBLIC, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0]
+      },
+      HAS_RESOLVED_SIGNATURE: {
+        count: 0,
+        properties: {},
+        direction: out,
+        labels: [__Entity__, RESOLVED_SIGNATURE, version_3_0_0, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0]
+      },
+      HAS_SOURCE: {
+        count: 0,
+        properties: {},
+        direction: out,
+        labels: [__Entity__, SOURCE, version_3_0_0, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0]
+      },
+      HAS_METHOD: {
+        count: 120,
+        properties: {},
+        direction: in,
+        labels: [__Entity__, CLASS, version_3_0_0, PUBLIC, version_4_0_0, version_2_0_9, version_4_8_0, version_5_10_0, version_5_8_0]
+      }
+    },
+    type: node,
+    properties: {
+      name: {
+        existence: false,
+        type: STRING,
+        indexed: true,
+        unique: false
+      },
+      content_hash: {
+        existence: false,
+        type: STRING,
+        indexed: true,
+        unique: true
+      },
+      __name__: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      }
+    },
+    labels: [__Entity__, version_3_0_0, PUBLIC, DUNDER, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0]
+  },
+  PUBLIC: {
+    count: 37593,
+    relationships: {
+      INHERITS: {
+        count: 7,
+        properties: {
+          versions: {
+            existence: false,
+            type: LIST,
+            array: true,
+            indexed: false
+          }
+        },
+        direction: out,
+        labels: [__Entity__, CLASS, version_3_0_0, PUBLIC, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0, version_py_3_13_11]
+      },
+      HAS_CLASS: {
+        count: 120,
+        properties: {},
+        direction: in,
+        labels: [__Entity__, MODULE, version_3_0_0, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0]
+      },
+      HAS_METHOD: {
+        count: 0,
+        properties: {},
+        direction: out,
+        labels: [__Entity__, METHOD, version_3_0_0, PUBLIC, DUNDER, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0]
+      },
+      INHERITS_METHOD: {
+        count: 0,
+        properties: {
+          name: {
+            existence: false,
+            type: STRING,
+            array: false,
+            indexed: false
+          },
+          versions: {
+            existence: false,
+            type: LIST,
+            array: true,
+            indexed: false
+          }
+        },
+        direction: out,
+        labels: [__Entity__, METHOD, version_3_0_0, PUBLIC, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0, DUNDER, PROTECTED]
+      },
+      HAS_RESOLVED_SIGNATURE: {
+        count: 0,
+        properties: {},
+        direction: out,
+        labels: [__Entity__, RESOLVED_SIGNATURE, version_3_0_0, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0]
+      },
+      HAS_SOURCE: {
+        count: 0,
+        properties: {},
+        direction: out,
+        labels: [__Entity__, SOURCE, version_3_0_0, version_4_0_0, version_4_8_0, version_5_10_0, version_5_8_0]
+      },
+      HAS_FUNCTION: {
+        count: 31,
+        properties: {},
+        direction: in,
+        labels: [MODULE, version_3_0_0, version_4_0_0]
+      }
+    },
+    type: node,
+    properties: {
+      name: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      },
+      NEW_INHERITED_ENTITIES: {
+        existence: false,
+        type: LIST,
+        indexed: false,
+        unique: false
+      },
+      content_hash: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      },
+      __name__: {
+        existence: false,
+        type: STRING,
+        indexed: false,
+        unique: false
+      }
+    },
+    labels: []
+  },
+  INHERITS_METHOD: {
+    count: 144514,
+    type: relationship,
+    properties: {
+      name: {
+        existence: false,
+        type: STRING,
+        array: false,
+        indexed: false
+      },
+      versions: {
+        existence: false,
+        type: LIST,
+        array: true,
+        indexed: false
+      }
+    }
+  }
+}"

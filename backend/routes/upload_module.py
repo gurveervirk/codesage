@@ -1,4 +1,4 @@
-from backend.lib_sage.com_extractor import process_module
+from backend.core.com_extractor import process_module
 from fastapi import APIRouter, Request, HTTPException
 from backend.routes.models import ModuleUploadRequest
 import subprocess

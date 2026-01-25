@@ -8,7 +8,7 @@ from llama_index.core.graph_stores.types import (
 )
 from llama_index.core import Settings
 from typing import Any, Dict, List, Optional, Tuple
-from ..com_extractor import Entity, Relationship
+from ...com_extractor import Entity, Relationship
 import logging
 import neo4j
 import hashlib
@@ -946,7 +946,7 @@ class COMStore(Neo4jPropertyGraphStore):
             other_relations (Dict[str, List[Tuple]]): Dictionary containing INHERITS, IMPORTS, EXPOSES, and PUBLISHES relations.
                 Each tuple is (from_content_hash, ExternalEntityRef)
         """
-        from ..com_extractor import ExternalEntityRef
+        from ...com_extractor import ExternalEntityRef
         
         inherits_relations = other_relations.get("INHERITS", [])
         imports_relations = other_relations.get("IMPORTS", [])

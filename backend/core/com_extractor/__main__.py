@@ -217,7 +217,7 @@ def main():
         # Categorize entities and relations for final summary
         if args.mode == "package":
             # For package mode, we need to determine the base module name(s)
-            from backend.lib_sage.com_extractor.core import get_top_level_modules_for_package
+            from backend.core.com_extractor.core import get_top_level_modules_for_package
             top_level_modules = get_top_level_modules_for_package(args.name)
             
             # Categorize as internal if belongs to any top-level module

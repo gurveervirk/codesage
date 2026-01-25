@@ -6,7 +6,7 @@ from mcp.server.fastmcp import FastMCP
 backend_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
 sys.path.insert(0, backend_path)
 
-from lib_sage.com_store import COMStore, COMStoreTools
+from core.com_store.graph import COMStore, COMStoreTools
 from config import config
 
 # Initialize FastMCP server

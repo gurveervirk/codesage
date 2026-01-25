@@ -23,7 +23,7 @@ from llama_index.core.memory import (
     StaticMemoryBlock,
 )
 from llama_index.core import Settings
-from backend.lib_sage.sage_workflow.events import (
+from backend.core.sage_workflow.events import (
     ReplanEvent,
     OrchestrationEvent,
     RootModuleSearchEvent,
@@ -47,7 +47,7 @@ from backend.utils.wkflw_prompts import (
     TODO_COMMENTS,
     FORCE_GIVEN_CODE_ENTITIES_ONLY,
 )
-from backend.lib_sage.com_store import (
+from backend.core.com_store import (
     COMStore
 )
 from backend.utils.models import (

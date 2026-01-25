@@ -1,4 +1,4 @@
-from typing_extensions import Dict, List, Optional, Tuple
+from typing_extensions import Dict, List, Optional, Tuple, Any
 from pydantic import BaseModel
 import hashlib
 import re
@@ -110,3 +110,15 @@ class Relationship(BaseModel):
 
     def __repr__(self):
         return f"{self.from_entity} --{self.label}--> {self.to_entity}"
+
+
+class ExtractionResult(BaseModel):
+    """
+    Result of an extraction process containing entities, relationships, and other metadata.
+    """
+    entities: List[Entity]
+    relations: List[Relationship]
+    other_relations: Dict[str, Any]
+
+    class Config:
+        arbitrary_types_allowed = True

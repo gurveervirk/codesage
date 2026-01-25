@@ -34,7 +34,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 try:
-    from lib_sage.com_store import COMStore as _COMStore
+    from lib_sage.com_store.graph import COMStore as _COMStore
     COMStore = _COMStore
 except ImportError:
     COMStore = None  # Placeholder if import fails

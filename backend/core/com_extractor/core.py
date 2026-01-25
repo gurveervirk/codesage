@@ -19,7 +19,7 @@ from .utils.metadata_utils import (
     PackageNotFoundError
 )
 
-from .models import Entity, Relationship
+from .models import Entity, Relationship, ExtractionResult
 from .module_processor import process_module, _parse_name_and_version
 from .utils.alias_finder import find_aliases
 
@@ -97,7 +97,7 @@ def process_package(
     package_name: str,
     version: Optional[str] = None,
     install_method: str = "pip"
-) -> Tuple[List[Entity], List[Relationship], Dict]:
+) -> ExtractionResult:
     """
     **PRIMARY API** - Process all top-level modules associated with a package name.
     
@@ -111,7 +111,7 @@ def process_package(
         install_method (str): Method to use for installation: 'pip', 'uv', or 'conda'. Default is 'pip'.
         
     Returns:
-        Tuple[List[Entity], List[Relationship], Dict]: Combined entities, relations, and other relations
+        ExtractionResult: Combined entities, relations, and other relations
             from all top-level modules associated with the package.
     """
     pkg_name, parsed_version = _parse_name_and_version(package_name, version)
@@ -150,10 +150,10 @@ def process_package(
                 py_version = f"{sys.version_info.major}.{sys.version_info.minor}"
                 logging.error(f"Package '{install_spec}' may not be compatible with Python {py_version}")
                 logging.error(f"Installation error details: {error_output}")
-            return [], [], {
+            return ExtractionResult(entities=[], relations=[], other_relations={
                 "INHERITS": [], "EXPOSES": [], "PUBLISHES": [],
                 "EXPOSES_ALL": [], "PUBLISHES_ALL": []
-            }
+            })
     
     # Verify installed version matches requested version
     if version:
@@ -179,7 +179,7 @@ def process_package(
                 installed_version = get_package_version(pkg_name)
                 if installed_version != version:
                     logging.error(f"Failed to install version {version}. Current version: {installed_version}")
-                    return [], [], {"INHERITS": [], "EXPOSES": [], "PUBLISHES": []}
+                    return ExtractionResult(entities=[], relations=[], other_relations={"INHERITS": [], "EXPOSES": [], "PUBLISHES": []})
                 logging.info(f"Successfully installed {pkg_name}=={version}")
         except subprocess.CalledProcessError as e:
             error_output = getattr(e, 'stderr', None) or str(e)
@@ -193,25 +193,25 @@ def process_package(
                 py_version = f"{sys.version_info.major}.{sys.version_info.minor}"
                 logging.error(f"Package '{pkg_name}=={version}' may not be compatible with Python {py_version}")
                 logging.error(f"Try using a different Python version or a different package version")
-            return [], [], {
+            return ExtractionResult(entities=[], relations=[], other_relations={
                 "INHERITS": [], "EXPOSES": [], "PUBLISHES": [],
                 "EXPOSES_ALL": [], "PUBLISHES_ALL": []
-            }
+            })
         except PackageNotFoundError:
             logging.error(f"Package '{pkg_name}' metadata not found")
-            return [], [], {
+            return ExtractionResult(entities=[], relations=[], other_relations={
                 "INTERNAL_INHERITS": [], "EXTERNAL_INHERITS": [], "EXPOSES": [], "PUBLISHES": [],
                 "EXPOSES_ALL": [], "PUBLISHES_ALL": []
-            }
+            })
     
     # Get top-level modules after version verification
     top_level_modules = get_top_level_modules_for_package(pkg_name)
     if not top_level_modules:
         logging.error(f"Package '{pkg_name}' not found after installation.")
-        return [], [], {
+        return ExtractionResult(entities=[], relations=[], other_relations={
             "INTERNAL_INHERITS": [], "EXTERNAL_INHERITS": [], "EXPOSES": [], "PUBLISHES": [],
             "EXPOSES_ALL": [], "PUBLISHES_ALL": []
-        }
+        })
     
     # Process all top-level modules and combine results
     all_entities: List[Entity] = []
@@ -259,7 +259,10 @@ def process_package(
     for top_level_module in top_level_modules:
         logging.info(f"Processing top-level module '{top_level_module}' for package '{pkg_name}'...")
         try:
-            entities, relations, other_relations = process_module(top_level_module, version=version)
+            result = process_module(top_level_module, version=version)
+            entities = result.entities
+            relations = result.relations
+            other_relations = result.other_relations
             
             # Link DISTRIBUTION_PACKAGE to IMPORT_PACKAGE (root of the module)
             if dist_entity and entities:
@@ -306,4 +309,4 @@ def process_package(
     logging.info(f"Completed processing package '{pkg_name}': "
                 f"{len(all_entities)} total entities, {len(all_relations)} total relations")
     
-    return all_entities, all_relations, combined_other_relations
+    return ExtractionResult(entities=all_entities, relations=all_relations, other_relations=combined_other_relations)
