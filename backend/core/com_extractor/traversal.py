@@ -193,7 +193,7 @@ def traverse_recursive(
         import_as_aliases = get_import_as_aliases(source, obj_path)
         # Process import statements with full context to get EXPOSES/PUBLISHES relationships
         exported_names = getattr(obj, "__all__", None)
-        import_details, _, relations = _process_import_statements(
+        import_details, _, imported_relations_dict = _process_import_statements(
             import_statements,
             entity_name=obj_path,
             entity_content_hash=entity.content_hash,
@@ -206,10 +206,10 @@ def traverse_recursive(
         
         # Add EXPOSES and PUBLISHES relationships to other_relations
         if other_relations is not None:
-            other_relations["EXPOSES"].update(relations["EXPOSES"])
-            other_relations["PUBLISHES"].update(relations["PUBLISHES"])
-            other_relations["EXPOSES_ALL"].update(relations["EXPOSES_ALL"])
-            other_relations["PUBLISHES_ALL"].update(relations["PUBLISHES_ALL"])
+            other_relations["EXPOSES"].update(imported_relations_dict["EXPOSES"])
+            other_relations["PUBLISHES"].update(imported_relations_dict["PUBLISHES"])
+            other_relations["EXPOSES_ALL"].update(imported_relations_dict["EXPOSES_ALL"])
+            other_relations["PUBLISHES_ALL"].update(imported_relations_dict["PUBLISHES_ALL"])
     
     # For CLASS entities, get decorators
     decorators = []
@@ -441,11 +441,6 @@ def _process_external_parent_classes(
         
         # Get the parent class FQN
         parent_fqn = parent_ref.name
-        parent_root_module = parent_fqn.split('.')[0]
-        
-        # Skip if it's the same module we're currently processing
-        if parent_root_module == current_module_name.split('.')[0]:
-            continue
         
         parent_version = parent_ref.version
         class_key = f"{parent_fqn}@{parent_version}" if parent_version else parent_fqn

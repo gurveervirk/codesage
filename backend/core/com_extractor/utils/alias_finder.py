@@ -1,7 +1,6 @@
-from collections import deque
+from collections import deque, defaultdict
 from typing import Dict, List, Set, Tuple
 
-import networkx as nx
 
 from ..models import Entity, Relationship
 
@@ -26,25 +25,33 @@ def find_aliases(
     hash_to_entity = {e.content_hash: e for e in entities}
     fqn_to_entity = {e.name: e for e in entities}
     
-    G = nx.DiGraph()
+    # Adjacency list: adj[u][v] = {'label': ..., 'type': ...}
+    adj = defaultdict(dict)
+    
+    # Store node attributes: nodes[u] = {'labels': ...}
+    nodes = {}
+    
+    # Track in-degree to find roots
+    in_degree = defaultdict(int)
     
     # Add nodes (restrict to essential types)
     valid_labels = {"DISTRIBUTION_PACKAGE", "IMPORT_PACKAGE", "MODULE", "CLASS", "METHOD", "FUNCTION"}
     for e in entities:
         if any(l in valid_labels for l in e.labels):
-            G.add_node(e.name, labels=e.labels)
+            nodes[e.name] = {'labels': e.labels}
         
     # Add structural relations (HAS_...)
     for rel in relations:
         u = rel.from_entity
         v = rel.to_entity
         
-        if u.name not in G or v.name not in G:
+        if u.name not in nodes or v.name not in nodes:
              continue
         
         simple_name = v.name.split('.')[-1]
         
-        G.add_edge(u.name, v.name, label=simple_name, type="canonical")
+        adj[u.name][v.name] = {'label': simple_name, 'type': "canonical"}
+        in_degree[v.name] += 1
 
     # Add other relations
     for rel_type, rel_list in other_relations.items():
@@ -60,18 +67,20 @@ def find_aliases(
                 continue
             v = fqn_to_entity[v_ref.name]
              
-            if u.name not in G or v.name not in G:
+            if u.name not in nodes or v.name not in nodes:
                 continue
 
             if "INHERITS" in rel_type:
-                G.add_edge(u.name, v.name, label=None, type="inherits")
+                adj[u.name][v.name] = {'label': None, 'type': "inherits"}
+                in_degree[v.name] += 1
                 
             elif "EXPOSES" in rel_type or "PUBLISHES" in rel_type:
                 alias_name = v_ref.alias
                 if not alias_name:
                     alias_name = v.name.split('.')[-1]
                 
-                G.add_edge(u.name, v.name, label=alias_name, type="alias")
+                adj[u.name][v.name] = {'label': alias_name, 'type': "alias"}
+                in_degree[v.name] += 1
 
     # Identify root nodes to start traversal
     start_nodes = []
@@ -82,19 +91,20 @@ def find_aliases(
     # Remove duplicates
     start_nodes = list(set(start_nodes))
     if not start_nodes and entities:
-        start_nodes = [n for n, d in G.in_degree() if d == 0]
+        # Find nodes with in-degree 0
+        start_nodes = [n for n in nodes if in_degree[n] == 0]
 
     # BFS Traversal to accumulate aliases
     aliases: Dict[str, Set[str]] = {e.name: set() for e in entities}
     
     # Pre-calculate defined members for blocking overrides
     # Scope: HAS_METHOD/HAS_CLASS from CLASS entities only
-    node_defined_members = {n: set() for n in G.nodes()}
+    node_defined_members = {n: set() for n in nodes}
     for rel in relations:
         u = rel.from_entity
         v = rel.to_entity
         
-        if u.name not in G: continue
+        if u.name not in nodes: continue
         
         if "CLASS" in u.labels:
              if rel.label in ["HAS_METHOD", "HAS_CLASS"]:
@@ -105,7 +115,7 @@ def find_aliases(
     # blocked_members: Members defined by subclasses that should be hidden
     queue = deque()
     for root in start_nodes:
-        if root not in G: continue
+        if root not in nodes: continue
         root_simple = root.split('.')[-1]
         queue.append((root, [root_simple], {root}, set(), False))
     
@@ -116,14 +126,14 @@ def find_aliases(
              alias_str = ".".join(parts)
              aliases[u].add(alias_str)
             
-        if u not in G:
+        if u not in nodes:
             continue
 
-        for v in G[u]:
+        # Get neighbors
+        for v, edge_data in adj.get(u, {}).items():
             if v in visited:
                 continue
             
-            edge_data = G[u][v]
             label = edge_data.get('label')
             edge_type = edge_data.get('type')
             
@@ -146,7 +156,7 @@ def find_aliases(
                         continue
                     
                     # BLOCKING: Private methods (strict double underscore) and Name Mangling
-                    v_node = G.nodes[v]
+                    v_node = nodes[v]
                     v_labels = v_node.get('labels', [])
                     
                     is_private = "PRIVATE" in v_labels or (label.startswith("__") and not label.endswith("__"))
@@ -154,7 +164,7 @@ def find_aliases(
                     if is_private:
                         # Private members are not inherited by raw name (Safety feature preventing accidental overrides)
                         # However, they are accessible via the mangled name of the defining class (u)
-                        if "CLASS" in G.nodes[u].get('labels', []):
+                        if "CLASS" in nodes[u].get('labels', []):
                              class_simple_name = u.split('.')[-1]
                              if not label.startswith(f"_{class_simple_name}__"):
                                  mangled_label = f"_{class_simple_name}{label}"
@@ -171,14 +181,14 @@ def find_aliases(
                     # (This is not inheritance, just regular access on the class that defines it)
                     # We add the mangled alias: _ClassName__privateMember so it can be resolved externally
                     
-                    v_node = G.nodes[v]
+                    v_node = nodes[v]
                     v_labels = v_node.get('labels', [])
                     is_private = "PRIVATE" in v_labels or (label.startswith("__") and not label.endswith("__"))
                     
                     if is_private and not is_inheriting:
                         # Extract class name from current node u
                         # u is the class defining the member v
-                        if "CLASS" in G.nodes[u].get('labels', []):
+                        if "CLASS" in nodes[u].get('labels', []):
                              class_simple_name = u.split('.')[-1]
                              # Don't mangle if it's already mangled
                              if not label.startswith(f"_{class_simple_name}__"):

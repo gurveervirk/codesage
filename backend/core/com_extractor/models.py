@@ -119,6 +119,7 @@ class ExtractionResult(BaseModel):
     entities: List[Entity]
     relations: List[Relationship]
     other_relations: Dict[str, Any]
+    aliases: Dict[str, List[str]] = {}
 
     class Config:
         arbitrary_types_allowed = True

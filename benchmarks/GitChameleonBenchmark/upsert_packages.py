@@ -20,6 +20,7 @@ import os
 import shutil
 import logging
 import argparse
+import traceback
 from pathlib import Path
 from typing import Dict, List, Optional
 from dotenv import load_dotenv
@@ -34,42 +35,70 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 try:
-    from lib_sage.com_store.graph import COMStore as _COMStore
-    COMStore = _COMStore
+    from core.com_store.graph.main import COMStore as _GraphStore
 except ImportError:
-    COMStore = None  # Placeholder if import fails
-    _COMStore = None
-    logger.warning("COMStore import failed, functionality will be limited. Error: ", exc_info=True)
+    _GraphStore = None
+        
+try:
+    from core.com_store.postgres.main import PostgresCOMStore as _PostgresStore
+except ImportError:
+    _PostgresStore = None
 
-# Global COMStore instance
-_com_store = None
+if not _GraphStore and not _PostgresStore:
+    logger.warning("Neither GraphStore nor PostgresStore could be imported.")
 
-
-def init_com_store(neo4j_config: Dict, batch_size: Optional[int] = None):
-    """Initialize or return the global COMStore instance."""
-    global _com_store
-    if _com_store is None:
-        logger.info(f"Initializing COMStore connection to {neo4j_config.get('url')}")
-        init_kwargs = {
-            'username': neo4j_config.get('username', 'neo4j'),
-            'password': neo4j_config.get('password', 'password'),
-            'url': neo4j_config.get('url', 'bolt://localhost:7687'),
-            'database': neo4j_config.get('database', 'neo4j'),
-        }
-        if batch_size is not None:
-            init_kwargs['batch_size'] = batch_size
-            logger.info(f"Initializing COMStore with custom batch_size: {batch_size}")
-        _com_store = COMStore(**init_kwargs)
-    return _com_store
+# Global Stores
+_stores = {}
 
 
-def close_com_store():
-    """Close the global COMStore connection."""
-    global _com_store
-    if _com_store is not None:
-        logger.info("Closing COMStore connection")
-        _com_store._driver.close()
-        _com_store = None
+def init_stores(config: Dict, targets: List[str] = None):
+    """Initialize enabled COMStores."""
+    global _stores
+    targets = targets or ['neo4j']
+    
+    # Initialize Neo4j
+    if 'neo4j' in targets and _GraphStore:
+        if 'neo4j' not in _stores:
+            logger.info(f"Initializing Neo4j COMStore connection to {config.get('neo4j_url')}")
+            init_kwargs = {
+                'username': config.get('neo4j_username', 'neo4j'),
+                'password': config.get('neo4j_password', 'password'),
+                'url': config.get('neo4j_url', 'bolt://localhost:7687'),
+                'database': config.get('neo4j_database', 'neo4j'),
+            }
+            if config.get('batch_size'):
+                init_kwargs['batch_size'] = config['batch_size']
+            _stores['neo4j'] = _GraphStore(**init_kwargs)
+            
+    # Initialize Postgres
+    if 'postgres' in targets and _PostgresStore:
+        if 'postgres' not in _stores:
+            logger.info(f"Initializing Postgres COMStore")
+            conn_str = config.get('postgres_url')
+            if not conn_str:
+                logger.warning("Postgres URL not provided, skipping Postgres initialization")
+            else:
+                pg_store = _PostgresStore(connection_string=conn_str)
+                try:
+                    logger.info("Ensuring Postgres schema exists...")
+                    pg_store.init_schema()
+                except Exception as e:
+                    logger.warning(f"Could not initialize Postgres schema: {e}")
+                _stores['postgres'] = pg_store
+    
+    return _stores
+
+
+def close_stores():
+    """Close all COMStore connections."""
+    global _stores
+    if 'neo4j' in _stores:
+        logger.info("Closing Neo4j connection")
+        try:
+            _stores['neo4j']._driver.close()
+        except:
+            pass
+    _stores = {}
 
 
 def load_version_info(version_info_path: Path) -> Dict:
@@ -263,7 +292,7 @@ def install_package(venv_path: Path, package_spec: str) -> bool:
     
     try:
         logger.info(f"Installing {package_spec}")
-        required_dependencies = ["pydantic"]
+        required_dependencies = ["pydantic", "packaging", "requests"]
         cmd = [str(python_exe), "-m", "pip", "install", "--quiet", package_spec, *required_dependencies]
         subprocess.run(
             cmd,
@@ -296,7 +325,7 @@ def run_extraction_in_venv(
         codesage_root: Path to CodeSage root directory
     
     Returns:
-        Tuple of (entities, relations, other_relations) or None if failed
+        Tuple of (entities, relations, other_relations, aliases) or None if failed
     """
     python_exe = get_venv_python(venv_path)
     
@@ -309,10 +338,17 @@ import os
 sys.path.insert(0, r"{codesage_root / 'backend'}")
 
 try:
-    from lib_sage.com_extractor import process_package
+    from core.com_extractor import process_package
     
     # Process the package
-    entities, relations, other_relations = process_package("{library}", version="{version}")
+    result = process_package("{library}", version="{version}")
+    
+    # Handle Result
+    # Assumes ExtractionResult object with attributes
+    entities = result.entities
+    relations = result.relations
+    other_relations = result.other_relations
+    aliases = getattr(result, "aliases", {{}})
     
     # Save results to a temporary file
     import json
@@ -321,7 +357,8 @@ try:
     results = {{
         'entities': entities,
         'relations': relations,
-        'other_relations': other_relations
+        'other_relations': other_relations,
+        'aliases': aliases
     }}
     
     # Serialize using pickle for complex objects
@@ -368,8 +405,15 @@ except Exception as e:
         with open(results_path, 'rb') as f:
             results = pickle.load(f)
         
-        logger.info(f"Extracted {len(results['entities'])} entities and {len(results['relations'])} relations")
-        return (results['entities'], results['relations'], results['other_relations'])
+        num_aliases = len(results.get('aliases', {}))
+        logger.info(f"Extracted {len(results['entities'])} entities, {len(results['relations'])} relations, {num_aliases} aliases")
+        
+        return (
+            results['entities'], 
+            results['relations'], 
+            results['other_relations'], 
+            results.get('aliases', {})
+        )
         
     except subprocess.TimeoutExpired:
         logger.error(f"Extraction timed out for {library}=={version}")
@@ -388,94 +432,102 @@ except Exception as e:
 def check_version_exists(
     library: str,
     version: str,
-    neo4j_config: Dict
+    config: Dict,
+    targets: List[str]
 ) -> bool:
     """
-    Check if a library version already exists in Neo4j.
-    
-    Args:
-        library: Library name
-        version: Library version
-        neo4j_config: Neo4j connection configuration
-    
-    Returns:
-        True if the version exists, False otherwise
+    Check if a library version already exists in the enabled databases.
+    Returns True only if it exists in ALL enabled targets.
     """
-    try:
-        # Use global COMStore instance
-        store = init_com_store(neo4j_config, batch_size=None)
-        
-        # Sanitize version label
-        version_label = f"version_{version.replace('.', '_').replace(':', '_').replace('-', '_')}"
-        
-        # Query to check if DISTRIBUTION_PACKAGE with this library name and version exists
-        check_query = """
-        MATCH (root:DISTRIBUTION_PACKAGE {name: $library_name})
-        WHERE $version_label IN labels(root)
-        RETURN count(root) > 0 AS exists
-        """
-        
-        result = store.structured_query(check_query, {
-            "library_name": library,
-            "version_label": version_label
-        })
-        
-        exists = result[0]['exists'] if result else False
-        
-        return exists
-        
-    except Exception as e:
-        logger.error(f"Error checking if {library}=={version} exists: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
+    stores = init_stores(config, targets)
+    exists_all = True
+    
+    # Check Neo4j
+    if 'neo4j' in stores:
+        try:
+            version_label = f"version_{version.replace('.', '_').replace(':', '_').replace('-', '_')}"
+            check_query = """
+            MATCH (root:DISTRIBUTION_PACKAGE {name: $library_name})
+            WHERE $version_label IN labels(root)
+            RETURN count(root) > 0 AS exists
+            """
+            result = stores['neo4j'].structured_query(check_query, {
+                "library_name": library,
+                "version_label": version_label
+            })
+            if not (result and result[0]['exists']):
+                exists_all = False
+        except Exception as e:
+            logger.error(f"Error checking neo4j for {library}=={version}: {e}")
+            exists_all = False
+
+    # Check Postgres
+    if 'postgres' in stores:
+        try:
+            # We check if the DISTRIBUTION_PACKAGE entity has this version in its versions array
+            pg_store = stores['postgres']
+            with pg_store._get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT 1 FROM entities WHERE name = %s AND type = 'DISTRIBUTION_PACKAGE' AND versions @> %s",
+                        (library, [version])
+                    )
+                    if not cur.fetchone():
+                        exists_all = False
+        except Exception as e:
+            logger.error(f"Error checking postgres for {library}=={version}: {e}")
+            exists_all = False
+            
+    return exists_all and len(stores) > 0
 
 
-def upload_to_neo4j(
+def upload_to_stores(
     entities: List,
     relations: List,
     other_relations: Dict,
+    aliases: Dict,
     library: str,
     version: str,
-    neo4j_config: Dict,
-    batch_size: Optional[int] = None
+    config: Dict,
+    targets: List[str]
 ) -> bool:
     """
-    Upload extracted entities to Neo4j.
-    
-    Args:
-        entities: List of Entity objects
-        relations: List of Relationship objects
-        other_relations: Dict of other relationship types
-        library: Library name
-        version: Library version
-        neo4j_config: Neo4j connection configuration
-        batch_size: Optional batch size for upserting entities and relations
-    
-    Returns:
-        True if successful, False otherwise
+    Upload extracted entities to enabled databases.
     """
-    try:
-        # Use global COMStore instance
-        store = init_com_store(neo4j_config, batch_size=batch_size)
-        
-        # Upload to Neo4j
-        logger.info(f"Uploading {len(entities)} entities to Neo4j for {library}=={version}")
-        store.upsert_to_neo4j(
-            module_name=library,
-            entities=entities,
-            relations=relations,
-            other_relations=other_relations,
-        )
-        
-        logger.info(f"Successfully uploaded {library}=={version} to Neo4j")
-        return True
-        
-    except Exception as e:
-        logger.error(f"Failed to upload to Neo4j: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
+    stores = init_stores(config, targets)
+    success = True
+    
+    # Upload to Neo4j
+    if 'neo4j' in stores:
+        try:
+            logger.info(f"Uploading to Neo4j for {library}=={version}")
+            stores['neo4j'].upsert_to_neo4j(
+                module_name=library,
+                entities=entities,
+                relations=relations,
+                other_relations=other_relations,
+            )
+        except Exception as e:
+            logger.error(f"Failed to upload to Neo4j: {e}")
+            traceback.print_exc()
+            success = False
+
+    # Upload to Postgres
+    if 'postgres' in stores:
+        try:
+            logger.info(f"Uploading to Postgres for {library}=={version}")
+            stores['postgres'].upsert_to_postgres(
+                entities=entities,
+                other_relations=other_relations,
+                aliases=aliases, 
+                version=version
+            )
+        except Exception as e:
+            logger.error(f"Failed to upload to Postgres: {e}")
+            traceback.print_exc()
+            success = False
+            
+    return success
 
 
 def process_library_version(
@@ -484,31 +536,15 @@ def process_library_version(
     additional_deps: List[Dict],
     work_dir: Path,
     codesage_root: Path,
-    neo4j_config: Dict,
+    config: Dict,
+    targets: List[str],
     keep_venv: bool = False,
     use_conda: bool = False,
     use_available_python: bool = False,
-    batch_size: Optional[int] = None,
     python_version: str = "3.13"
 ) -> bool:
     """
     Process a single library version.
-    
-    Args:
-        library: Library name
-        version: Library version
-        additional_deps: List of additional dependencies
-        work_dir: Working directory for temporary files
-        codesage_root: Path to CodeSage root
-        neo4j_config: Neo4j configuration
-        keep_venv: Whether to keep the venv after processing
-        use_conda: Whether to use conda for environment creation
-        use_available_python: Whether to use any available Python version instead of requiring specified version
-        batch_size: Optional batch size for upserting entities and relations
-        python_version: Python version to use (default: 3.13)
-    
-    Returns:
-        True if successful, False otherwise
     """
     venv_path = work_dir / f"venv_{library}_{version.replace('.', '_')}"
     
@@ -539,10 +575,10 @@ def process_library_version(
         if extraction_result is None:
             return False
         
-        entities, relations, other_relations = extraction_result
+        entities, relations, other_relations, aliases = extraction_result
         
-        # Step 5: Upload to Neo4j
-        if not upload_to_neo4j(entities, relations, other_relations, library, version, neo4j_config, batch_size=batch_size):
+        # Step 5: Upload to Stores
+        if not upload_to_stores(entities, relations, other_relations, aliases, library, version, config, targets):
             return False
         
         logger.info(f"✓ Successfully processed {library}=={version}")
@@ -550,7 +586,6 @@ def process_library_version(
         
     except Exception as e:
         logger.error(f"Error processing {library}=={version}: {e}")
-        import traceback
         traceback.print_exc()
         return False
     
@@ -568,7 +603,7 @@ def main():
     """Main function."""
     # Setup argument parser
     parser = argparse.ArgumentParser(
-        description="Process library versions from GitChameleon dataset and upload to Neo4j",
+        description="Process library versions from GitChameleon dataset and upload to Neo4j/Postgres",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -577,7 +612,7 @@ Examples:
   %(prog)s --library numpy --version 1.19.0  # Process specific version
   %(prog)s --all                        # Process all libraries and versions
   %(prog)s --library torch --keep-venv  # Keep virtual environment after processing
-  %(prog)s --library numpy --force      # Force re-processing even if already in DB
+  %(prog)s --target postgres            # Upload to Postgres only
         """
     )
     
@@ -649,6 +684,20 @@ Examples:
         default=None,
         help='Batch size for upserting entities and relations (default: 1000 if not specified)'
     )
+
+    parser.add_argument(
+        '--target',
+        type=str,
+        default='neo4j',
+        help='Comma-separated list of targets: neo4j, postgres, or all (default: neo4j)'
+    )
+
+    parser.add_argument(
+        '--postgres-url',
+        type=str,
+        default=None,
+        help='Postgres connection URL (overrides env var)'
+    )
     
     args = parser.parse_args()
     
@@ -710,7 +759,33 @@ Examples:
             logger.error(f"Version '{args.version}' not found for library '{args.library}'")
             logger.info(f"Available versions: {', '.join(available_versions)}")
             return 1
+
+    # Processing Targets
+    targets_arg = args.target.lower()
+    if targets_arg == 'all':
+        targets = ['neo4j', 'postgres']
+    else:
+        targets = [t.strip() for t in targets_arg.split(',')]
     
+    # Config
+    config = {
+        'neo4j_username': os.getenv('NEO4J_USER', 'neo4j'),
+        'neo4j_password': os.getenv('NEO4J_PASSWORD', ''),
+        'neo4j_url': os.getenv('NEO4J_URI', 'bolt://localhost:7687'),
+        'neo4j_database': os.getenv('NEO4J_DATABASE', 'neo4j'),
+        'embed_nodes': os.getenv('EMBED_NODES', 'false').lower() == 'true',
+        'postgres_url': args.postgres_url or os.getenv('SUPABASE_DB_URL'),
+        'batch_size': args.batch_size
+    }
+    
+    # Validate configs
+    if 'neo4j' in targets and not config['neo4j_password']:
+         logger.warning("NEO4J_PASSWORD not set. Neo4j might fail if authentication is required.")
+    
+    if 'postgres' in targets and not config['postgres_url']:
+        logger.error("Postgres URL is required for postgres target. Use --postgres-url or set SUPABASE_DB_URL/POSTGRES_URL env var.")
+        return 1
+
     # Determine what to process
     if args.all:
         selected_library = "ALL"
@@ -748,27 +823,7 @@ Examples:
         versions_to_process = get_library_versions(selected_library, library_versions_dict, lib_with_deps_dict)
     
     logger.info(f"Will process {len(versions_to_process)} library version(s)")
-    
-    # Get Neo4j configuration from .env file (loaded above) or environment variables
-    neo4j_config = {
-        'username': os.getenv('NEO4J_USER', 'neo4j'),
-        'password': os.getenv('NEO4J_PASSWORD', ''),
-        'url': os.getenv('NEO4J_URI', 'bolt://localhost:7687'),
-        'database': os.getenv('NEO4J_DATABASE', 'neo4j'),
-        'embed_nodes': os.getenv('EMBED_NODES', 'false').lower() == 'true'
-    }
-    
-    # Validate Neo4j configuration
-    if not neo4j_config['password']:
-        logger.error("NEO4J_PASSWORD is not set. Please configure it in backend/.env or as an environment variable.")
-        return 1
-    
-    logger.info(f"Neo4j URL: {neo4j_config['url']}")
-    logger.info(f"Neo4j User: {neo4j_config['username']}")
-    logger.info(f"Neo4j Database: {neo4j_config['database']}")
-    logger.info(f"Embed nodes: {neo4j_config['embed_nodes']}")
-    if args.batch_size:
-        logger.info(f"Batch size: {args.batch_size}")
+    logger.info(f"Targets: {targets}")
     
     # Create working directory
     work_dir = script_dir / "venvs"
@@ -782,11 +837,6 @@ Examples:
     # Determine skip_existing behavior
     skip_existing = args.skip_existing and not args.force
     
-    if skip_existing:
-        logger.info("Will skip versions that already exist in the database")
-    else:
-        logger.info("Will process all versions, even if they already exist")
-    
     for i, lib_version in enumerate(versions_to_process, 1):
         library = lib_version['library']
         version = lib_version['version']
@@ -797,8 +847,8 @@ Examples:
         logger.info(f"{'='*60}")
         
         # Check if already exists before full processing
-        if skip_existing and check_version_exists(library, version, neo4j_config):
-            logger.info(f"⊙ Skipping {library}=={version} - already exists in database")
+        if skip_existing and check_version_exists(library, version, config, targets):
+            logger.info(f"⊙ Skipping {library}=={version} - already exists in target databases")
             skipped += 1
             successful += 1  # Count as successful since it's already in DB
             continue
@@ -809,11 +859,11 @@ Examples:
             additional_deps=additional_deps,
             work_dir=work_dir,
             codesage_root=codesage_root,
-            neo4j_config=neo4j_config,
+            config=config,
+            targets=targets,
             keep_venv=args.keep_venv,
             use_conda=args.use_conda,
             use_available_python=args.use_available_python,
-            batch_size=args.batch_size,
             python_version=args.python_version
         ):
             successful += 1
@@ -831,8 +881,8 @@ Examples:
     logger.info(f"Failed: {failed}/{len(versions_to_process)}")
     logger.info(f"{'='*60}")
     
-    # Close the global COMStore connection
-    close_com_store()
+    # Close connections
+    close_stores()
     
     return 0 if failed == 0 else 1
 

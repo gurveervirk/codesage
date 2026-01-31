@@ -299,14 +299,13 @@ def process_package(
     try:
         logging.info("Finding aliases for extracted entities...")
         aliases = find_aliases(all_entities, all_relations, combined_other_relations)
-        combined_other_relations["ALIASES"] = aliases
         logging.info(f"Found aliases for {len(aliases)} entities")
     except Exception as e:
         logging.error(f"Error finding aliases: {e}")
         logging.error(traceback.format_exc())
-        combined_other_relations["ALIASES"] = {}
+        aliases = {}
 
     logging.info(f"Completed processing package '{pkg_name}': "
                 f"{len(all_entities)} total entities, {len(all_relations)} total relations")
     
-    return ExtractionResult(entities=all_entities, relations=all_relations, other_relations=combined_other_relations)
+    return ExtractionResult(entities=all_entities, relations=all_relations, other_relations=combined_other_relations, aliases=aliases)

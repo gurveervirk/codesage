@@ -222,7 +222,7 @@ def process_module(
     # Process external parent classes recursively if enabled
     if include_external_parents:
         external_entities, external_relations = _process_external_parent_classes(
-            other_relations["INHERITS"],
+            other_relations["EXTERNAL_INHERITS"],
             _processed_external_classes,
             module_object.__name__,
             other_relations  # Pass other_relations to accumulate INHERITS from external classes
@@ -233,7 +233,10 @@ def process_module(
     # Convert sets to lists for final output
     other_relations["EXPOSES"] = list(other_relations["EXPOSES"])
     other_relations["PUBLISHES"] = list(other_relations["PUBLISHES"])
-    other_relations["INHERITS"] = list(other_relations["INHERITS"])
+    other_relations["EXPOSES_ALL"] = list(other_relations["EXPOSES_ALL"])
+    other_relations["PUBLISHES_ALL"] = list(other_relations["PUBLISHES_ALL"])
+    other_relations["INTERNAL_INHERITS"] = list(other_relations["INTERNAL_INHERITS"])
+    other_relations["EXTERNAL_INHERITS"] = list(other_relations["EXTERNAL_INHERITS"])
 
     logging.info(f"Processed {len(entities)} entities and {len(relations)} relations in {module_object.__name__}.")
 

@@ -131,7 +131,7 @@ def get_distribution_top_level_modules(package_name: str) -> List[str]:
     Get top-level modules for a package using metadata.
     Supports Python 3.10+ packages_distributions() and fallback to top_level.txt.
     """
-    modules = []
+    raw_modules = []
     
     # Try packages_distributions (Python 3.10+)
     if hasattr(importlib.metadata, 'packages_distributions'):
@@ -139,30 +139,50 @@ def get_distribution_top_level_modules(package_name: str) -> List[str]:
             mapping = importlib.metadata.packages_distributions()
             for top_module, distributions in mapping.items():
                 if package_name in distributions:
-                    if top_module not in modules:
-                        modules.append(top_module)
-            
-            # If we found modules via packages_distributions, return them
-            # But sometimes packages_distributions might miss things? 
-            # Usually it's more reliable than top_level.txt which might be missing.
-            if modules:
-                return modules
+                    if top_module not in raw_modules:
+                        raw_modules.append(top_module)
         except Exception:
             pass
             
-    # Fallback to top_level.txt
-    try:
-        dist = importlib.metadata.distribution(package_name)
-        top_level_txt = dist.read_text('top_level.txt')
-        if top_level_txt:
-            for line in top_level_txt.strip().split('\n'):
-                mod = line.strip()
-                if mod and mod not in modules:
-                    modules.append(mod)
-    except Exception:
-        pass
+    # Fallback to top_level.txt if nothing found yet
+    if not raw_modules:
+        try:
+            dist = importlib.metadata.distribution(package_name)
+            top_level_txt = dist.read_text('top_level.txt')
+            if top_level_txt:
+                for line in top_level_txt.strip().split('\n'):
+                    mod = line.strip()
+                    if mod and mod not in raw_modules:
+                        raw_modules.append(mod)
+        except Exception:
+            pass
+    
+    # Normalize and Filter
+    # 1. Replace slashes with dots (normalization)
+    # 2. Filter out submodules (e.g. if we have 'pkg' and 'pkg.sub', keep 'pkg')
+    
+    normalized = set()
+    for m in raw_modules:
+        if not m: continue
+        # Normalize slashes
+        m = m.replace('/', '.')
+        normalized.add(m)
         
-    return modules
+    sorted_modules = sorted(list(normalized))
+    final_modules = []
+    
+    for m in sorted_modules:
+        # Check if this module is a submodule of any already accepted module
+        is_submodule = False
+        for parent in final_modules:
+            if m == parent or m.startswith(parent + '.'):
+                is_submodule = True
+                break
+        
+        if not is_submodule:
+            final_modules.append(m)
+            
+    return final_modules
 
 def get_package_python_requires(package_name: str) -> Optional[str]:
     """
