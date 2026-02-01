@@ -53,9 +53,9 @@ def main():
         help="Use uv for package installation instead of pip"
     )
     parser.add_argument(
-        "--use-conda",
-        action="store_true",
-        help="Use conda for package installation instead of pip"
+        "--python",
+        default=None,
+        help="Python version or path to use with uv (e.g., '3.11')"
     )
     parser.add_argument(
         "--output",
@@ -93,14 +93,9 @@ def main():
     args = parser.parse_args()
     
     # Determine install method
-    if args.use_uv and args.use_conda:
-        print("Error: Cannot specify both --use-uv and --use-conda", file=sys.stderr)
-        sys.exit(1)
-    
-    install_method = "uv" if args.use_uv else "conda" if args.use_conda else "pip"
+    install_method = "uv" if args.use_uv else "pip"
     
     # Handle isolated venv if requested
-    original_executable = sys.executable
     venv_python = None
     if args.isolated_venv:
         # Create venv name from package name and version
@@ -114,13 +109,14 @@ def main():
             required_packages = ["pydantic", "packaging", "setuptools", "requests"]
             if install_method == "uv":
                 # Create venv using uv
-                subprocess.run(["uv", "venv", str(venv_path)], check=True, capture_output=True)
+                uv_cmd = ["uv", "venv"]
+                if args.python:
+                    uv_cmd.extend(["--python", args.python])
+                uv_cmd.append(str(venv_path))
+                
+                subprocess.run(uv_cmd, check=True, capture_output=True)
                 # Install pydantic and packaging using uv pip
                 subprocess.run(["uv", "pip", "install", "--python", str(venv_path / "bin" / "python")] + required_packages, check=True, capture_output=True)
-                venv_python = venv_path / "bin" / "python"
-            elif install_method == "conda":
-                # Create conda environment
-                subprocess.run(["conda", "create", "-y", "-p", str(venv_path), "python"] + required_packages, check=True, capture_output=True)
                 venv_python = venv_path / "bin" / "python"
             else:  # pip
                 # Create standard venv
@@ -207,7 +203,7 @@ def main():
     try:
         if args.mode == "package":
             logging.info(f"Processing package: {args.name} (version: {args.version or 'latest'}) using {install_method}")
-            entities, relations, other_relations = process_package(args.name, args.version, install_method=install_method)
+            entities, relations, other_relations = process_package(args.name, args.version, install_method=install_method, python=args.python)
         else:  # module
             logging.info(f"Processing module: {args.name} (version: {args.version or 'latest'})")
             include_external = not args.no_external_parents
@@ -327,6 +323,7 @@ def main():
                     "name": args.name,
                     "version": args.version or "latest",
                     "install_method": install_method if args.mode == "package" else None,
+                    "python": args.python,
                     "include_external_parents": not args.no_external_parents if args.mode == "module" else None
                 },
                 "entities": entities_data,

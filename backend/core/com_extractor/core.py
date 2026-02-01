@@ -96,7 +96,8 @@ def get_top_level_module(package_name: str) -> str:
 def process_package(
     package_name: str,
     version: Optional[str] = None,
-    install_method: str = "pip"
+    install_method: str = "pip",
+    python: Optional[str] = None
 ) -> ExtractionResult:
     """
     **PRIMARY API** - Process all top-level modules associated with a package name.
@@ -108,7 +109,8 @@ def process_package(
     Args:
         package_name (str): The name of the package.
         version (Optional[str]): Version of the package.
-        install_method (str): Method to use for installation: 'pip', 'uv', or 'conda'. Default is 'pip'.
+        install_method (str): Method to use for installation: 'pip' or 'uv'. Default is 'pip'.
+        python (Optional[str]): Python version or path to use with uv.
         
     Returns:
         ExtractionResult: Combined entities, relations, and other relations
@@ -126,13 +128,10 @@ def process_package(
             
             # Determine install command based on method
             if install_method == "uv":
-                install_cmd = ["uv", "pip", "install", install_spec]
-            elif install_method == "conda":
-                # For conda, use conda install with -c conda-forge or just the package name
-                if version:
-                    install_cmd = ["conda", "install", "-y", f"{pkg_name}={version}"]
-                else:
-                    install_cmd = ["conda", "install", "-y", pkg_name]
+                install_cmd = ["uv", "pip", "install"]
+                if python:
+                    install_cmd.extend(["--python", python])
+                install_cmd.append(install_spec)
             else:  # pip (default)
                 install_cmd = [sys.executable, "-m", "pip", "install", install_spec]
             
@@ -168,9 +167,10 @@ def process_package(
                 
                 # Determine reinstall command based on method
                 if install_method == "uv":
-                    reinstall_cmd = ["uv", "pip", "install", install_spec]
-                elif install_method == "conda":
-                    reinstall_cmd = ["conda", "install", "-y", "--force-reinstall", f"{pkg_name}={version}"]
+                    reinstall_cmd = ["uv", "pip", "install"]
+                    if python:
+                        reinstall_cmd.extend(["--python", python])
+                    reinstall_cmd.append(install_spec)
                 else:  # pip
                     reinstall_cmd = [sys.executable, "-m", "pip", "install", "--force-reinstall", install_spec]
                 
