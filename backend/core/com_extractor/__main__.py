@@ -203,13 +203,19 @@ def main():
     try:
         if args.mode == "package":
             logging.info(f"Processing package: {args.name} (version: {args.version or 'latest'}) using {install_method}")
-            entities, relations, other_relations = process_package(args.name, args.version, install_method=install_method, python=args.python)
+            result = process_package(args.name, args.version, install_method=install_method, python=args.python)
+            entities = result.entities
+            relations = result.relations
+            other_relations = result.other_relations
         else:  # module
             logging.info(f"Processing module: {args.name} (version: {args.version or 'latest'})")
             include_external = not args.no_external_parents
-            entities, relations, other_relations = process_module(
+            result = process_module(
                 args.name, args.version, include_external_parents=include_external
             )
+            entities = result.entities
+            relations = result.relations
+            other_relations = result.other_relations
         
         # Categorize entities and relations for final summary
         if args.mode == "package":

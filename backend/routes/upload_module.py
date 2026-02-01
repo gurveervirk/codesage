@@ -41,7 +41,10 @@ async def upload_module(payload: ModuleUploadRequest, request: Request):
         if not success:
             raise HTTPException(status_code=500, detail=f"Failed to install module: {module_name}")
     try:
-        entities, relations, other_relations = process_module(module_name)
+        result = process_module(module_name)
+        entities = result.entities
+        relations = result.relations
+        other_relations = result.other_relations
         request.app.state.com_store.upsert_to_neo4j(
             module_name=module_name,
             entities=entities,
