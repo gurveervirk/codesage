@@ -129,8 +129,9 @@ def process_package(
             # Determine install command based on method
             if install_method == "uv":
                 install_cmd = ["uv", "pip", "install"]
-                if python:
-                    install_cmd.extend(["--python", python])
+                # Explicitly use the provided python or current interpreter to avoid system fallback
+                uv_python = python or sys.executable
+                install_cmd.extend(["--python", uv_python])
                 install_cmd.append(install_spec)
             else:  # pip (default)
                 install_cmd = [sys.executable, "-m", "pip", "install", install_spec]
@@ -150,7 +151,7 @@ def process_package(
                 logging.error(f"Package '{install_spec}' may not be compatible with Python {py_version}")
                 logging.error(f"Installation error details: {error_output}")
             return ExtractionResult(entities=[], relations=[], other_relations={
-                "INHERITS": [], "EXPOSES": [], "PUBLISHES": [],
+                "INTERNAL_INHERITS": [], "EXTERNAL_INHERITS": [], "EXPOSES": [], "PUBLISHES": [],
                 "EXPOSES_ALL": [], "PUBLISHES_ALL": []
             })
     
@@ -168,8 +169,9 @@ def process_package(
                 # Determine reinstall command based on method
                 if install_method == "uv":
                     reinstall_cmd = ["uv", "pip", "install"]
-                    if python:
-                        reinstall_cmd.extend(["--python", python])
+                    # Explicitly use the provided python or current interpreter to avoid system fallback
+                    uv_python = python or sys.executable
+                    reinstall_cmd.extend(["--python", uv_python])
                     reinstall_cmd.append(install_spec)
                 else:  # pip
                     reinstall_cmd = [sys.executable, "-m", "pip", "install", "--force-reinstall", install_spec]
@@ -179,7 +181,10 @@ def process_package(
                 installed_version = get_package_version(pkg_name)
                 if installed_version != version:
                     logging.error(f"Failed to install version {version}. Current version: {installed_version}")
-                    return ExtractionResult(entities=[], relations=[], other_relations={"INHERITS": [], "EXPOSES": [], "PUBLISHES": []})
+                    return ExtractionResult(entities=[], relations=[], other_relations={
+                        "INTERNAL_INHERITS": [], "EXTERNAL_INHERITS": [], "EXPOSES": [], "PUBLISHES": [],
+                        "EXPOSES_ALL": [], "PUBLISHES_ALL": []
+                    })
                 logging.info(f"Successfully installed {pkg_name}=={version}")
         except subprocess.CalledProcessError as e:
             error_output = getattr(e, 'stderr', None) or str(e)
@@ -194,7 +199,7 @@ def process_package(
                 logging.error(f"Package '{pkg_name}=={version}' may not be compatible with Python {py_version}")
                 logging.error(f"Try using a different Python version or a different package version")
             return ExtractionResult(entities=[], relations=[], other_relations={
-                "INHERITS": [], "EXPOSES": [], "PUBLISHES": [],
+                "INTERNAL_INHERITS": [], "EXTERNAL_INHERITS": [], "EXPOSES": [], "PUBLISHES": [],
                 "EXPOSES_ALL": [], "PUBLISHES_ALL": []
             })
         except PackageNotFoundError:
