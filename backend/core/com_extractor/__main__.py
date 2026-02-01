@@ -2,8 +2,8 @@
 Command-line interface for COMExtractor.
 
 Usage:
-    python -m backend.lib_sage.com_extractor package <name> [--version VERSION]
-    python -m backend.lib_sage.com_extractor module <name> [--version VERSION]
+    python -m backend.core.com_extractor package <name> [--version VERSION]
+    python -m backend.core.com_extractor module <name> [--version VERSION]
 """
 
 import argparse
@@ -137,7 +137,7 @@ def main():
             
             # Re-execute this script with the venv Python
             # Build the command with all the original arguments except --isolated-venv
-            new_args = [str(venv_python), "-m", "backend.lib_sage.com_extractor"]
+            new_args = [str(venv_python), "-m", "backend.core.com_extractor"]
             for arg in sys.argv[1:]:
                 if arg != "--isolated-venv":
                     new_args.append(arg)

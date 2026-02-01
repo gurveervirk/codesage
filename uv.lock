@@ -1,6 +1,6 @@
 version = 1
 revision = 2
-requires-python = ">=3.13"
+requires-python = ">=3.6"
 resolution-markers = [
     "python_full_version >= '3.14' and platform_python_implementation != 'PyPy'",
     "python_full_version < '3.14' and platform_python_implementation != 'PyPy'",
@@ -221,7 +221,6 @@ dependencies = [
     { name = "llama-index-llms-google-genai" },
     { name = "mcp" },
     { name = "neo4j" },
-    { name = "networkx" },
     { name = "plotly" },
     { name = "psycopg2" },
     { name = "pydantic" },

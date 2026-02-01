@@ -5,7 +5,7 @@ This guide helps AI coding agents work productively in the LibSage monorepo. It 
 ## Architecture Overview
 - **Backend (`backend/`)**: Python services for workflow orchestration, type inspection, and agent logic. Key modules:
   - `app.py`: Main entrypoint for backend API.
-  - `lib_sage/`: Core logic, including `reflex/` (type/model inspection), `sage_workflow/` (workflow/agent orchestration), and `com_store/` (communication store).
+  - `core/`: Core logic, including `reflex/` (type/model inspection), `sage_workflow/` (workflow/agent orchestration), and `com_store/` (communication store).
   - `routes/`: API endpoints for LLM, generation, uploads, etc.
   - `utils/`: Shared utilities and prompt templates.
 - **Frontend (`frontend/`)**: Remix/React app for chat UI, context management, and agent interaction. Uses Tailwind CSS and Vite. Key files:

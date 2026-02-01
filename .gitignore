@@ -15,5 +15,5 @@ UI/.env
 /benchmarks/GitChameleonBenchmark/stashed_tests
 /benchmarks/GitChameleonBenchmark/venvs
 /benchmarks/GitChameleonBenchmark/current_tests.csv
-/backend/lib_sage/com_extractor/outputs
-/backend/lib_sage/com_store/schema
+/backend/core/com_extractor/outputs
+/backend/core/com_store/schema
