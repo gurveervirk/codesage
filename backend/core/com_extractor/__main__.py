@@ -111,22 +111,23 @@ def main():
         
         try:
             # Create venv based on method
+            required_packages = ["pydantic", "packaging", "setuptools", "requests"]
             if install_method == "uv":
                 # Create venv using uv
                 subprocess.run(["uv", "venv", str(venv_path)], check=True, capture_output=True)
                 # Install pydantic and packaging using uv pip
-                subprocess.run(["uv", "pip", "install", "--python", str(venv_path / "bin" / "python"), "pydantic", "packaging", "setuptools"], check=True, capture_output=True)
+                subprocess.run(["uv", "pip", "install", "--python", str(venv_path / "bin" / "python")] + required_packages, check=True, capture_output=True)
                 venv_python = venv_path / "bin" / "python"
             elif install_method == "conda":
                 # Create conda environment
-                subprocess.run(["conda", "create", "-y", "-p", str(venv_path), "python", "pydantic", "packaging", "setuptools"], check=True, capture_output=True)
+                subprocess.run(["conda", "create", "-y", "-p", str(venv_path), "python"] + required_packages, check=True, capture_output=True)
                 venv_python = venv_path / "bin" / "python"
             else:  # pip
                 # Create standard venv
                 import venv
                 venv.create(venv_path, with_pip=True)
                 # Install pydantic and packaging using the venv's pip
-                subprocess.run([str(venv_path / "bin" / "python"), "-m", "pip", "install", "pydantic", "packaging", "setuptools"], check=True, capture_output=True)
+                subprocess.run([str(venv_path / "bin" / "python"), "-m", "pip", "install"] + required_packages, check=True, capture_output=True)
                 venv_python = venv_path / "bin" / "python"
             
             if not venv_python.exists():
