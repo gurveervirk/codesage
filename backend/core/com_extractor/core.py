@@ -120,6 +120,9 @@ def process_package(
     version = parsed_version
     top_level_modules = get_top_level_modules_for_package(pkg_name)
 
+    if python is not None:
+        logging.info(f"Using Python interpreter '{python}' for installation with uv")
+
     if not top_level_modules:
         logging.info(f"Package '{pkg_name}' not found. Attempting to install using {install_method}...")
         try:
