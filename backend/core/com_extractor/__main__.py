@@ -133,11 +133,27 @@ def main():
             print(f"Using Python: {venv_python}", file=sys.stderr)
             
             # Re-execute this script with the venv Python
-            # Build the command with all the original arguments except --isolated-venv
+            # Build the command with all the original arguments except --isolated-venv and --python
             new_args = [str(venv_python), "-m", "backend.core.com_extractor"]
-            for arg in sys.argv[1:]:
-                if arg != "--isolated-venv":
-                    new_args.append(arg)
+            
+            i = 1
+            while i < len(sys.argv):
+                arg = sys.argv[i]
+                i += 1
+                
+                if arg == "--isolated-venv":
+                    continue
+                
+                if arg == "--python":
+                    # Skip the argument value as well
+                    if i < len(sys.argv) and not sys.argv[i].startswith("-"):
+                         i += 1
+                    continue
+                
+                if arg.startswith("--python="):
+                    continue
+                    
+                new_args.append(arg)
             
             # Execute in the new venv
             result = subprocess.run(new_args, env={**os.environ, "VIRTUAL_ENV": str(venv_path)})
