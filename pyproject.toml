@@ -40,5 +40,14 @@ benchmarks = [
     "chart_studio"
 ]
 
+[project.scripts]
+deputy-upload = "core.uploader.__main__:main"
+
 [tool.setuptools]
 py-modules = []
+
+[tool.setuptools.package-dir]
+"" = "backend"
+
+[tool.setuptools.packages.find]
+where = ["backend"]
