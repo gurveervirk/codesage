@@ -10,8 +10,8 @@ from llama_index.llms.google_genai import GoogleGenAI
 from backend.core.com_store import COMStore
 
 app = FastAPI(
-    title="CodeSage API",
-    description="API for using CodeSage, a smarter code assistant.",
+    title="deputy API",
+    description="API for using deputy, a smarter code assistant.",
     version="1.0.0"
 )
 

@@ -11,8 +11,8 @@ import logging
 import traceback
 from typing_extensions import Any, Dict, List, Optional, Set, Tuple
 
-from .models import Entity, Relationship, ExternalEntityRef
-from .utils.general_utils import extract_simple_name
+from ..models import Entity, Relationship, ExternalEntityRef
+from ..utils.general_utils import extract_simple_name
 from .utils.source_utils import (
     safe_get_source,
     safe_get_docstring,
@@ -22,7 +22,7 @@ from .utils.source_utils import (
     get_fully_qualified_name,
 )
 from .utils.decorator_utils import _visibility_label, _get_decorators_from_source, _resolve_decorator_details
-from .entity_builder import (
+from .builder import (
     _is_dunder,
     _get_entity_version,
     _create_property_entities_and_relations,

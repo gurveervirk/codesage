@@ -1,6 +1,6 @@
 {
     "servers": {
-        "local-server-codesage_library_explorer": {
+        "local-server-deputy_library_explorer": {
             "type": "sse",
             "url": "http://localhost:3001/sse"
         }

@@ -11,8 +11,8 @@ import logging
 import traceback
 from typing_extensions import Dict, List, Optional, Set, Tuple
 
-from .models import Entity, Relationship, ExtractionResult
-from .utils.general_utils import extract_simple_name
+from ..models import Entity, Relationship, ExtractionResult
+from ..utils.general_utils import extract_simple_name
 from .utils.source_utils import (
     safe_get_source,
     safe_get_docstring,
@@ -20,7 +20,7 @@ from .utils.source_utils import (
     get_import_as_aliases,
     find_submodules_importlib_resources,
 )
-from .entity_builder import _create_property_entities_and_relations, _process_import_statements
+from .builder import _create_property_entities_and_relations, _process_import_statements
 from .traversal import process_member, _process_external_parent_classes
 
 

@@ -1,4 +1,4 @@
-# CodeSage Library Explorer MCP Server Guide
+# Deputy Library Explorer MCP Server Guide
 
 ### 1. \`list_libraries\`
 - **Initial discovery**: Find what libraries are available in the database.

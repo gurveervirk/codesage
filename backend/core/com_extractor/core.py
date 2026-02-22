@@ -10,7 +10,8 @@ import logging
 import subprocess
 import sys
 import traceback
-from typing_extensions import Any, Dict, List, Optional, Tuple
+import os
+from typing_extensions import Any, Dict, List, Optional
 
 from .utils.metadata_utils import (
     get_distribution_top_level_modules,
@@ -20,8 +21,27 @@ from .utils.metadata_utils import (
 )
 
 from .models import Entity, Relationship, ExtractionResult
-from .module_processor import process_module, _parse_name_and_version
+from .dynamic_analysis.processor import process_module, _parse_name_and_version
 from .utils.alias_finder import find_aliases
+from .static_analysis.alias_finder import find_aliases_static
+from .static_analysis.traversal import process_package_static
+
+def _locate_package_path(package_name: str, search_paths: Optional[List[str]] = None) -> Optional[str]:
+    path_parts = package_name.split(".")
+    candidates = search_paths if search_paths is not None else list(sys.path)
+    for root in candidates:
+        if not root:
+            continue
+        base_path = os.path.join(root, *path_parts)
+        package_init = os.path.join(base_path, "__init__.py")
+        if os.path.isfile(package_init):
+            return base_path
+        if os.path.isdir(base_path):
+            return base_path
+        module_file = f"{base_path}.py"
+        if os.path.isfile(module_file):
+            return module_file
+    return None
 
 
 def get_top_level_modules_for_package(package_name: str) -> List[str]:
@@ -37,24 +57,16 @@ def get_top_level_modules_for_package(package_name: str) -> List[str]:
     Returns:
         List[str]: List of top-level modules for all matching packages.
     """
-    # First, try importing the package name directly - this handles cases like pytest
     top_level_modules = []
-    try:
-        test_import = importlib.import_module(package_name)
-        # If successful and it's a real package (not just a namespace), use it
-        if hasattr(test_import, '__file__') or hasattr(test_import, '__path__'):
-            logging.info(f"Package {package_name} is directly importable, adding it as top-level module")
-            top_level_modules.append(package_name)
-    except (ImportError, ModuleNotFoundError):
-        logging.debug(f"Package name {package_name} is not directly importable, will check distribution metadata")
-    
-    # Check distribution metadata for all matching packages
-    # Use metadata utils to find top-level modules (supports Python < 3.10 via fallback)
+
     dist_modules = get_distribution_top_level_modules(package_name)
-    
+
     for mod in dist_modules:
         if mod not in top_level_modules:
             top_level_modules.append(mod)
+
+    if package_name not in top_level_modules:
+        top_level_modules.append(package_name)
 
     if not top_level_modules:
         logging.warning(f"No top-level modules found for package {package_name}")
@@ -62,6 +74,151 @@ def get_top_level_modules_for_package(package_name: str) -> List[str]:
     
     logging.info(f"Found {len(top_level_modules)} top-level module(s) for package {package_name}: {top_level_modules}")
     return top_level_modules
+
+
+def process_package_from_module_paths(
+    package_name: str,
+    version: Optional[str],
+    module_paths: Dict[str, str],
+) -> ExtractionResult:
+    pkg_name, parsed_version = _parse_name_and_version(package_name, version)
+    version = parsed_version
+
+    all_entities: List[Entity] = []
+    all_relations: List[Relationship] = []
+    combined_other_relations: Dict[str, Any] = {
+        "INTERNAL_INHERITS": [],
+        "EXTERNAL_INHERITS": [],
+        "EXPOSES": [],
+        "PUBLISHES": [],
+        "EXPOSES_ALL": [],
+        "PUBLISHES_ALL": [],
+    }
+
+    dist_entity = None
+    current_version = version
+    metadata = {}
+
+    try:
+        current_version = get_package_version(pkg_name)
+    except Exception:
+        current_version = version
+
+    try:
+        metadata = get_package_metadata(pkg_name, current_version)
+    except Exception:
+        metadata = {}
+
+    dist_props = {
+        "version": current_version,
+        "python_requires": metadata.get("python_requires"),
+        "supported_python_versions": metadata.get("supported_python_versions"),
+        "dependencies": metadata.get("dependencies"),
+        "extras": metadata.get("extras"),
+        "pypi_metadata_found": metadata.get("pypi_metadata_found", False),
+    }
+
+    dist_entity = Entity(
+        name=pkg_name,
+        labels=["DISTRIBUTION_PACKAGE"],
+        properties=dist_props,
+    )
+    dist_entity.type = "DISTRIBUTION_PACKAGE"
+    all_entities.append(dist_entity)
+
+    logging.info(
+        f"Processing package '{pkg_name}' with {len(module_paths)} top-level module(s): {list(module_paths.keys())}"
+    )
+
+    for top_level_module, pkg_path in module_paths.items():
+        logging.info(f"Processing top-level module '{top_level_module}' for package '{pkg_name}'...")
+        try:
+            if not pkg_path or not os.path.exists(pkg_path):
+                logging.warning(f"Path not found for module '{top_level_module}': {pkg_path}")
+                continue
+
+            logging.info(f"Processing static analysis for {top_level_module} at {pkg_path}")
+            s_entities, s_relations, s_other_relations = process_package_static(
+                pkg_path,
+                top_level_module,
+                version=version,
+            )
+
+            entities = s_entities
+            relations = s_relations
+            other_relations = s_other_relations
+
+            if dist_entity and entities:
+                import_pkg_entity = next((e for e in entities if e.name == top_level_module), None)
+
+                if not import_pkg_entity:
+                    import_pkg_entity = next((e for e in entities if "MODULE" in e.labels), None)
+
+                if import_pkg_entity:
+                    if "IMPORT_PACKAGE" not in import_pkg_entity.labels:
+                        import_pkg_entity.labels.append("IMPORT_PACKAGE")
+
+                    rel = Relationship(
+                        from_entity=dist_entity,
+                        to_entity=import_pkg_entity,
+                        label="PROVIDES",
+                        properties={},
+                    )
+                    all_relations.append(rel)
+
+            all_entities.extend(entities)
+            all_relations.extend(relations)
+
+            if other_relations:
+                for rel_type in [
+                    "INTERNAL_INHERITS",
+                    "EXTERNAL_INHERITS",
+                    "EXPOSES",
+                    "PUBLISHES",
+                    "EXPOSES_ALL",
+                    "PUBLISHES_ALL",
+                ]:
+                    if rel_type in other_relations:
+                        combined_other_relations[rel_type].extend(other_relations[rel_type])
+
+        except Exception as e:
+            logging.error(f"Error processing top-level module '{top_level_module}' for package '{pkg_name}': {e}")
+            logging.error(traceback.format_exc())
+            continue
+
+    for rel_type in [
+        "INTERNAL_INHERITS",
+        "EXTERNAL_INHERITS",
+        "EXPOSES",
+        "PUBLISHES",
+        "EXPOSES_ALL",
+        "PUBLISHES_ALL",
+    ]:
+        combined_other_relations[rel_type] = list(set(combined_other_relations[rel_type]))
+
+    try:
+        logging.info("Finding aliases for extracted entities...")
+        try:
+            aliases = find_aliases_static(all_entities, all_relations, combined_other_relations)
+        except Exception:
+            aliases = find_aliases(all_entities, all_relations, combined_other_relations)
+        logging.info(f"Found aliases for {len(aliases)} entities")
+    except Exception as e:
+        logging.error(f"Error finding aliases: {e}")
+        logging.error(traceback.format_exc())
+        aliases = {}
+
+    logging.info(
+        f"Completed processing package '{pkg_name}': "
+        f"{len(all_entities)} total entities, {len(all_relations)} total relations"
+    )
+
+    return ExtractionResult(
+        entities=all_entities,
+        relations=all_relations,
+        other_relations=combined_other_relations,
+        aliases=aliases,
+    )
 
 
 def get_top_level_module(package_name: str) -> str:
@@ -221,99 +378,19 @@ def process_package(
             "EXPOSES_ALL": [], "PUBLISHES_ALL": []
         })
     
-    # Process all top-level modules and combine results
-    all_entities: List[Entity] = []
-    all_relations: List[Relationship] = []
-    combined_other_relations: Dict[str, Any] = {
-        "INTERNAL_INHERITS": [], 
-        "EXTERNAL_INHERITS": [], 
-        "EXPOSES": [], 
-        "PUBLISHES": [],
-        "EXPOSES_ALL": [],
-        "PUBLISHES_ALL": []
-    }
-    
-    # Create DISTRIBUTION_PACKAGE entity with metadata
-    dist_entity = None
-    try:
-        # We use the installed version if available, otherwise the requested version or None
-        current_version = get_package_version(pkg_name)
-        
-        # Use reconciled metadata (combines local and PyPI data)
-        metadata = get_package_metadata(pkg_name, current_version)
-        
-        dist_props = {
-            "version": current_version,
-            "python_requires": metadata.get("python_requires"),
-            "supported_python_versions": metadata.get("supported_python_versions"),
-            "dependencies": metadata.get("dependencies"),
-            "extras": metadata.get("extras"),
-            "pypi_metadata_found": metadata.get("pypi_metadata_found")
-        }
-        
-        dist_entity = Entity(
-            name=pkg_name,
-            labels=["DISTRIBUTION_PACKAGE"],
-            properties=dist_props
-        )
-        all_entities.append(dist_entity)
-        logging.info(f"Created DISTRIBUTION_PACKAGE entity for '{pkg_name}' version {current_version}")
-        
-    except PackageNotFoundError:
-        logging.warning(f"Could not create DISTRIBUTION_PACKAGE for {pkg_name}: metadata not found")
-
-    logging.info(f"Processing package '{pkg_name}' with {len(top_level_modules)} top-level module(s): {top_level_modules}")
-    
+    module_paths: Dict[str, str] = {}
     for top_level_module in top_level_modules:
-        logging.info(f"Processing top-level module '{top_level_module}' for package '{pkg_name}'...")
-        try:
-            result = process_module(top_level_module, version=version)
-            entities = result.entities
-            relations = result.relations
-            other_relations = result.other_relations
-            
-            # Link DISTRIBUTION_PACKAGE to IMPORT_PACKAGE (root of the module)
-            if dist_entity and entities:
-                # The first entity returned by process_module is the root module (IMPORT_PACKAGE)
-                import_pkg_entity = entities[0]
-                # Verify it's an IMPORT_PACKAGE just to be safe
-                if "IMPORT_PACKAGE" in import_pkg_entity.labels:
-                    rel = Relationship(
-                        from_entity=dist_entity,
-                        to_entity=import_pkg_entity,
-                        label="PROVIDES",
-                        properties={}
-                    )
-                    all_relations.append(rel)
-            
-            all_entities.extend(entities)
-            all_relations.extend(relations)
-            
-            # Combine other_relations
-            for rel_type in ["INTERNAL_INHERITS", "EXTERNAL_INHERITS", "EXPOSES", "PUBLISHES", "EXPOSES_ALL", "PUBLISHES_ALL"]:
-                if rel_type in other_relations:
-                    combined_other_relations[rel_type].extend(other_relations[rel_type])
+        pkg_path = _locate_package_path(top_level_module)
+        if pkg_path and os.path.exists(pkg_path):
+            module_paths[top_level_module] = pkg_path
+        else:
+            logging.warning(f"Could not locate path for top-level module '{top_level_module}'")
 
-        except Exception as e:
-            logging.error(f"Error processing top-level module '{top_level_module}' for package '{pkg_name}': {e}")
-            logging.error(traceback.format_exc())
-            continue
-    
-    # Deduplicate other_relations
-    for rel_type in ["INTERNAL_INHERITS", "EXTERNAL_INHERITS", "EXPOSES", "PUBLISHES", "EXPOSES_ALL", "PUBLISHES_ALL"]:
-        combined_other_relations[rel_type] = list(set(combined_other_relations[rel_type]))
-    
-    # Find aliases
-    try:
-        logging.info("Finding aliases for extracted entities...")
-        aliases = find_aliases(all_entities, all_relations, combined_other_relations)
-        logging.info(f"Found aliases for {len(aliases)} entities")
-    except Exception as e:
-        logging.error(f"Error finding aliases: {e}")
-        logging.error(traceback.format_exc())
-        aliases = {}
+    if not module_paths:
+        logging.error(f"No module paths found for package '{pkg_name}'")
+        return ExtractionResult(entities=[], relations=[], other_relations={
+            "INTERNAL_INHERITS": [], "EXTERNAL_INHERITS": [], "EXPOSES": [], "PUBLISHES": [],
+            "EXPOSES_ALL": [], "PUBLISHES_ALL": []
+        })
 
-    logging.info(f"Completed processing package '{pkg_name}': "
-                f"{len(all_entities)} total entities, {len(all_relations)} total relations")
-    
-    return ExtractionResult(entities=all_entities, relations=all_relations, other_relations=combined_other_relations, aliases=aliases)
+    return process_package_from_module_paths(pkg_name, version, module_paths)

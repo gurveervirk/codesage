@@ -83,7 +83,7 @@
       "type": "command",
       "command": "ai-mlstudio.agentBuilder",
       "args": {
-        "initialMCPs": [ "local-server-codesage_library_explorer" ],
+        "initialMCPs": [ "local-server-deputy_library_explorer" ],
         "triggeredFrom": "vsc-tasks"
       }
     },

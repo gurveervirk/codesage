@@ -1,6 +1,6 @@
-# CodeSage Library Explorer MCP Server
+# Deputy Library Explorer MCP Server
 
-This MCP Server provides tools for exploring and querying the CodeSage library knowledge graph. It exposes methods from the COMStore class to enable AI agents to search, compare, and analyze Python libraries indexed in Neo4j.
+This MCP Server provides tools for exploring and querying the Deputy library knowledge graph. It exposes methods from the COMStore class to enable AI agents to search, compare, and analyze Python libraries indexed in Neo4j.
 
 ## Features
 
@@ -126,4 +126,4 @@ Here are some example prompts to test the MCP server:
 
 ## Feedback
 
-For feedback or suggestions, please open an issue on the [CodeSage GitHub repository](https://github.com/gurveervirk/CodeSage/issues)
+For feedback or suggestions, please open an issue on the [Deputy GitHub repository](https://github.com/gurveervirk/Deputy/issues)

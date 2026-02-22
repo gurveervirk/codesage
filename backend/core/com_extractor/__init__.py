@@ -15,6 +15,7 @@ Primary API:
 # Primary API
 from .core import (
     process_package,
+    process_package_from_module_paths,
     get_top_level_module,
     get_top_level_modules_for_package
 )
@@ -23,11 +24,12 @@ from .core import (
 from .models import Entity, Relationship, ExternalEntityRef, ExtractionResult
 
 # Secondary/Internal API (for advanced users)
-from .module_processor import process_module
+from .dynamic_analysis.processor import process_module
 
 __all__ = [
     # Primary API
     "process_package",
+    "process_package_from_module_paths",
     "get_top_level_module",
     "get_top_level_modules_for_package",
     # Models

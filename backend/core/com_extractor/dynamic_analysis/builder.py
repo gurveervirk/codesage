@@ -12,13 +12,13 @@ import logging
 from typing_extensions import Any, Callable, Dict, List, Optional, Set, Tuple
 from typing_extensions import Literal
 
-from .models import Entity, Relationship
-from .utils.general_utils import extract_simple_name
+from ..models import Entity, Relationship
+from ..utils.general_utils import extract_simple_name
 from .utils.source_utils import safe_get_source, safe_get_docstring, get_source_line_numbers
 from .utils.signature_utils import get_typed_signature, _normalize_signature
 from .utils.decorator_utils import get_function_method_labels, _resolve_decorator_details
 from .utils.overload_utils import get_overloads_with_fallback
-from .utils.metadata_utils import get_package_version, PackageNotFoundError
+from ..utils.metadata_utils import get_package_version, PackageNotFoundError
 
 
 def _is_dunder(name: str) -> bool:

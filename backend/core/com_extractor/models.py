@@ -1,5 +1,5 @@
-from typing_extensions import Dict, List, Optional, Tuple, Any
-from pydantic import BaseModel
+from typing_extensions import Dict, List, Optional, Any, Union
+from pydantic import BaseModel, Field
 import hashlib
 import re
 
@@ -10,29 +10,33 @@ class ExternalEntityRef(BaseModel):
     Used for INHERITS/IMPORTS relations where the target may not be tracked.
     """
     name: str
+    type: str = "UNKNOWN"
     version: Optional[str] = None
     content_hash: Optional[str] = None
     alias: Optional[str] = None
-    
+    attributes: Dict[str, Any] = Field(default_factory=dict)
+
     class Config:
-        frozen = True  # Make the model immutable and hashable
-    
+        frozen = False
+
     def __repr__(self):
         if self.version:
             return f"{self.name}@{self.version}"
         return self.name
-    
+
     def __hash__(self):
-        """Make ExternalEntityRef hashable for use in sets."""
-        return hash((self.name, self.version, self.content_hash, self.alias))
-    
+        """Make ExternalEntityRef hashable for use in sets. attributes is excluded (metadata)."""
+        return hash((self.name, self.type, self.version, self.content_hash, self.alias))
+
     def __eq__(self, other):
-        """Equality comparison for ExternalEntityRef."""
+        """Equality comparison for ExternalEntityRef. attributes is excluded (metadata)."""
         if not isinstance(other, ExternalEntityRef):
             return False
-        return (self.name == other.name and 
-                self.version == other.version and 
-                self.content_hash == other.content_hash)
+        return (self.name == other.name and
+                self.type == other.type and
+                self.version == other.version and
+                self.content_hash == other.content_hash and
+                self.alias == other.alias)
 
 
 def _sanitize_labels(labels: List[str]) -> List[str]:
@@ -72,11 +76,12 @@ class Entity(BaseModel):
     Module-agnostic entity class.
     """
     name: str
+    type: str = "UNKNOWN"
     labels: List[str]
     properties: Dict
     content_hash: str
 
-    def __init__(self, name: str, labels: List[str], properties: Dict, content_hash: Optional[str] = None):
+    def __init__(self, name: str, labels: List[str], properties: Dict, content_hash: Optional[str] = None, type: str = "UNKNOWN"):
         # Sanitize labels
         sanitized_labels = _sanitize_labels(labels)
         
@@ -84,7 +89,7 @@ class Entity(BaseModel):
         if content_hash is None:
             content_hash = _compute_content_hash(name, properties)
         
-        super().__init__(name=name, labels=sanitized_labels, properties=properties, content_hash=content_hash)
+        super().__init__(name=name, labels=sanitized_labels, properties=properties, content_hash=content_hash, type=type)
 
     @property
     def label(self) -> str:
@@ -101,11 +106,11 @@ class Relationship(BaseModel):
     Module-agnostic relation class.
     """
     from_entity: Entity
-    to_entity: Entity
+    to_entity: Union[Entity, ExternalEntityRef]
     label: str
     properties: Dict
 
-    def __init__(self, from_entity: Entity, to_entity: Entity, label: str, properties: Dict):
+    def __init__(self, from_entity: Entity, to_entity: Union[Entity, ExternalEntityRef], label: str, properties: Dict):
         super().__init__(from_entity=from_entity, to_entity=to_entity, label=label, properties=properties)
 
     def __repr__(self):

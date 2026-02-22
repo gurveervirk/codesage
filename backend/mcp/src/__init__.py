@@ -10,7 +10,7 @@ from core.com_store import COMStore, COMStoreTools
 from config import config
 
 # Initialize FastMCP server
-server = FastMCP("codesage_library_explorer")
+server = FastMCP("deputy_library_explorer")
 
 # Initialize COMStore with Neo4j connection
 com_store = COMStore(
@@ -80,7 +80,7 @@ def get_api_call_path(
 @server.resource("guide://user-guide")
 def get_user_guide():
     """
-    Get the complete User Guide for the CodeSage Library Explorer MCP Server.
+    Get the complete User Guide for the Deputy Library Explorer MCP Server.
     
     This resource provides comprehensive documentation on:
     - Available tools and their usage
@@ -99,7 +99,7 @@ def get_user_guide():
         
         return {
             "uri": "guide://user-guide",
-            "name": "CodeSage Library Explorer User Guide",
+            "name": "deputy Library Explorer User Guide",
             "description": "Complete guide on using MCP server tools, workflows, and best practices",
             "mimeType": "text/markdown",
             "text": guide_content
@@ -107,7 +107,7 @@ def get_user_guide():
     except FileNotFoundError:
         return {
             "uri": "guide://user-guide",
-            "name": "CodeSage Library Explorer User Guide",
+            "name": "deputy Library Explorer User Guide",
             "description": "User guide not found",
             "mimeType": "text/plain",
             "text": "USER_GUIDE.md not found. Please ensure the guide is present in the mcp directory."
@@ -129,7 +129,7 @@ def main():
         server.settings.port = port
         server.settings.host = host
         
-        print(f"Starting CodeSage Library Explorer MCP Server")
+        print(f"Starting deputy Library Explorer MCP Server")
         print(f"Transport: Streamable HTTP (Modern MCP Protocol)")
         print(f"Endpoint: http://{host}:{port}/mcp")
         print(f"Log level: {server.settings.log_level}")
@@ -149,7 +149,7 @@ def main():
         server.settings.port = port
         server.settings.host = host
         
-        print(f"Starting CodeSage Library Explorer MCP Server")
+        print(f"Starting deputy Library Explorer MCP Server")
         print(f"Transport: SSE (Legacy HTTP Streaming)")
         print(f"Listening on: http://{host}:{port}")
         print(f"Log level: {server.settings.log_level}")
@@ -160,7 +160,7 @@ def main():
         
     elif transport_type == "stdio":
         # Configure STDIO transport for direct process communication
-        print(f"Starting CodeSage Library Explorer MCP Server")
+        print(f"Starting deputy Library Explorer MCP Server")
         print(f"Transport: STDIO")
         print(f"Log level: {server.settings.log_level}")
         

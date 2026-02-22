@@ -9,7 +9,7 @@ UI/.cache
 UI/build
 UI/.env
 /venv
-/codesage_overview
+/deputy_overview
 /backend/contexts
 # /benchmarks/GitChameleonBenchmark/tests
 /benchmarks/GitChameleonBenchmark/stashed_tests

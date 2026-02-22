@@ -10,7 +10,7 @@ from core.com_store.graph import COMStore, COMStoreTools
 from config import config
 
 # Initialize FastMCP server
-server = FastMCP("codesage_library_explorer")
+server = FastMCP("deputy_library_explorer")
 
 # Initialize COMStore with Neo4j connection
 com_store = COMStore(

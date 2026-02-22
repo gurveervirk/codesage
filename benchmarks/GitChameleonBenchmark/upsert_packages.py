@@ -5,11 +5,11 @@ Process library versions from GitChameleon dataset.
 This script:
 1. Reads library versions from version_info.json
 2. For each selected library version:
-   - Creates an isolated virtual environment
-   - Installs the specific library version
+    - Downloads a wheel without dependencies
+    - Unpacks the wheel and statically analyzes source files
    - Uses com_extractor to extract code entities
    - Uploads entities to Neo4j using com_store
-   - Cleans up the virtual environment
+    - Cleans up temporary artifacts
    - Proceeds to the next version
 """
 
@@ -21,8 +21,10 @@ import shutil
 import logging
 import argparse
 import traceback
+import re
+import zipfile
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 from dotenv import load_dotenv
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / 'backend'))
@@ -33,6 +35,14 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# Import static analysis tools
+try:
+    from core.com_extractor import process_package_from_module_paths
+    from core.com_extractor.models import Entity, Relationship
+except ImportError as e:
+    logger.error(f"Failed to import static analysis tools: {e}")
+    process_package_from_module_paths = None
 
 try:
     from core.com_store.graph.main import COMStore as _GraphStore
@@ -309,124 +319,462 @@ def install_package(venv_path: Path, package_spec: str) -> bool:
         return False
 
 
-def run_extraction_in_venv(
+def _iter_python_minor_versions(start_version: str = "3.13", min_version: str = "3.8") -> List[str]:
+    def _parse_minor(v: str) -> Tuple[int, int]:
+        parts = v.split(".")
+        major = int(parts[0]) if parts else 3
+        minor = int(parts[1]) if len(parts) > 1 else 13
+        return major, minor
+
+    start_major, start_minor = _parse_minor(start_version)
+    min_major, min_minor = _parse_minor(min_version)
+
+    if start_major != min_major:
+        raise ValueError("Python probe range must stay within the same major version")
+    if start_minor < min_minor:
+        raise ValueError("Start Python version must be >= minimum Python version")
+
+    return [f"{start_major}.{minor}" for minor in range(start_minor, min_minor - 1, -1)]
+
+
+def _find_available_python_executable() -> Optional[str]:
+    candidates = [sys.executable, "python3", "python"]
+    for candidate in candidates:
+        try:
+            subprocess.run([candidate, "--version"], capture_output=True, text=True, check=True)
+            subprocess.run([candidate, "-m", "pip", "--version"], capture_output=True, text=True, check=True)
+            return candidate
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            continue
+    return None
+
+
+def _uv_available() -> bool:
+    try:
+        subprocess.run(["uv", "--version"], check=True, capture_output=True, text=True)
+        return True
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return False
+
+
+def _select_wheel_file(download_dir: Path, library: str) -> Optional[Path]:
+    wheels = sorted(download_dir.glob("*.whl"))
+    if not wheels:
+        return None
+
+    normalized_library = re.sub(r"[-_.]+", "-", library).lower()
+    for wheel in wheels:
+        dist_name = wheel.name.split("-")[0]
+        normalized_dist = re.sub(r"[-_.]+", "-", dist_name).lower()
+        if normalized_dist == normalized_library:
+            return wheel
+
+    return wheels[0]
+
+
+def download_wheel_without_deps(
+    library: str,
+    version: str,
+    artifacts_dir: Path,
+    start_python_version: str = "3.13",
+    min_python_version: str = "3.8",
+) -> Optional[Tuple[str, str, Path]]:
+    package_spec = f"{library}=={version}"
+    probe_versions = _iter_python_minor_versions(start_python_version, min_python_version)
+    python_exe = _find_available_python_executable()
+    if not python_exe:
+        logger.error("No available Python executable found for wheel probing")
+        return None
+
+    logger.info(f"Using interpreter '{python_exe}' to probe wheel compatibility across Python versions")
+
+    for py_minor in probe_versions:
+        download_dir = artifacts_dir / f"download_{library}_{version}_{py_minor.replace('.', '_')}"
+        if download_dir.exists():
+            shutil.rmtree(download_dir)
+        download_dir.mkdir(parents=True, exist_ok=True)
+
+        py_tag = py_minor.replace(".", "")
+
+        cmd = [
+            python_exe,
+            "-m",
+            "pip",
+            "download",
+            "--only-binary=:all:",
+            "--no-deps",
+            "--implementation",
+            "cp",
+            "--python-version",
+            py_tag,
+            "--dest",
+            str(download_dir),
+            package_spec,
+        ]
+
+        try:
+            logger.info(f"Attempting wheel download for {package_spec} with Python {py_minor}")
+            subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=600)
+        except subprocess.CalledProcessError as e:
+            stderr = (e.stderr or "").strip()
+            logger.info(f"Wheel download failed for Python {py_minor}: {stderr}")
+            continue
+        except subprocess.TimeoutExpired:
+            logger.info(f"Wheel download timed out for Python {py_minor}")
+            continue
+
+        wheel_path = _select_wheel_file(download_dir, library)
+        if not wheel_path:
+            logger.info(f"No wheel file found after successful download command for Python {py_minor}")
+            continue
+
+        return python_exe, py_minor, wheel_path
+
+    return None
+
+
+def probe_installable_python_version(
+    library: str,
+    version: str,
+    start_python_version: str = "3.13",
+    min_python_version: str = "3.8",
+) -> Optional[str]:
+    package_spec = f"{library}=={version}"
+    probe_versions = _iter_python_minor_versions(start_python_version, min_python_version)
+
+    if _uv_available():
+        for py_minor in probe_versions:
+            cmd = [
+                "uv",
+                "pip",
+                "install",
+                "--dry-run",
+                "--no-deps",
+                "--python-version",
+                py_minor,
+                package_spec,
+            ]
+            try:
+                logger.info(f"Attempting install dry-run for {package_spec} with Python {py_minor} via uv")
+                subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=600)
+                return py_minor
+            except subprocess.CalledProcessError as e:
+                stderr = (e.stderr or "").strip()
+                logger.info(f"Install dry-run failed for Python {py_minor}: {stderr}")
+                continue
+            except subprocess.TimeoutExpired:
+                logger.info(f"Install dry-run timed out for Python {py_minor}")
+                continue
+    else:
+        python_exe = _find_available_python_executable()
+        if not python_exe:
+            return None
+        for py_minor in probe_versions:
+            cmd = [
+                python_exe,
+                "-m",
+                "pip",
+                "install",
+                "--dry-run",
+                "--no-deps",
+                "--python-version",
+                py_minor.replace(".", ""),
+                package_spec,
+            ]
+            try:
+                logger.info(f"Attempting install dry-run for {package_spec} with Python {py_minor}")
+                subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=600)
+                return py_minor
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+                continue
+
+    return None
+
+
+def dry_run_install_for_python_version(
+    library: str,
+    version: str,
+    python_minor: str,
+) -> bool:
+    package_spec = f"{library}=={version}"
+
+    if _uv_available():
+        cmd = [
+            "uv",
+            "pip",
+            "install",
+            "--dry-run",
+            "--no-deps",
+            "--python-version",
+            python_minor,
+            package_spec,
+        ]
+        try:
+            subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=600)
+            return True
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            return False
+
+    python_exe = _find_available_python_executable()
+    if not python_exe:
+        return False
+
+    cmd = [
+        python_exe,
+        "-m",
+        "pip",
+        "install",
+        "--dry-run",
+        "--no-deps",
+        "--python-version",
+        python_minor.replace(".", ""),
+        package_spec,
+    ]
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=600)
+        return True
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        return False
+
+
+def get_site_packages_path(venv_path: Path) -> Path:
+    if sys.platform == "win32":
+        site_packages = venv_path / "Lib" / "site-packages"
+    else:
+        lib_dir = venv_path / "lib"
+        if not lib_dir.exists():
+            sp = list(venv_path.rglob("site-packages"))
+            if sp:
+                return sp[0]
+            raise FileNotFoundError(f"Could not find lib directory in {venv_path}")
+        python_dirs = list(lib_dir.glob("python*"))
+        if not python_dirs:
+            raise FileNotFoundError(f"Could not find python directory in {lib_dir}")
+        site_packages = sorted(python_dirs)[-1] / "site-packages"
+
+    if not site_packages.exists():
+        raise FileNotFoundError(f"site-packages not found at {site_packages}")
+
+    return site_packages
+
+
+def _discover_module_paths_from_site_packages(site_packages: Path, library: str) -> Dict[str, str]:
+    module_names: List[str] = []
+    normalized_library = re.sub(r"[-_.]+", "-", library).lower()
+
+    dist_infos = []
+    for dist_info_dir in sorted(site_packages.glob("*.dist-info")):
+        dist_name = dist_info_dir.name.split("-")[0]
+        normalized_dist = re.sub(r"[-_.]+", "-", dist_name).lower()
+        if normalized_dist == normalized_library:
+            dist_infos.append(dist_info_dir)
+
+    if not dist_infos:
+        dist_infos = sorted(site_packages.glob("*.dist-info"))
+
+    for dist_info_dir in dist_infos:
+        top_level_file = dist_info_dir / "top_level.txt"
+        if top_level_file.exists():
+            for raw_line in top_level_file.read_text(encoding="utf-8", errors="ignore").splitlines():
+                module_name = raw_line.strip()
+                if module_name and not module_name.startswith("#") and module_name not in module_names:
+                    module_names.append(module_name)
+
+    library_candidates = [library, library.replace("-", "_")]
+    for candidate in library_candidates:
+        if candidate not in module_names:
+            module_names.append(candidate)
+
+    module_paths: Dict[str, str] = {}
+    for module_name in module_names:
+        possible_names = [module_name, module_name.replace("-", "_")]
+        for possible in possible_names:
+            dir_path = site_packages / possible
+            file_path = site_packages / f"{possible}.py"
+            if dir_path.exists():
+                module_paths[module_name] = str(dir_path)
+                break
+            if file_path.exists():
+                module_paths[module_name] = str(file_path)
+                break
+
+    return module_paths
+
+
+def create_env_with_python_version(venv_path: Path, python_version: str) -> bool:
+    if _uv_available():
+        try:
+            logger.info(f"Creating environment at {venv_path} with Python {python_version} via uv")
+            subprocess.run(
+                ["uv", "venv", "--python", python_version, str(venv_path)],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=600,
+            )
+            return True
+        except subprocess.CalledProcessError as e:
+            stderr = (e.stderr or "").strip()
+            logger.warning(f"uv venv creation failed for Python {python_version}: {stderr}")
+        except subprocess.TimeoutExpired:
+            logger.warning(f"uv venv creation timed out for Python {python_version}")
+
+    return create_venv(
+        venv_path,
+        use_conda=False,
+        use_available_python=False,
+        python_version=python_version,
+    )
+
+
+def install_package_in_env(venv_path: Path, package_spec: str) -> bool:
+    python_exe = get_venv_python(venv_path)
+    if _uv_available():
+        try:
+            logger.info(f"Installing {package_spec} in {venv_path} via uv")
+            subprocess.run(
+                ["uv", "pip", "install", "--no-deps", "-p", str(python_exe), package_spec],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=1200,
+            )
+            return True
+        except subprocess.CalledProcessError as e:
+            stderr = (e.stderr or "").strip()
+            logger.warning(f"uv install failed for {package_spec}: {stderr}")
+        except subprocess.TimeoutExpired:
+            logger.warning(f"uv install timed out for {package_spec}")
+        return False
+
+    return install_package(venv_path, package_spec)
+
+
+def run_extraction_from_installed_env(
     venv_path: Path,
     library: str,
     version: str,
-    codesage_root: Path
 ) -> Optional[tuple]:
-    """
-    Run the code extraction inside the virtual environment.
-    
-    Args:
-        venv_path: Path to the virtual environment
-        library: Library name
-        version: Library version
-        codesage_root: Path to CodeSage root directory
-    
-    Returns:
-        Tuple of (entities, relations, other_relations, aliases) or None if failed
-    """
-    python_exe = get_venv_python(venv_path)
-    
-    # Create a temporary Python script to run inside the venv
-    extraction_script = f"""
-import sys
-import os
-
-# Add CodeSage backend to path
-sys.path.insert(0, r"{codesage_root / 'backend'}")
-
-try:
-    from core.com_extractor import process_package
-    
-    # Process the package
-    result = process_package("{library}", version="{version}")
-    
-    # Handle Result
-    # Assumes ExtractionResult object with attributes
-    entities = result.entities
-    relations = result.relations
-    other_relations = result.other_relations
-    aliases = getattr(result, "aliases", {{}})
-    
-    # Save results to a temporary file
-    import json
-    import pickle
-    
-    results = {{
-        'entities': entities,
-        'relations': relations,
-        'other_relations': other_relations,
-        'aliases': aliases
-    }}
-    
-    # Serialize using pickle for complex objects
-    with open('extraction_results.pkl', 'wb') as f:
-        pickle.dump(results, f)
-    
-    print("EXTRACTION_SUCCESS")
-    
-except Exception as e:
-    import traceback
-    print(f"EXTRACTION_ERROR: {{str(e)}}", file=sys.stderr)
-    traceback.print_exc(file=sys.stderr)
-    sys.exit(1)
-"""
-    
-    script_path = venv_path / "extract_code.py"
-    results_path = venv_path / "extraction_results.pkl"
-    
     try:
-        # Write the extraction script
-        with open(script_path, 'w') as f:
-            f.write(extraction_script)
-        
-        # Run the script
-        logger.info(f"Extracting entities from {library}=={version}")
-        result = subprocess.run(
-            [str(python_exe), str(script_path)],
-            cwd=str(venv_path),
-            capture_output=True,
-            timeout=1800,  # 30 minute timeout
-            text=True
+        if not process_package_from_module_paths:
+            raise ImportError("Static analysis tools not loaded")
+
+        site_packages = get_site_packages_path(venv_path)
+        logger.info(f"Using site-packages for extraction: {site_packages}")
+
+        module_paths = _discover_module_paths_from_site_packages(site_packages, library)
+        if not module_paths:
+            logger.error(f"No top-level module paths discovered in installed env for {library}=={version}")
+            return None
+
+        logger.info(f"Discovered {len(module_paths)} top-level module path(s) from installed env: {sorted(module_paths.keys())}")
+        result = process_package_from_module_paths(library, version, module_paths)
+
+        logger.info(
+            f"Extracted {len(result.entities)} entities, {len(result.relations)} structural relations, "
+            f"and {sum(len(v) for v in result.other_relations.values())} other_relations via installed static extraction"
         )
-        
-        if result.returncode != 0:
-            logger.error(f"Extraction failed: {result.stderr}")
-            return None
-        
-        if "EXTRACTION_SUCCESS" not in result.stdout:
-            logger.error(f"Extraction did not complete successfully")
-            return None
-        
-        # Load the results
-        import pickle
-        with open(results_path, 'rb') as f:
-            results = pickle.load(f)
-        
-        num_aliases = len(results.get('aliases', {}))
-        logger.info(f"Extracted {len(results['entities'])} entities, {len(results['relations'])} relations, {num_aliases} aliases")
-        
+
         return (
-            results['entities'], 
-            results['relations'], 
-            results['other_relations'], 
-            results.get('aliases', {})
+            result.entities,
+            result.relations,
+            result.other_relations,
+            getattr(result, "aliases", {}),
         )
-        
-    except subprocess.TimeoutExpired:
-        logger.error(f"Extraction timed out for {library}=={version}")
-        return None
     except Exception as e:
-        logger.error(f"Error during extraction: {e}")
+        logger.error(f"Static extraction from installed env failed: {e}")
+        traceback.print_exc()
         return None
-    finally:
-        # Cleanup temporary files
-        if script_path.exists():
-            script_path.unlink()
-        if results_path.exists():
-            results_path.unlink()
+
+
+def _unpack_wheel(wheel_path: Path, unpack_dir: Path) -> None:
+    if unpack_dir.exists():
+        shutil.rmtree(unpack_dir)
+    unpack_dir.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(wheel_path, "r") as wheel_zip:
+        wheel_zip.extractall(unpack_dir)
+
+
+def _discover_module_paths_from_unpacked_wheel(unpack_dir: Path, library: str) -> Dict[str, str]:
+    module_names: List[str] = []
+
+    for dist_info_dir in sorted(unpack_dir.glob("*.dist-info")):
+        top_level_file = dist_info_dir / "top_level.txt"
+        if top_level_file.exists():
+            for raw_line in top_level_file.read_text(encoding="utf-8", errors="ignore").splitlines():
+                module_name = raw_line.strip()
+                if module_name and not module_name.startswith("#") and module_name not in module_names:
+                    module_names.append(module_name)
+
+    if not module_names:
+        for child in sorted(unpack_dir.iterdir()):
+            name = child.name
+            if name.endswith(".dist-info") or name.endswith(".data"):
+                continue
+            if child.is_dir():
+                module_names.append(name)
+            elif child.is_file() and child.suffix == ".py":
+                module_names.append(child.stem)
+
+    library_candidates = [library, library.replace("-", "_")]
+    for candidate in library_candidates:
+        if candidate not in module_names:
+            module_names.append(candidate)
+
+    module_paths: Dict[str, str] = {}
+    for module_name in module_names:
+        possible_names = [module_name, module_name.replace("-", "_")]
+        for possible in possible_names:
+            dir_path = unpack_dir / possible
+            file_path = unpack_dir / f"{possible}.py"
+            if dir_path.exists():
+                module_paths[module_name] = str(dir_path)
+                break
+            if file_path.exists():
+                module_paths[module_name] = str(file_path)
+                break
+
+    return module_paths
+
+
+def run_extraction_from_wheel(
+    library: str,
+    version: str,
+    wheel_path: Path,
+    artifacts_dir: Path,
+) -> Optional[tuple]:
+    try:
+        if not process_package_from_module_paths:
+            raise ImportError("Static analysis tools not loaded")
+
+        unpack_dir = artifacts_dir / f"unpacked_{wheel_path.stem}"
+        _unpack_wheel(wheel_path, unpack_dir)
+
+        module_paths = _discover_module_paths_from_unpacked_wheel(unpack_dir, library)
+        if not module_paths:
+            logger.error(f"No top-level module paths discovered in wheel {wheel_path.name}")
+            return None
+
+        logger.info(f"Discovered {len(module_paths)} top-level module path(s) from wheel: {sorted(module_paths.keys())}")
+
+        result = process_package_from_module_paths(library, version, module_paths)
+
+        logger.info(
+            f"Extracted {len(result.entities)} entities, {len(result.relations)} structural relations, "
+            f"and {sum(len(v) for v in result.other_relations.values())} other_relations via wheel static extraction"
+        )
+
+        return (
+            result.entities,
+            result.relations,
+            result.other_relations,
+            getattr(result, "aliases", {}),
+        )
+
+    except Exception as e:
+        logger.error(f"Static extraction from wheel failed: {e}")
+        traceback.print_exc()
+        return None
 
 
 def check_version_exists(
@@ -464,13 +812,21 @@ def check_version_exists(
     # Check Postgres
     if 'postgres' in stores:
         try:
-            # We check if the DISTRIBUTION_PACKAGE entity has this version in its versions array
             pg_store = stores['postgres']
             with pg_store._get_connection() as conn:
                 with conn.cursor() as cur:
                     cur.execute(
-                        "SELECT 1 FROM entities WHERE name = %s AND type = 'DISTRIBUTION_PACKAGE' AND versions @> %s",
-                        (library, [version])
+                        """
+                        SELECT 1
+                        FROM entities e
+                        JOIN entity_versions ev ON ev.entity_id = e.id
+                        JOIN versions v ON v.id = ev.version_id
+                        WHERE e.name = %s
+                          AND 'DISTRIBUTION_PACKAGE' = ANY(e.types)
+                          AND v.version_text = %s
+                        LIMIT 1
+                        """,
+                        (library, version)
                     )
                     if not cur.fetchone():
                         exists_all = False
@@ -515,7 +871,7 @@ def upload_to_stores(
     # Upload to Postgres
     if 'postgres' in stores:
         try:
-            logger.info(f"Uploading to Postgres for {library}=={version}")
+            logger.info(f"Uploading entities + other_relations + aliases to Postgres for {library}=={version}")
             stores['postgres'].upsert_to_postgres(
                 entities=entities,
                 other_relations=other_relations,
@@ -535,7 +891,7 @@ def process_library_version(
     version: str,
     additional_deps: List[Dict],
     work_dir: Path,
-    codesage_root: Path,
+    deputy_root: Path,
     config: Dict,
     targets: List[str],
     keep_venv: bool = False,
@@ -546,38 +902,101 @@ def process_library_version(
     """
     Process a single library version.
     """
-    venv_path = work_dir / f"venv_{library}_{version.replace('.', '_')}"
+    artifacts_dir = work_dir / "wheel_artifacts"
+    fallback_venv_path: Optional[Path] = None
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
     
     try:
-        # Step 1: Create virtual environment
-        if not create_venv(venv_path, use_conda=use_conda, use_available_python=use_available_python, python_version=python_version):
-            return False
-        
-        # Step 2: Install the library
-        package_spec = f"{library}=={version}"
-        if not install_package(venv_path, package_spec):
-            return False
-        
-        # Step 3: Install additional dependencies
-        for dep in additional_deps:
-            dep_package = dep['package']
-            dep_version = dep.get('version')
-            if dep_version:
-                dep_spec = f"{dep_package}=={dep_version}"
-            else:
-                dep_spec = dep_package
-            
-            if not install_package(venv_path, dep_spec):
-                logger.warning(f"Failed to install dependency {dep_spec}, continuing anyway")
-        
-        # Step 4: Extract code entities
-        extraction_result = run_extraction_in_venv(venv_path, library, version, codesage_root)
+        if additional_deps:
+            logger.info(f"Skipping {len(additional_deps)} additional dependency install(s) in wheel-only static mode")
+
+        wheel_download = download_wheel_without_deps(
+            library=library,
+            version=version,
+            artifacts_dir=artifacts_dir,
+            start_python_version=python_version,
+            min_python_version="3.8",
+        )
+        if not wheel_download:
+            logger.warning(
+                f"No compatible wheel found for {library}=={version}; falling back to install probe across Python versions"
+            )
+
+            extraction_result = None
+            package_spec = f"{library}=={version}"
+            for candidate_python in _iter_python_minor_versions(python_version, "3.8"):
+                logger.info(
+                    f"Probing fallback install path for {package_spec} with Python {candidate_python}"
+                )
+
+                if not dry_run_install_for_python_version(library, version, candidate_python):
+                    logger.info(f"Dry-run rejected for Python {candidate_python}")
+                    continue
+
+                candidate_venv_path = work_dir / (
+                    f"venv_{library}_{version.replace('.', '_')}_{candidate_python.replace('.', '_')}"
+                )
+                if candidate_venv_path.exists():
+                    shutil.rmtree(candidate_venv_path)
+
+                if not create_env_with_python_version(candidate_venv_path, candidate_python):
+                    logger.info(f"Failed to create env for Python {candidate_python}; trying next")
+                    continue
+
+                if not install_package_in_env(candidate_venv_path, package_spec):
+                    logger.info(f"Install failed for Python {candidate_python}; trying next")
+                    try:
+                        shutil.rmtree(candidate_venv_path)
+                    except Exception:
+                        pass
+                    continue
+
+                fallback_venv_path = candidate_venv_path
+                logger.info(
+                    f"Fallback install succeeded for {package_spec} with Python {candidate_python}"
+                )
+                extraction_result = run_extraction_from_installed_env(
+                    venv_path=fallback_venv_path,
+                    library=library,
+                    version=version,
+                )
+                if extraction_result is not None:
+                    break
+
+                logger.info(f"Extraction failed after install for Python {candidate_python}; trying next")
+                try:
+                    shutil.rmtree(candidate_venv_path)
+                except Exception:
+                    pass
+
+            if extraction_result is None:
+                logger.error(f"No compatible install target found for {library}=={version} in Python probe range")
+                return False
+
+            entities, relations, other_relations, aliases = extraction_result
+
+            if not upload_to_stores(entities, relations, other_relations, aliases, library, version, config, targets):
+                return False
+
+            logger.info(f"✓ Successfully processed {library}=={version}")
+            return True
+
+        python_exe, python_minor, wheel_path = wheel_download
+        logger.info(
+            f"Using wheel {wheel_path.name} downloaded with {python_exe} (Python {python_minor}) for {library}=={version}"
+        )
+
+        extraction_result = run_extraction_from_wheel(
+            library=library,
+            version=version,
+            wheel_path=wheel_path,
+            artifacts_dir=artifacts_dir,
+        )
         if extraction_result is None:
             return False
         
         entities, relations, other_relations, aliases = extraction_result
         
-        # Step 5: Upload to Stores
         if not upload_to_stores(entities, relations, other_relations, aliases, library, version, config, targets):
             return False
         
@@ -590,13 +1009,18 @@ def process_library_version(
         return False
     
     finally:
-        # Step 6: Cleanup virtual environment
-        if not keep_venv and venv_path.exists():
-            logger.info(f"Cleaning up venv at {venv_path}")
+        if not keep_venv and artifacts_dir.exists():
+            logger.info(f"Cleaning up wheel artifacts under {artifacts_dir}")
             try:
-                shutil.rmtree(venv_path)
+                shutil.rmtree(artifacts_dir)
             except Exception as e:
-                logger.warning(f"Failed to remove venv: {e}")
+                logger.warning(f"Failed to remove wheel artifacts: {e}")
+        if not keep_venv and fallback_venv_path and fallback_venv_path.exists():
+            logger.info(f"Cleaning up fallback venv at {fallback_venv_path}")
+            try:
+                shutil.rmtree(fallback_venv_path)
+            except Exception as e:
+                logger.warning(f"Failed to remove fallback venv: {e}")
 
 
 def main():
@@ -613,6 +1037,7 @@ Examples:
   %(prog)s --all                        # Process all libraries and versions
   %(prog)s --library torch --keep-venv  # Keep virtual environment after processing
   %(prog)s --target postgres            # Upload to Postgres only
+    %(prog)s --target postgres --purge-postgres  # Purge Postgres tables before processing
         """
     )
     
@@ -643,7 +1068,7 @@ Examples:
     parser.add_argument(
         '--keep-venv',
         action='store_true',
-        help='Keep virtual environments after processing (for debugging)'
+        help='Keep temporary wheel artifacts after processing (for debugging)'
     )
     
     parser.add_argument(
@@ -698,13 +1123,19 @@ Examples:
         default=None,
         help='Postgres connection URL (overrides env var)'
     )
+
+    parser.add_argument(
+        '--purge-postgres',
+        action='store_true',
+        help='Purge all COM tables in Postgres before processing starts'
+    )
     
     args = parser.parse_args()
     
     # Determine paths
     script_dir = Path(__file__).parent
-    codesage_root = script_dir.parent.parent
-    backend_dir = codesage_root / "backend"
+    deputy_root = script_dir.parent.parent
+    backend_dir = deputy_root / "backend"
     version_info_path = script_dir / "version_info.json"
     
     # Load environment variables from backend/.env
@@ -786,6 +1217,17 @@ Examples:
         logger.error("Postgres URL is required for postgres target. Use --postgres-url or set SUPABASE_DB_URL/POSTGRES_URL env var.")
         return 1
 
+    if args.purge_postgres:
+        if 'postgres' not in targets:
+            logger.error("--purge-postgres requires postgres target. Use --target postgres or --target all.")
+            return 1
+        stores = init_stores(config, targets)
+        if 'postgres' not in stores:
+            logger.error("Postgres store is not initialized; cannot purge tables.")
+            return 1
+        logger.warning("Resetting Postgres schema (drop + recreate) before processing...")
+        stores['postgres'].reset_schema()
+
     # Determine what to process
     if args.all:
         selected_library = "ALL"
@@ -858,7 +1300,7 @@ Examples:
             version=version,
             additional_deps=additional_deps,
             work_dir=work_dir,
-            codesage_root=codesage_root,
+            deputy_root=deputy_root,
             config=config,
             targets=targets,
             keep_venv=args.keep_venv,
