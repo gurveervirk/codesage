@@ -203,9 +203,9 @@ class PostgresCOMStore:
             rows,
         )
 
-    def _upsert_module_sources(self, cur, rows: List[Dict]) -> Dict[Tuple[int, bytes], int]:
+    def _upsert_module_sources(self, cur, rows: List[Dict]) -> None:
         if not rows:
-            return {}
+            return
         values = [
             (
                 r["module_entity_id"],
@@ -226,23 +226,6 @@ class PostgresCOMStore:
             values,
         )
 
-        lookup_values = [(r["module_entity_id"], r["source_hash"]) for r in rows]
-        execute_values(
-            cur,
-            """
-            SELECT ms.id, ms.module_entity_id, ms.source_hash
-            FROM module_sources ms
-            JOIN (VALUES %s) AS t(module_entity_id, source_hash)
-              ON ms.module_entity_id = t.module_entity_id
-             AND ms.source_hash = t.source_hash
-            """,
-            lookup_values,
-        )
-        out = {}
-        for row_id, module_entity_id, source_hash in cur.fetchall():
-            out[(module_entity_id, bytes(source_hash))] = row_id
-        return out
-
     def _upsert_module_source_versions(self, cur, rows: List[Tuple[int, bytes, int]]):
         if not rows:
             return
@@ -260,9 +243,9 @@ class PostgresCOMStore:
             rows,
         )
 
-    def _upsert_entity_definitions(self, cur, rows: List[Dict]) -> Dict[Tuple[int, bytes], int]:
+    def _upsert_entity_definitions(self, cur, rows: List[Dict]) -> None:
         if not rows:
-            return {}
+            return
         values = [(r["entity_id"], r["source_hash"]) for r in rows]
         execute_values(
             cur,
@@ -273,23 +256,6 @@ class PostgresCOMStore:
             """,
             values,
         )
-
-        lookup_values = [(r["entity_id"], r["source_hash"]) for r in rows]
-        execute_values(
-            cur,
-            """
-            SELECT ed.id, ed.entity_id, ed.source_hash
-            FROM entity_definitions ed
-            JOIN (VALUES %s) AS t(entity_id, source_hash)
-              ON ed.entity_id = t.entity_id
-             AND ed.source_hash = t.source_hash
-            """,
-            lookup_values,
-        )
-        out = {}
-        for row_id, entity_id, source_hash in cur.fetchall():
-            out[(entity_id, bytes(source_hash))] = row_id
-        return out
 
     def _upsert_entity_definition_versions(self, cur, rows: List[Tuple[int, bytes, int]]):
         if not rows:
@@ -509,6 +475,23 @@ class PostgresCOMStore:
             rows,
         )
 
+    def _fetch_existing_module_sources(self, cur, pairs: List[Tuple]) -> set:
+        if not pairs:
+            return set()
+        results = execute_values(
+            cur,
+            """
+            SELECT ms.module_entity_id, ms.source_hash
+            FROM module_sources ms
+            JOIN (VALUES %s) AS t(module_entity_id, source_hash)
+              ON ms.module_entity_id = t.module_entity_id::bigint
+             AND ms.source_hash = t.source_hash::bytea
+            """,
+            pairs,
+            fetch=True,
+        )
+        return {(row[0], bytes(row[1])) for row in results}
+
     def upsert_to_postgres(
         self,
         entities: List[Entity],
@@ -699,7 +682,19 @@ class PostgresCOMStore:
                             existing["docstring"] = row["docstring"]
 
                 module_source_rows = list(final_module_sources.values())
-                module_source_id_map = self._upsert_module_sources(cur, module_source_rows)
+                existing_module_source_keys = self._fetch_existing_module_sources(
+                    cur, [(r["module_entity_id"], r["source_hash"]) for r in module_source_rows]
+                )
+                new_module_source_rows = [
+                    r for r in module_source_rows
+                    if (r["module_entity_id"], bytes(r["source_hash"])) not in existing_module_source_keys
+                ]
+                logger.info(
+                    "Pre-check module_sources: %d/%d new (skipping %d existing)",
+                    len(new_module_source_rows), len(module_source_rows),
+                    len(module_source_rows) - len(new_module_source_rows),
+                )
+                self._upsert_module_sources(cur, new_module_source_rows)
                 module_source_hash_by_entity = {}
                 module_source_rank_by_entity = {}
                 for row in module_source_rows:
@@ -897,9 +892,10 @@ class PostgresCOMStore:
                 conn.commit()
 
                 logger.info(
-                    "Completed Postgres upload: entities=%d, module_sources=%d, entity_definitions=%d, "
+                    "Completed Postgres upload: entities=%d, module_sources=%d uploaded/%d total, entity_definitions=%d, "
                     "decorator_details=%d, relations(other_relations)=%d, aliases=%d",
                     len(entity_rows),
+                    len(new_module_source_rows),
                     len(module_source_rows),
                     len(entity_def_rows),
                     len(decorator_rows),
