@@ -1,6 +1,7 @@
 import { useState, useEffect, useContext } from "react";
-import { Links, Meta, Outlet, Scripts, ScrollRestoration } from "@remix-run/react";
-import { CssBaseline } from "@mui/material";
+import { Links, Meta, NavLink, Outlet, Scripts, ScrollRestoration } from "@remix-run/react";
+import type { LinksFunction, MetaFunction } from "@remix-run/node";
+import { Box, CssBaseline, Stack, Typography } from "@mui/material";
 import { CacheProvider } from "@emotion/react";
 import createCache from "@emotion/cache";
 import { ClientStyleContext, ServerStyleContext } from "./styleContext";
@@ -9,6 +10,23 @@ import "./tailwind.css";
 
 // Create an Emotion cache instance
 const createEmotionCache = () => createCache({ key: "mui" });
+
+const BLANK_PNG = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+
+export const links: LinksFunction = () => [
+  { rel: "icon", href: BLANK_PNG },
+  { rel: "apple-touch-icon", href: BLANK_PNG },
+  { rel: "preconnect", href: "https://fonts.googleapis.com" },
+  { rel: "preconnect", href: "https://fonts.gstatic.com", crossOrigin: "anonymous" },
+  { rel: "stylesheet", href: "https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" },
+];
+
+export const meta: MetaFunction = () => {
+  return [
+    { charSet: "utf-8" },
+    { name: "viewport", content: "width=device-width,initial-scale=1" },
+  ];
+};
 
 export function Layout({ children }: { children: React.ReactNode }) {
   const serverStyleData = useContext(ServerStyleContext);
@@ -24,11 +42,6 @@ export function Layout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
       <head>
-        <meta charSet="utf-8" />
-        <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <link rel="preconnect" href="https://fonts.googleapis.com" />
-        <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="" />
-        <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
         <Meta />
         <Links />
         {/* Server-side styles */}
@@ -39,9 +52,65 @@ export function Layout({ children }: { children: React.ReactNode }) {
       <body>
         <CacheProvider value={cache}>
           <ThemeWrapper>
-            {/* CssBaseline kickstarts an elegant, consistent, and simple baseline to build upon. */}
             <CssBaseline />
-            {children}
+            <Box sx={{ display: "flex", flexDirection: "column", height: "100vh", overflow: "hidden" }}>
+              <Box
+                component="nav"
+                sx={{
+                  px: 3,
+                  py: 1.5,
+                  borderBottom: "1px solid",
+                  borderColor: "divider",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  bgcolor: "background.default",
+                  position: "sticky",
+                  top: 0,
+                  zIndex: 100,
+                }}
+              >
+                <Typography
+                  component={NavLink as React.ElementType}
+                  to="/"
+                  sx={{
+                    fontWeight: 700,
+                    fontSize: "1rem",
+                    letterSpacing: "-0.01em",
+                    color: "text.primary",
+                    textDecoration: "none",
+                    "&:hover": { opacity: 0.7 },
+                  }}
+                >
+                  deputy
+                </Typography>
+                <Stack direction="row" spacing={3}>
+                  {[
+                    { to: "/", label: "search" },
+                    { to: "/about", label: "about" },
+                  ].map(({ to, label }) => (
+                    <NavLink
+                      key={to}
+                      to={to}
+                      end
+                      style={({ isActive }) => ({
+                        fontSize: "0.875rem",
+                        fontWeight: isActive ? 700 : 400,
+                        color: "#000",
+                        textDecoration: "none",
+                        borderBottom: isActive ? "2px solid #000" : "2px solid transparent",
+                        paddingBottom: 2,
+                      })}
+                    >
+                      {label}
+                    </NavLink>
+                  ))}
+                </Stack>
+              </Box>
+              <Box sx={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", overflow: "auto" }}>
+                {children}
+              </Box>
+            </Box>
           </ThemeWrapper>
         </CacheProvider>
         <ScrollRestoration />

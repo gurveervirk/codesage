@@ -1,13 +1,8 @@
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from backend.config import config
-from llama_index.core.settings import Settings
-from llama_index.embeddings.huggingface import HuggingFaceEmbedding
-from backend.routes.upload_module import upload_module_router
-from backend.routes.generate import generate_router
-from backend.routes.llm_models import llm_models_router
-from backend.core.sage_workflow.mas import SageWorkflow
-from llama_index.llms.google_genai import GoogleGenAI
-from backend.core.com_store import COMStore
+from backend.routes.explorer import explorer_router
+from backend.core.com_store.postgres import PostgresCOMStore, PostgresCOMStoreTools
 
 app = FastAPI(
     title="deputy API",
@@ -15,36 +10,22 @@ app = FastAPI(
     version="1.0.0"
 )
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://localhost:3000"],
+    allow_methods=["GET"],
+    allow_headers=["*"],
+)
+
 @app.on_event("startup")
-async def initialize_llamaindex():
-    """Initializes LlamaIndex and application state on startup."""
+async def init():
+    """Initializes the COM store and tools on application startup."""
     try:
-        # Initialize embedding model
-        embed_model = HuggingFaceEmbedding(
-            model_name="mixedbread-ai/mxbai-embed-large-v1",
-            embed_batch_size=25
-        )
-        Settings.embed_model = embed_model
-        # Initialize LLM
-        Settings.llm = GoogleGenAI(
-            api_key=config.GOOGLE_GENAI_API_KEY,
-            temperature=1.0,
-            # rate_limit=15,
-            # period=60
-        )
-        # Store model and services in app state
-        app.state.current_model = "Gemini::" + Settings.llm.model
-        app.state.com_store = COMStore(
-            username=config.NEO4J_USER,
-            password=config.NEO4J_PASSWORD,
-            url=config.NEO4J_URI
-        )
-        app.state.workflow = SageWorkflow(com_store=app.state.com_store)
+        pg_store = PostgresCOMStore(connection_string=config.SUPABASE_DB_URL)
+        app.state.pg_tools = PostgresCOMStoreTools(pg_store)
     except Exception as e:
-        print(f"Error initializing LlamaIndex: {e}")
+        print(f"Error initializing: {e}")
         raise
 
 # Include routers
-app.include_router(upload_module_router, prefix="/upload-module", tags=["Upload Module"])
-app.include_router(generate_router, prefix="/generate", tags=["Generate"])
-app.include_router(llm_models_router, prefix="/models", tags=["Models"])
+app.include_router(explorer_router, prefix="/explorer", tags=["Explorer"])

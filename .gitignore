@@ -8,6 +8,7 @@ UI/node_modules
 UI/.cache
 UI/build
 UI/.env
+.venv/
 /venv
 /deputy_overview
 /backend/contexts

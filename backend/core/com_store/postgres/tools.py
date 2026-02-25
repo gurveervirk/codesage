@@ -65,7 +65,7 @@ class PostgresCOMStoreTools:
         finally:
             conn.close()
 
-    def search_definitions(
+    def _search_definitions_raw(
         self,
         search_terms: str,
         version: Optional[str] = None,
@@ -73,32 +73,14 @@ class PostgresCOMStoreTools:
         page_size: int = 10,
         include_inherited: bool = False,
         base_versions: Optional[Dict[str, str]] = None,
-    ) -> str:
-        """
-        Search for definitions by aliases or FQNs.
-        Ranking:
-        1. Exact Match (Alias or FQN)
-        2. Suffix Match with Dot (e.g. 'pandas.DataFrame' matches 'core.frame.DataFrame')
-        3. General Suffix Match (e.g. 'DataFrame' matches 'MyDataFrame')
-        4. Partial Match
-
-        Args:
-            search_terms: Comma-separated list of search terms (aliases, FQNs, or symbol names).
-            version: Optional version to filter by.
-            page: Page number (1-indexed).
-            page_size: Number of results per page.
-            include_inherited: If True, CLASS results are expanded with their inherited members.
-            base_versions: Optional mapping of root package name -> version for inherited member
-                resolution. Unspecified direct dependencies use the best matching version from
-                the package's declared requirements; transitive deps use latest available.
-        """
+    ) -> dict:
         if isinstance(search_terms, str):
             terms = [t.strip() for t in search_terms.split(',') if t.strip()]
         else:
             terms = search_terms or []
-            
+
         if not terms:
-            return dict_to_xml_string({"error": "No search terms provided"}, "error")
+            return {"error": "No search terms provided"}
 
         symbols = [t.split('.')[-1] for t in terms]
 
@@ -137,65 +119,112 @@ class PostgresCOMStoreTools:
                         NULL::text AS matched_alias
                     FROM entities e
                 ),
-                ranked_matches AS (
+                scored_candidates AS (
                     SELECT
                         c.entity_id,
                         c.fqn,
                         c.types,
-                        MIN(
-                            CASE 
-                                WHEN COALESCE(c.matched_alias, c.fqn) = ANY(%s) OR c.fqn = ANY(%s) THEN 10
-                                WHEN c.fqn ILIKE ANY(%s) THEN 20
-                                WHEN c.fqn = ANY(%s) OR c.fqn ILIKE ANY(%s) THEN 30
-                                WHEN c.fqn ILIKE ANY(%s) THEN 40
-                                ELSE 50
-                            END
-                        ) AS score
+                        c.matched_alias,
+                        CASE
+                            WHEN c.matched_alias IS NOT NULL AND c.matched_alias = ANY(%s) THEN 5
+                            WHEN c.matched_alias IS NULL AND c.fqn = ANY(%s) THEN 10
+                            WHEN c.matched_alias IS NOT NULL AND c.matched_alias ILIKE ANY(%s) THEN 15
+                            WHEN c.matched_alias IS NULL AND c.fqn ILIKE ANY(%s) THEN 20
+                            WHEN c.matched_alias IS NOT NULL AND (c.matched_alias = ANY(%s) OR c.matched_alias ILIKE ANY(%s)) THEN 25
+                            WHEN c.matched_alias IS NULL AND (c.fqn = ANY(%s) OR c.fqn ILIKE ANY(%s)) THEN 30
+                            WHEN c.matched_alias IS NOT NULL AND c.matched_alias ILIKE ANY(%s) THEN 35
+                            WHEN c.matched_alias IS NULL AND c.fqn ILIKE ANY(%s) THEN 40
+                            ELSE 50
+                        END AS score
                     FROM candidates c
                     JOIN entity_versions ev ON ev.entity_id = c.entity_id
                     JOIN versions v ON v.id = ev.version_id
                     WHERE (
-                        COALESCE(c.matched_alias, c.fqn) = ANY(%s)
-                        OR COALESCE(c.matched_alias, c.fqn) ILIKE ANY(%s)
-                        OR COALESCE(c.matched_alias, c.fqn) = ANY(%s)
-                        OR COALESCE(c.matched_alias, c.fqn) ILIKE ANY(%s)
-                        OR c.fqn = ANY(%s)
-                        OR c.fqn ILIKE ANY(%s)
-                        OR c.fqn = ANY(%s)
-                        OR c.fqn ILIKE ANY(%s)
+                        (c.matched_alias IS NOT NULL AND (
+                            c.matched_alias = ANY(%s)
+                            OR c.matched_alias ILIKE ANY(%s)
+                            OR c.matched_alias = ANY(%s)
+                            OR c.matched_alias ILIKE ANY(%s)
+                            OR c.matched_alias ILIKE ANY(%s)
+                            OR c.matched_alias ILIKE ANY(%s)
+                        ))
+                        OR (
+                            c.fqn = ANY(%s)
+                            OR c.fqn ILIKE ANY(%s)
+                            OR c.fqn = ANY(%s)
+                            OR c.fqn ILIKE ANY(%s)
+                            OR c.fqn ILIKE ANY(%s)
+                            OR c.fqn ILIKE ANY(%s)
+                        )
                     )
                     {version_clause}
-                    GROUP BY c.entity_id, c.fqn, c.types
+                ),
+                ranked_matches AS (
+                    SELECT
+                        entity_id,
+                        fqn,
+                        types,
+                        MIN(score) AS score
+                    FROM scored_candidates
+                    GROUP BY entity_id, fqn, types
                 )
                 """
 
                 query_params = [
-                    terms,
-                    terms,
-                    dot_term_suffixes,
-                    symbols,
-                    dot_symbol_suffixes,
-                    symbol_suffixes,
-                    terms,
-                    like_terms,
-                    symbols,
-                    like_symbols,
-                    terms,
-                    like_terms,
-                    symbols,
-                    like_symbols,
+                    terms,               # alias exact → 5
+                    terms,               # fqn exact → 10
+                    dot_term_suffixes,   # alias dot-suffix → 15
+                    dot_term_suffixes,   # fqn dot-suffix → 20
+                    symbols,             # alias symbol exact → 25
+                    dot_symbol_suffixes, # alias dot-symbol → 25
+                    symbols,             # fqn symbol exact → 30
+                    dot_symbol_suffixes, # fqn dot-symbol → 30
+                    symbol_suffixes,     # alias partial → 35
+                    symbol_suffixes,     # fqn partial → 40
+                    terms,               # WHERE alias exact
+                    dot_term_suffixes,   # WHERE alias dot-suffix
+                    symbols,             # WHERE alias symbol exact
+                    dot_symbol_suffixes, # WHERE alias dot-symbol
+                    symbol_suffixes,     # WHERE alias partial
+                    like_terms,          # WHERE alias like
+                    terms,               # WHERE fqn exact
+                    dot_term_suffixes,   # WHERE fqn dot-suffix
+                    symbols,             # WHERE fqn symbol exact
+                    dot_symbol_suffixes, # WHERE fqn dot-symbol
+                    symbol_suffixes,     # WHERE fqn partial
+                    like_terms,          # WHERE fqn like
                 ] + version_params
                 
                 cur.execute(cte_sql + "SELECT COUNT(*) FROM ranked_matches", query_params)
                 total = cur.fetchone()[0]
                 
                 cur.execute(
-                    cte_sql + "SELECT fqn, types FROM ranked_matches ORDER BY score ASC, fqn ASC LIMIT %s OFFSET %s",
+                    cte_sql + "SELECT entity_id, fqn, types FROM ranked_matches ORDER BY score ASC, fqn ASC LIMIT %s OFFSET %s",
                     query_params + [limit, offset],
                 )
-                
                 rows = cur.fetchall()
-                definitions = [{"fqn": r[0], "labels": r[1]} for r in rows]
+
+                entity_ids = [r[0] for r in rows]
+                aliases_map: Dict[int, List[str]] = {eid: [] for eid in entity_ids}
+                if entity_ids:
+                    cur.execute(
+                        "SELECT entity_id, alias FROM aliases WHERE entity_id = ANY(%s) ORDER BY alias",
+                        (entity_ids,),
+                    )
+                    for eid, alias in cur.fetchall():
+                        if eid in aliases_map:
+                            aliases_map[eid].append(alias)
+
+                terms_set = set(t.lower() for t in terms)
+                for eid in entity_ids:
+                    raw = aliases_map[eid]
+                    matched = [a for a in raw if a.lower() in terms_set]
+                    rest = sorted([a for a in raw if a.lower() not in terms_set], key=len)
+                    if not matched and rest:
+                        matched = [rest.pop(0)]
+                    aliases_map[eid] = matched + rest
+
+                definitions = [{"fqn": r[1], "labels": r[2], "aliases": aliases_map[r[0]]} for r in rows]
 
                 if include_inherited:
                     class_fqns = [d["fqn"] for d in definitions if "CLASS" in d["labels"]]
@@ -213,9 +242,41 @@ class PostgresCOMStoreTools:
                     "next_page": page + 1 if (offset + limit) < total else None,
                     "system_message": f"Found {total} matches for terms {terms}"
                 }
-                return dict_to_xml_string(data, "search_definitions_response")
+                return data
         finally:
             conn.close()
+
+    def search_definitions(
+        self,
+        search_terms: str,
+        version: Optional[str] = None,
+        page: int = 1,
+        page_size: int = 10,
+        include_inherited: bool = False,
+        base_versions: Optional[Dict[str, str]] = None,
+    ) -> str:
+        """
+        Search for definitions by aliases or FQNs.
+        Ranking:
+        1. Exact Match (Alias or FQN)
+        2. Suffix Match with Dot (e.g. 'pandas.DataFrame' matches 'core.frame.DataFrame')
+        3. General Suffix Match (e.g. 'DataFrame' matches 'MyDataFrame')
+        4. Partial Match
+
+        Args:
+            search_terms: Comma-separated list of search terms (aliases, FQNs, or symbol names).
+            version: Optional version to filter by.
+            page: Page number (1-indexed).
+            page_size: Number of results per page.
+            include_inherited: If True, CLASS results are expanded with their inherited members.
+            base_versions: Optional mapping of root package name -> version for inherited member
+                resolution. Unspecified direct dependencies use the best matching version from
+                the package's declared requirements; transitive deps use latest available.
+        """
+        data = self._search_definitions_raw(search_terms, version, page, page_size, include_inherited, base_versions)
+        if "error" in data:
+            return dict_to_xml_string(data, "error")
+        return dict_to_xml_string(data, "search_definitions_response")
 
     def _resolve_base_versions(
         self,
@@ -509,14 +570,7 @@ class PostgresCOMStoreTools:
         }
         return dict_to_xml_string(data, "get_inherited_members_response")
 
-    def get_definitions(self, entity_names: List[str], version: Optional[str] = None) -> str:
-        """
-        Get full source details for specific entities.
-        
-        Args:
-            entity_names: List of FQNs.
-            version: Preferred version. If entity has multiple versions, tries to find the code for THIS version.
-        """
+    def _get_definitions_raw(self, entity_names: List[str], version: Optional[str] = None, context_lines: int = 20, include_full_source: bool = False) -> List[Dict]:
         if isinstance(entity_names, str):
             entity_names = [entity_names]
             
@@ -553,7 +607,7 @@ class PostgresCOMStoreTools:
                         ORDER BY e.id, msv.version_id DESC, ms.id DESC
                     ),
                     definition_rows AS (
-                        SELECT DISTINCT ON (e.id)
+                        SELECT DISTINCT ON (e.id, ed.id)
                             e.id AS entity_id,
                             e.name,
                             e.types,
@@ -574,7 +628,7 @@ class PostgresCOMStoreTools:
                         JOIN version_filter vf ON vf.version_id = loc.version_id
                         WHERE e.name = ANY(%s)
                           AND 'MODULE' <> ALL(e.types)
-                        ORDER BY e.id, loc.version_id DESC, ed.id DESC
+                        ORDER BY e.id, ed.id, loc.version_id DESC
                     )
                     SELECT
                         x.name,
@@ -619,11 +673,21 @@ class PostgresCOMStoreTools:
                     final_doc = module_doc
                     final_signature = None
 
+                    context_source = None
+                    context_start_line = None
+                    context_end_line = None
+
                     if full_curr_source and start is not None and end is not None:
                         lines = full_curr_source.splitlines(keepends=True)
                         s_idx = max(0, start - 1)
                         e_idx = min(len(lines), end)
                         final_source = "".join(lines[s_idx:e_idx])
+
+                        ctx_s_idx = max(0, start - 1 - context_lines)
+                        ctx_e_idx = min(len(lines), end + context_lines)
+                        context_source = "".join(lines[ctx_s_idx:ctx_e_idx])
+                        context_start_line = ctx_s_idx + 1
+                        context_end_line = ctx_e_idx
 
                         if doc_start is not None and doc_end is not None:
                             ds_idx = max(0, doc_start - 1)
@@ -646,13 +710,30 @@ class PostgresCOMStoreTools:
                             "signature": final_signature,
                             "file_path": path,
                             "lines": f"{start}-{end}" if start is not None and end is not None else None,
+                            "context_source": context_source,
+                            "context_start_line": context_start_line,
+                            "context_end_line": context_end_line,
+                            "entity_start_line": start,
+                            "entity_end_line": end,
+                            "full_source": full_curr_source if include_full_source and start is not None else None,
                         }
                     )
 
-                data = {
-                    "definitions": results,
-                    "system_message": f"Retrieved {len(results)} definitions.",
-                }
-                return dict_to_xml_string(data, "get_definitions_response")
+                return results
         finally:
             conn.close()
+
+    def get_definitions(self, entity_names: List[str], version: Optional[str] = None) -> str:
+        """
+        Get full source details for specific entities.
+
+        Args:
+            entity_names: List of FQNs.
+            version: Preferred version. If entity has multiple versions, tries to find the code for THIS version.
+        """
+        results = self._get_definitions_raw(entity_names, version)
+        data = {
+            "definitions": results,
+            "system_message": f"Retrieved {len(results)} definitions.",
+        }
+        return dict_to_xml_string(data, "get_definitions_response")
