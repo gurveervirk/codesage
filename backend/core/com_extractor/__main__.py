@@ -5,7 +5,7 @@ Usage:
     python -m backend.core.com_extractor package <name> [--version VERSION]
     python -m backend.core.com_extractor module <name> [--version VERSION]
 """
-
+from numpy import array
 import argparse
 import json
 import logging

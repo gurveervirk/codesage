@@ -71,6 +71,8 @@ def run_extraction_from_installed_env(
             result.relations,
             result.other_relations,
             getattr(result, "aliases", {}),
+            getattr(result, "symbol_maps", {}),
+            getattr(result, "alias_hops", {}),
         )
     except Exception as e:
         logger.error(f"Static extraction from installed env failed: {e}")
@@ -112,6 +114,8 @@ def run_extraction_from_wheel(
             result.relations,
             result.other_relations,
             getattr(result, "aliases", {}),
+            getattr(result, "symbol_maps", {}),
+            getattr(result, "alias_hops", {}),
         )
     except Exception as e:
         logger.error(f"Static extraction from wheel failed: {e}")
@@ -198,9 +202,9 @@ def process_library_version(
                 logger.error(f"No compatible install target found for {library}=={version} in Python probe range")
                 return False
 
-            entities, relations, other_relations, aliases = extraction_result
+            entities, relations, other_relations, aliases, symbol_maps, alias_hops = extraction_result
 
-            if not upload_to_stores(entities, relations, other_relations, aliases, library, version, config, targets):
+            if not upload_to_stores(entities, relations, other_relations, aliases, library, version, config, targets, symbol_maps=symbol_maps, alias_hops=alias_hops):
                 return False
 
             logger.info(f"✓ Successfully processed {library}=={version}")
@@ -220,9 +224,9 @@ def process_library_version(
         if extraction_result is None:
             return False
 
-        entities, relations, other_relations, aliases = extraction_result
+        entities, relations, other_relations, aliases, symbol_maps, alias_hops = extraction_result
 
-        if not upload_to_stores(entities, relations, other_relations, aliases, library, version, config, targets):
+        if not upload_to_stores(entities, relations, other_relations, aliases, library, version, config, targets, symbol_maps=symbol_maps, alias_hops=alias_hops):
             return False
 
         logger.info(f"✓ Successfully processed {library}=={version}")

@@ -94,6 +94,7 @@ def process_package_from_module_paths(
         "EXPOSES_ALL": [],
         "PUBLISHES_ALL": [],
     }
+    combined_symbol_maps: Dict[str, Any] = {}
 
     dist_entity = None
     current_version = version
@@ -138,7 +139,7 @@ def process_package_from_module_paths(
                 continue
 
             logging.info(f"Processing static analysis for {top_level_module} at {pkg_path}")
-            s_entities, s_relations, s_other_relations = process_package_static(
+            s_entities, s_relations, s_other_relations, s_symbol_maps = process_package_static(
                 pkg_path,
                 top_level_module,
                 version=version,
@@ -147,6 +148,7 @@ def process_package_from_module_paths(
             entities = s_entities
             relations = s_relations
             other_relations = s_other_relations
+            combined_symbol_maps.update(s_symbol_maps)
 
             if dist_entity and entities:
                 import_pkg_entity = next((e for e in entities if e.name == top_level_module), None)
@@ -196,17 +198,25 @@ def process_package_from_module_paths(
     ]:
         combined_other_relations[rel_type] = list(set(combined_other_relations[rel_type]))
 
+    aliases: Dict[str, Any] = {}
+    alias_hops: Dict[str, Any] = {}
     try:
         logging.info("Finding aliases for extracted entities...")
         try:
-            aliases = find_aliases_static(all_entities, all_relations, combined_other_relations)
+            raw_aliases, raw_hop_info = find_aliases_static(
+                all_entities, all_relations, combined_other_relations, combined_symbol_maps
+            )
+            aliases = raw_aliases
+            alias_hops = {
+                f"{canonical}::{alias_fqn}": hops
+                for (canonical, alias_fqn), hops in raw_hop_info.items()
+            }
         except Exception:
             aliases = find_aliases(all_entities, all_relations, combined_other_relations)
         logging.info(f"Found aliases for {len(aliases)} entities")
     except Exception as e:
         logging.error(f"Error finding aliases: {e}")
         logging.error(traceback.format_exc())
-        aliases = {}
 
     logging.info(
         f"Completed processing package '{pkg_name}': "
@@ -218,6 +228,8 @@ def process_package_from_module_paths(
         relations=all_relations,
         other_relations=combined_other_relations,
         aliases=aliases,
+        symbol_maps=combined_symbol_maps,
+        alias_hops=alias_hops,
     )
 
 

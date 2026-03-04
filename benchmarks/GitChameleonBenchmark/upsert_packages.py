@@ -24,7 +24,7 @@ from dotenv import load_dotenv
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / 'backend'))
 
-from core.uploader import (
+from core.data_pipeline import (
     init_stores,
     close_stores,
     check_version_exists,

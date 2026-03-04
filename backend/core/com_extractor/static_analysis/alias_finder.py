@@ -49,18 +49,84 @@ def _compute_internal_mro(
     return result
 
 
+def _follow_sym_map_chain(
+    source_fqn: str,
+    module_symbol_maps: Dict[str, List[Dict]],
+    max_depth: int = 10,
+) -> Tuple[List[Dict], str]:
+    """
+    Follow source_fqn through symbol_maps to find the canonical (defined) entity.
+
+    Returns (hops, canonical_fqn) where hops is a list of
+    {module_fqn, line_no, next_hop_fqn} from outermost re-export to innermost.
+    If the chain cannot be fully resolved, canonical_fqn is the deepest FQN reached.
+    """
+    hops: List[Dict] = []
+    seen: set = set()
+    current_fqn = source_fqn
+
+    for _ in range(max_depth):
+        if current_fqn in seen:
+            break
+        seen.add(current_fqn)
+
+        parts = current_fqn.rsplit('.', 1)
+        if len(parts) != 2:
+            break
+
+        module_fqn, sym_name = parts
+        sym_map = module_symbol_maps.get(module_fqn, [])
+
+        found = False
+        for sym in sym_map:
+            if sym.get('name') != sym_name:
+                continue
+            origin = sym.get('origin')
+            if origin == 'defined':
+                return hops, current_fqn
+            elif origin == 'imported' and sym.get('source_fqn'):
+                hops.append({
+                    "module_fqn": module_fqn,
+                    "line_no": sym.get('line_no'),
+                    "next_hop_fqn": sym['source_fqn'],
+                })
+                current_fqn = sym['source_fqn']
+                found = True
+                break
+
+        if not found:
+            break
+
+    return hops, current_fqn
+
+
 def find_aliases_static(
     entities: List[Entity],
     relations: List[Relationship],
-    other_relations: Dict[str, List[Tuple[str, ExternalEntityRef]]]
-) -> Dict[str, List[str]]:
-    """Find aliases from static extraction using structural and export propagation."""
+    other_relations: Dict[str, List[Tuple[str, ExternalEntityRef]]],
+    module_symbol_maps: Optional[Dict[str, List[Dict]]] = None,
+) -> Tuple[Dict[str, List[str]], Dict[Tuple[str, str], List[Dict]]]:
+    """
+    Find aliases from static extraction using structural and export propagation.
 
-    valid_labels = {"DISTRIBUTION_PACKAGE", "IMPORT_PACKAGE", "MODULE", "CLASS", "METHOD", "FUNCTION"}
+    Returns (aliases_dict, hop_info) where:
+    - aliases_dict maps canonical_fqn -> sorted list of alias fqns
+    - hop_info maps (canonical_fqn, alias_fqn) -> list of hop dicts
+      Each hop dict: {module_fqn, line_no, next_hop_fqn}
+    """
+    if module_symbol_maps is None:
+        module_symbol_maps = {}
+
+    valid_labels = {"DISTRIBUTION_PACKAGE", "IMPORT_PACKAGE", "MODULE", "CLASS", "METHOD", "FUNCTION", "VARIABLE"}
     fqn_to_entity = {
         e.name: e
         for e in entities
         if "::" not in e.name and any(label in valid_labels for label in e.labels)
+        and not (
+            "VARIABLE" in e.labels
+            and "CONSTANT" not in e.labels
+            and "TYPE_ALIAS" not in e.labels
+        )
     }
     hash_to_fqn = {e.content_hash: e.name for e in entities}
 
@@ -73,6 +139,8 @@ def find_aliases_static(
     exposes_all_edges = []
     module_alias_edges = []
 
+    hop_info: Dict[Tuple[str, str], List[Dict]] = {}
+
     module_nodes = {
         e.name for e in entities
         if "MODULE" in e.labels or "IMPORT_PACKAGE" in e.labels
@@ -82,7 +150,7 @@ def find_aliases_static(
         u_name = rel.from_entity.name
         v_name = rel.to_entity.name
 
-        if rel.label in ["HAS_SUBMODULE", "HAS_CLASS", "HAS_FUNCTION", "HAS_METHOD"]:
+        if rel.label in ["HAS_SUBMODULE", "HAS_CLASS", "HAS_FUNCTION", "HAS_METHOD", "HAS_VARIABLE"]:
             simple_name = v_name.split('.')[-1]
             structure_graph[u_name].add(simple_name)
 
@@ -124,6 +192,14 @@ def find_aliases_static(
             alias_graph[target_ref.name].add(new_alias_fqn)
             module_exports[exporter_fqn].add(alias_name)
             module_alias_edges.append((new_alias_fqn, target_ref.name))
+
+            lineno = target_ref.attributes.get("lineno") if target_ref.attributes else None
+            hop_key = (target_ref.name, new_alias_fqn)
+            hop_info[hop_key] = [{
+                "module_fqn": exporter_fqn,
+                "line_no": lineno,
+                "next_hop_fqn": target_ref.name,
+            }]
 
     if "EXPOSES_ALL" in other_relations:
         for src_hash, target_ref in other_relations["EXPOSES_ALL"]:
@@ -185,26 +261,37 @@ def find_aliases_static(
         if cls_fqn in fqn_to_entity:
             class_mro[cls_fqn] = _compute_internal_mro(cls_fqn, class_bases, fqn_to_entity)
 
+    unresolved_sources = [
+        src for src in list(alias_graph.keys())
+        if src not in fqn_to_entity
+    ]
+    for src_fqn in unresolved_sources:
+        _, canonical_fqn = _follow_sym_map_chain(src_fqn, module_symbol_maps)
+        if canonical_fqn != src_fqn and canonical_fqn in fqn_to_entity:
+            for alias_fqn in alias_graph.pop(src_fqn, set()):
+                alias_graph[canonical_fqn].add(alias_fqn)
+                old_key = (src_fqn, alias_fqn)
+                if old_key in hop_info:
+                    hop_info[(canonical_fqn, alias_fqn)] = hop_info.pop(old_key)
+
+    alias_graph_keys = set(alias_graph.keys())
+
     entity_aliases = defaultdict(set)
     for name in fqn_to_entity:
         entity_aliases[name].add(name)
 
-    queue = deque()
+    queue: deque = deque()
     for name in fqn_to_entity:
         queue.append((name, name))
 
-    visited = set()
+    visited: set = set()
     for name in fqn_to_entity:
         visited.add((name, name))
 
-    max_states = max(10000, len(fqn_to_entity) * 200)
-
     while queue:
-        # if len(visited) > max_states:
-        #     break
         def_fqn, curr_alias = queue.popleft()
 
-        if curr_alias in alias_graph:
+        if curr_alias in alias_graph_keys:
             for next_alias in alias_graph[curr_alias]:
                 if (def_fqn, next_alias) not in visited:
                     visited.add((def_fqn, next_alias))
@@ -215,7 +302,7 @@ def find_aliases_static(
         for i in range(len(alias_parts), 0, -1):
             prefix = '.'.join(alias_parts[:i])
             suffix = '.'.join(alias_parts[i:])
-            if prefix not in alias_graph:
+            if prefix not in alias_graph_keys:
                 continue
             for mapped_prefix in alias_graph[prefix]:
                 if mapped_prefix == prefix or mapped_prefix.startswith(f"{prefix}."):
@@ -225,17 +312,6 @@ def find_aliases_static(
                     visited.add((def_fqn, remapped_alias))
                     entity_aliases[def_fqn].add(remapped_alias)
                     queue.append((def_fqn, remapped_alias))
-
-        if def_fqn in structure_graph:
-            for child_name in structure_graph[def_fqn]:
-                child_def_fqn = f"{def_fqn}.{child_name}"
-                child_alias = f"{curr_alias}.{child_name}"
-
-                if child_def_fqn in fqn_to_entity:
-                    if (child_def_fqn, child_alias) not in visited:
-                        visited.add((child_def_fqn, child_alias))
-                        entity_aliases[child_def_fqn].add(child_alias)
-                        queue.append((child_def_fqn, child_alias))
 
         if curr_alias == def_fqn and def_fqn in class_mro:
             seen_members: set = set(defined_members.get(def_fqn, set()))
@@ -254,10 +330,10 @@ def find_aliases_static(
                             entity_aliases[member_def].add(member_alias)
                             queue.append((member_def, member_alias))
 
-    cleaned_aliases = {}
+    cleaned_aliases: Dict[str, List[str]] = {}
     for entity_name, alias_set in entity_aliases.items():
         cleaned = sorted(a for a in alias_set if a != entity_name)
         if cleaned:
             cleaned_aliases[entity_name] = cleaned
 
-    return cleaned_aliases
+    return cleaned_aliases, hop_info

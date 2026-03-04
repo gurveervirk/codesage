@@ -18,3 +18,7 @@ UI/.env
 /benchmarks/GitChameleonBenchmark/current_tests.csv
 /backend/core/com_extractor/outputs
 /backend/core/com_store/schema
+/_utils
+
+SPEC.md
+deputy_work/

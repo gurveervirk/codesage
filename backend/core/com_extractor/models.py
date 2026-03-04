@@ -125,6 +125,9 @@ class ExtractionResult(BaseModel):
     relations: List[Relationship]
     other_relations: Dict[str, Any]
     aliases: Dict[str, List[str]] = {}
+    symbol_maps: Dict[str, List[Dict[str, Any]]] = {}
+    alias_hops: Dict[str, List[Dict[str, Any]]] = {}
+
 
     class Config:
         arbitrary_types_allowed = True

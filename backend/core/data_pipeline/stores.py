@@ -164,6 +164,8 @@ def upload_to_stores(
     version: str,
     config: Dict,
     targets: List[str],
+    symbol_maps: Optional[Dict] = None,
+    alias_hops: Optional[Dict] = None,
 ) -> bool:
     stores = init_stores(config, targets)
     success = True
@@ -190,6 +192,8 @@ def upload_to_stores(
                 other_relations=other_relations,
                 aliases=aliases,
                 version=version,
+                symbol_maps=symbol_maps,
+                alias_hops=alias_hops,
             )
         except Exception as e:
             logger.error(f"Failed to upload to Postgres: {e}")

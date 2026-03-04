@@ -41,7 +41,7 @@ benchmarks = [
 ]
 
 [project.scripts]
-deputy-upload = "core.uploader.__main__:main"
+deputy-pipeline = "core.data_pipeline.__main__:main"
 
 [tool.setuptools]
 py-modules = []

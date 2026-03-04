@@ -45,6 +45,8 @@ class PythonTreeSitterParser:
             "imports": self._extract_imports(root, source_bytes),
             "classes": self._extract_classes(root, source_bytes),
             "functions": self._extract_functions(root, source_bytes),
+            "variables": self._extract_variables(root, source_bytes),
+            "conditional_blocks": self._extract_conditional_blocks(root, source_bytes),
             "source_bytes": source_bytes,
             "source": source_bytes.decode('utf-8', errors='replace')
         }
@@ -173,6 +175,7 @@ class PythonTreeSitterParser:
         
         methods = self._extract_functions(body_node, source) if body_node else []
         inner_classes = self._traverse_block_for_classes(body_node, source) if body_node else []
+        class_variables = self._extract_variables(body_node, source) if body_node else []
         
         return {
             "name": name,
@@ -188,7 +191,8 @@ class PythonTreeSitterParser:
             "bases": bases,
             "methods": methods,
             "inner_classes": inner_classes,
-            "source": self._node_text(node, source) # Full class source
+            "class_variables": class_variables,
+            "source": self._node_text(node, source)
         }
 
     def _extract_decorators(self, decorated_node: Node, source: bytes) -> List[str]:
@@ -239,3 +243,224 @@ class PythonTreeSitterParser:
             "source": self._node_text(node, source)
         }
 
+    def _extract_variables(self, block_node: Node, source: bytes) -> List[Dict[str, Any]]:
+        """Extract variable assignments from a block (module body or conditional branch body)."""
+        variables = []
+        if not block_node:
+            return variables
+        for child in block_node.children:
+            if child.type == 'assignment':
+                left = child.child_by_field_name('left')
+                if left and left.type in ('pattern_list', 'tuple_pattern'):
+                    right = child.child_by_field_name('right')
+                    value_text = self._node_text(right, source) if right else None
+                    for id_child in left.children:
+                        if id_child.type == 'identifier':
+                            name = self._node_text(id_child, source)
+                            variables.append({
+                                "name": name,
+                                "value": value_text,
+                                "type_annotation": None,
+                                "lineno": child.start_point.row + 1,
+                                "end_lineno": child.end_point.row + 1,
+                                "is_all_caps": name.isupper() and len(name) > 0,
+                                "is_augmented": False,
+                                "is_type_alias": False,
+                                "source": self._node_text(child, source),
+                            })
+                elif left and left.type == 'identifier':
+                    name = self._node_text(left, source)
+                    right = child.child_by_field_name('right')
+                    value_text = self._node_text(right, source) if right else None
+                    type_node = child.child_by_field_name('type')
+                    type_text = self._node_text(type_node, source) if type_node else None
+                    variables.append({
+                        "name": name,
+                        "value": value_text,
+                        "type_annotation": type_text,
+                        "lineno": child.start_point.row + 1,
+                        "end_lineno": child.end_point.row + 1,
+                        "is_all_caps": name.isupper() and len(name) > 0,
+                        "is_augmented": False,
+                        "is_type_alias": False,
+                        "source": self._node_text(child, source),
+                    })
+            elif child.type == 'augmented_assignment':
+                left = child.child_by_field_name('left')
+                if left and left.type == 'identifier':
+                    name = self._node_text(left, source)
+                    right = child.child_by_field_name('right')
+                    value_text = self._node_text(right, source) if right else None
+                    op_node = child.child_by_field_name('operator')
+                    op_text = self._node_text(op_node, source) if op_node else '+='
+                    variables.append({
+                        "name": name,
+                        "value": value_text,
+                        "operator": op_text,
+                        "type_annotation": None,
+                        "lineno": child.start_point.row + 1,
+                        "end_lineno": child.end_point.row + 1,
+                        "is_all_caps": name.isupper() and len(name) > 0,
+                        "is_augmented": True,
+                        "is_type_alias": False,
+                        "source": self._node_text(child, source),
+                    })
+            elif child.type == 'type_alias_statement':
+                name_node = child.child_by_field_name('name')
+                value_node = child.child_by_field_name('value')
+                if name_node:
+                    name = self._node_text(name_node, source)
+                    value_text = self._node_text(value_node, source) if value_node else None
+                    variables.append({
+                        "name": name,
+                        "value": value_text,
+                        "type_annotation": None,
+                        "lineno": child.start_point.row + 1,
+                        "end_lineno": child.end_point.row + 1,
+                        "is_all_caps": name.isupper() and len(name) > 0,
+                        "is_augmented": False,
+                        "is_type_alias": True,
+                        "source": self._node_text(child, source),
+                    })
+        return variables
+
+    def _extract_conditional_blocks(self, block_node: Node, source: bytes, parent_start_line: Optional[int] = None) -> List[Dict[str, Any]]:
+        """Extract top-level if/try-statement conditional blocks with their inner symbols."""
+        blocks = []
+        if not block_node:
+            return blocks
+        for child in block_node.children:
+            if child.type == 'if_statement':
+                blocks.extend(self._process_if_node(child, source, parent_start_line))
+            elif child.type == 'try_statement':
+                blocks.extend(self._process_try_node(child, source, parent_start_line))
+        return blocks
+
+    def _process_if_node(self, node: Node, source: bytes, parent_start_line: Optional[int] = None) -> List[Dict[str, Any]]:
+        """Process an if/elif/else statement into a list of condition-branch dicts."""
+        result = []
+        node_start = node.start_point.row + 1
+        condition_node = node.child_by_field_name('condition')
+        condition_text = self._node_text(condition_node, source) if condition_node else "?"
+        consequence_node = node.child_by_field_name('consequence')
+        if consequence_node:
+            result.append({
+                "condition": condition_text,
+                "branch": "if",
+                "parent_block_start_line": parent_start_line,
+                "imports": self._extract_imports(consequence_node, source),
+                "classes": self._traverse_block_for_classes(consequence_node, source),
+                "functions": self._extract_functions(consequence_node, source),
+                "variables": self._extract_variables(consequence_node, source),
+                "nested_blocks": self._extract_conditional_blocks(consequence_node, source, parent_start_line=node_start),
+            })
+        for child in node.children:
+            if child.type == 'elif_clause':
+                alt_cond_node = child.child_by_field_name('condition')
+                alt_cond_text = self._node_text(alt_cond_node, source) if alt_cond_node else "?"
+                alt_body = child.child_by_field_name('consequence')
+                if alt_body:
+                    result.append({
+                        "condition": alt_cond_text,
+                        "branch": "elif",
+                        "parent_block_start_line": parent_start_line,
+                        "imports": self._extract_imports(alt_body, source),
+                        "classes": self._traverse_block_for_classes(alt_body, source),
+                        "functions": self._extract_functions(alt_body, source),
+                        "variables": self._extract_variables(alt_body, source),
+                        "nested_blocks": self._extract_conditional_blocks(alt_body, source, parent_start_line=node_start),
+                    })
+            elif child.type == 'else_clause':
+                alt_body = child.child_by_field_name('body')
+                if alt_body:
+                    result.append({
+                        "condition": condition_text,
+                        "branch": "else",
+                        "parent_block_start_line": parent_start_line,
+                        "imports": self._extract_imports(alt_body, source),
+                        "classes": self._traverse_block_for_classes(alt_body, source),
+                        "functions": self._extract_functions(alt_body, source),
+                        "variables": self._extract_variables(alt_body, source),
+                        "nested_blocks": self._extract_conditional_blocks(alt_body, source, parent_start_line=node_start),
+                    })
+        return result
+
+    def _process_try_node(self, node: Node, source: bytes, parent_start_line: Optional[int] = None) -> List[Dict[str, Any]]:
+        """Process a try/except/finally statement into a list of condition-branch dicts."""
+        result = []
+        node_start = node.start_point.row + 1
+        body_node = node.child_by_field_name('body')
+        if body_node:
+            result.append({
+                "condition": "try",
+                "branch": "try",
+                "parent_block_start_line": parent_start_line,
+                "imports": self._extract_imports(body_node, source),
+                "classes": self._traverse_block_for_classes(body_node, source),
+                "functions": self._extract_functions(body_node, source),
+                "variables": self._extract_variables(body_node, source),
+                "nested_blocks": self._extract_conditional_blocks(body_node, source, parent_start_line=node_start),
+            })
+        for child in node.children:
+            if child.type in ('except_clause', 'except_group_clause'):
+                exc_parts = []
+                body = None
+                saw_except = False
+                saw_colon = False
+                for cc in child.children:
+                    if cc.type == 'except':
+                        saw_except = True
+                        continue
+                    if saw_except and not saw_colon:
+                        if cc.type == ':':
+                            saw_colon = True
+                        elif cc.type == 'block':
+                            body = cc
+                            saw_colon = True
+                        else:
+                            exc_parts.append(self._node_text(cc, source).strip())
+                    elif saw_colon and cc.type == 'block':
+                        body = cc
+                exc_text = ' '.join(p for p in exc_parts if p and p not in ('as',))
+                cond = f"except {exc_text}".strip() if exc_text else "except"
+                if body:
+                    result.append({
+                        "condition": cond,
+                        "branch": "except",
+                        "parent_block_start_line": parent_start_line,
+                        "imports": self._extract_imports(body, source),
+                        "classes": self._traverse_block_for_classes(body, source),
+                        "functions": self._extract_functions(body, source),
+                        "variables": self._extract_variables(body, source),
+                        "nested_blocks": self._extract_conditional_blocks(body, source, parent_start_line=node_start),
+                    })
+            elif child.type == 'else_clause':
+                alt_body = child.child_by_field_name('body')
+                if alt_body:
+                    result.append({
+                        "condition": "try_else",
+                        "branch": "else",
+                        "parent_block_start_line": parent_start_line,
+                        "imports": self._extract_imports(alt_body, source),
+                        "classes": self._traverse_block_for_classes(alt_body, source),
+                        "functions": self._extract_functions(alt_body, source),
+                        "variables": self._extract_variables(alt_body, source),
+                        "nested_blocks": self._extract_conditional_blocks(alt_body, source, parent_start_line=node_start),
+                    })
+            elif child.type == 'finally_clause':
+                fin_body = None
+                for cc in child.children:
+                    if cc.type == 'block':
+                        fin_body = cc
+                if fin_body:
+                    result.append({
+                        "condition": "finally",
+                        "branch": "finally",
+                        "parent_block_start_line": parent_start_line,
+                        "imports": self._extract_imports(fin_body, source),
+                        "classes": self._traverse_block_for_classes(fin_body, source),
+                        "functions": self._extract_functions(fin_body, source),
+                        "variables": self._extract_variables(fin_body, source),
+                        "nested_blocks": self._extract_conditional_blocks(fin_body, source, parent_start_line=node_start),
+                    })
+        return result

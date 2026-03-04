@@ -430,7 +430,73 @@ class PostgresCOMStore:
             rows,
         )
 
-    def _upsert_package_dependencies(self, cur, rows: List[Tuple]) -> None:
+    def _upsert_module_symbols(self, cur, rows: List[Tuple]) -> None:
+        if not rows:
+            return
+        execute_values(
+            cur,
+            """
+            INSERT INTO module_symbols
+              (module_entity_id, symbol_name, origin, entity_id, source_fqn, condition, line_no, parent_block_start_line, is_reexport)
+            VALUES %s
+            ON CONFLICT (module_entity_id, symbol_name, COALESCE(condition, '')) DO NOTHING
+            """,
+            rows,
+        )
+
+    def _upsert_module_symbol_versions(self, cur, rows: List[Tuple]) -> None:
+        if not rows:
+            return
+        execute_values(
+            cur,
+            """
+            INSERT INTO module_symbol_versions (module_symbol_id, version_id)
+            SELECT ms.id, t.version_id
+            FROM (VALUES %s) AS t(module_entity_id, symbol_name, condition, version_id)
+            JOIN module_symbols ms
+              ON ms.module_entity_id = t.module_entity_id::bigint
+             AND ms.symbol_name = t.symbol_name
+             AND COALESCE(ms.condition, '') = COALESCE(t.condition, '')
+            ON CONFLICT (module_symbol_id, version_id) DO NOTHING
+            """,
+            rows,
+        )
+
+    def _upsert_alias_hops(self, cur, rows: List[Tuple]) -> None:
+        if not rows:
+            return
+        execute_values(
+            cur,
+            """
+            INSERT INTO alias_hops
+              (alias_id, hop_order, module_source_id, line_no, target_entity_id, target_entity_name)
+            SELECT a.id, t.hop_order, t.module_source_id::bigint, t.line_no,
+                   t.target_entity_id::bigint, t.target_entity_name
+            FROM (VALUES %s) AS t(entity_id, alias_text, hop_order,
+                                  module_source_id, line_no, target_entity_id, target_entity_name)
+            JOIN aliases a ON a.entity_id = t.entity_id::bigint AND a.alias = t.alias_text
+            ON CONFLICT (alias_id, hop_order) DO NOTHING
+            """,
+            rows,
+        )
+
+    def _upsert_alias_hop_versions(self, cur, rows: List[Tuple]) -> None:
+        if not rows:
+            return
+        execute_values(
+            cur,
+            """
+            INSERT INTO alias_hop_versions (alias_hop_id, version_id)
+            SELECT ah.id, t.version_id
+            FROM (VALUES %s) AS t(entity_id, alias_text, hop_order, version_id)
+            JOIN aliases a ON a.entity_id = t.entity_id::bigint AND a.alias = t.alias_text
+            JOIN alias_hops ah ON ah.alias_id = a.id AND ah.hop_order = t.hop_order::integer
+            ON CONFLICT (alias_hop_id, version_id) DO NOTHING
+            """,
+            rows,
+        )
+
+    def _upsert_package_dependencies(self, cur, rows: List[Tuple]) -> None:        
         if not rows:
             return
         execute_values(
@@ -498,13 +564,15 @@ class PostgresCOMStore:
         other_relations: Dict[str, List[Tuple]],
         aliases: Dict[str, List[str]],
         version: Optional[str] = None,
+        symbol_maps: Optional[Dict[str, List[Dict]]] = None,
+        alias_hops: Optional[Dict[str, List[Dict]]] = None,
     ) -> None:
         """Upsert extraction results into Postgres using ID + version mapping schema."""
         if not version:
             logger.warning("No version provided. Defaulting to 'latest'.")
             version = "latest"
 
-        KNOWN_TYPES = {"MODULE", "CLASS", "FUNCTION", "METHOD", "DISTRIBUTION_PACKAGE", "IMPORT_PACKAGE"}
+        KNOWN_TYPES = {"MODULE", "CLASS", "FUNCTION", "METHOD", "DISTRIBUTION_PACKAGE", "IMPORT_PACKAGE", "VARIABLE"}
 
         entity_rows_map: Dict[str, Dict] = {}
         type_map: Dict[str, set] = {}
@@ -592,6 +660,12 @@ class PostgresCOMStore:
                     if "::" not in ent.name
                 }
 
+                stub_module_fqn_by_entity = {
+                    ent.name: ent.properties["_stub_module_fqn"]
+                    for ent in entities
+                    if "::" not in ent.name and "_stub_module_fqn" in ent.properties
+                }
+
                 for ent in entities:
                     name = ent.name
                     labels = ent.labels or []
@@ -664,6 +738,7 @@ class PostgresCOMStore:
                                 "docstring_end_line": self._to_int_or_none(props.get("docstring_end_line")),
                                 "signature_start_line": self._to_int_or_none(props.get("signature_start_line")),
                                 "signature_end_line": self._to_int_or_none(props.get("signature_end_line")),
+                                "stub_module_name": stub_module_fqn_by_entity.get(target_name),
                             }
                         )
 
@@ -713,6 +788,11 @@ class PostgresCOMStore:
                     ):
                         module_source_rank_by_entity[module_entity_id] = quality_rank
                         module_source_hash_by_entity[module_entity_id] = source_hash
+                stub_module_source_hash_by_entity = {
+                    row["module_entity_id"]: row["source_hash"]
+                    for row in module_source_rows
+                    if (row.get("file_path") or "").endswith(".pyi")
+                }
                 self._upsert_module_source_versions(
                     cur,
                     [
@@ -749,14 +829,18 @@ class PostgresCOMStore:
 
                 location_rows = []
                 for row in entity_def_rows:
-                    module_name = row.get("module_name")
+                    stub_module_name = row.get("stub_module_name")
+                    module_name = stub_module_name or row.get("module_name")
                     if not module_name:
                         continue
                     module_entity_id = entity_id_map.get(module_name)
                     if not module_entity_id:
                         continue
 
-                    module_source_hash = module_source_hash_by_entity.get(module_entity_id)
+                    if stub_module_name:
+                        module_source_hash = stub_module_source_hash_by_entity.get(module_entity_id) or module_source_hash_by_entity.get(module_entity_id)
+                    else:
+                        module_source_hash = module_source_hash_by_entity.get(module_entity_id)
                     if module_source_hash is None:
                         continue
 
@@ -889,11 +973,83 @@ class PostgresCOMStore:
                 self._upsert_aliases(cur, alias_rows)
                 self._upsert_alias_versions(cur, [(entity_id, alias, version_id) for entity_id, alias in alias_rows])
 
+                sym_rows: List[Tuple] = []
+                sym_ver_rows: List[Tuple] = []
+                if symbol_maps:
+                    for module_fqn, sym_list in symbol_maps.items():
+                        module_entity_id = entity_id_map.get(module_fqn)
+                        if not module_entity_id:
+                            continue
+                        for sym in sym_list:
+                            sym_entity_id = entity_id_map.get(sym.get("entity_fqn")) if sym.get("entity_fqn") else None
+                            sym_rows.append((
+                                module_entity_id,
+                                sym.get("name"),
+                                sym.get("origin"),
+                                sym_entity_id,
+                                sym.get("source_fqn"),
+                                sym.get("condition"),
+                                sym.get("line_no"),
+                                sym.get("parent_block_start_line"),
+                                bool(sym.get("is_reexport", False)),
+                            ))
+                            sym_ver_rows.append((
+                                module_entity_id,
+                                sym.get("name"),
+                                sym.get("condition"),
+                                version_id,
+                            ))
+                self._upsert_module_symbols(cur, sym_rows)
+                self._upsert_module_symbol_versions(cur, sym_ver_rows)
+
+                hop_rows: List[Tuple] = []
+                hop_ver_rows: List[Tuple] = []
+                if alias_hops:
+                    for key, hops in alias_hops.items():
+                        if "::" not in key:
+                            continue
+                        canonical_fqn, alias_fqn = key.split("::", 1)
+                        canonical_entity_id = entity_id_map.get(canonical_fqn)
+                        if not canonical_entity_id:
+                            continue
+                        for hop_order, hop in enumerate(hops):
+                            hop_module_fqn = hop.get("module_fqn")
+                            hop_module_entity_id = entity_id_map.get(hop_module_fqn) if hop_module_fqn else None
+                            hop_source_hash = module_source_hash_by_entity.get(hop_module_entity_id) if hop_module_entity_id else None
+                            hop_source_id = None
+                            if hop_module_entity_id and hop_source_hash:
+                                cur.execute(
+                                    "SELECT id FROM module_sources WHERE module_entity_id = %s AND source_hash = %s",
+                                    (hop_module_entity_id, hop_source_hash),
+                                )
+                                row = cur.fetchone()
+                                hop_source_id = row[0] if row else None
+                            next_hop_fqn = hop.get("next_hop_fqn")
+                            target_entity_id = entity_id_map.get(next_hop_fqn) if next_hop_fqn else None
+                            target_entity_name = next_hop_fqn if (next_hop_fqn and not target_entity_id) else None
+                            hop_rows.append((
+                                canonical_entity_id,
+                                alias_fqn,
+                                hop_order,
+                                hop_source_id,
+                                hop.get("line_no"),
+                                target_entity_id,
+                                target_entity_name,
+                            ))
+                            hop_ver_rows.append((
+                                canonical_entity_id,
+                                alias_fqn,
+                                hop_order,
+                                version_id,
+                            ))
+                self._upsert_alias_hops(cur, hop_rows)
+                self._upsert_alias_hop_versions(cur, hop_ver_rows)
+
                 conn.commit()
 
                 logger.info(
                     "Completed Postgres upload: entities=%d, module_sources=%d uploaded/%d total, entity_definitions=%d, "
-                    "decorator_details=%d, relations(other_relations)=%d, aliases=%d",
+                    "decorator_details=%d, relations(other_relations)=%d, aliases=%d, module_symbols=%d, alias_hops=%d",
                     len(entity_rows),
                     len(new_module_source_rows),
                     len(module_source_rows),
@@ -901,4 +1057,6 @@ class PostgresCOMStore:
                     len(decorator_rows),
                     len(relation_rows),
                     len(alias_rows),
+                    len(sym_rows),
+                    len(hop_rows),
                 )
