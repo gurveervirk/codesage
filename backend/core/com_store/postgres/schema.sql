@@ -310,3 +310,54 @@ $$;
 CREATE TRIGGER trg_alias_hops_resolve_on_entity
 AFTER INSERT ON entities
 FOR EACH ROW EXECUTE FUNCTION resolve_alias_hops_on_entity();
+
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'anon') THEN
+        CREATE ROLE anon NOLOGIN;
+    END IF;
+    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'authenticated') THEN
+        CREATE ROLE authenticated NOLOGIN;
+    END IF;
+END
+$$;
+
+ALTER TABLE versions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE entities ENABLE ROW LEVEL SECURITY;
+ALTER TABLE entity_versions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE module_sources ENABLE ROW LEVEL SECURITY;
+ALTER TABLE module_source_versions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE entity_definitions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE entity_definition_versions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE entity_definition_locations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE relations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE relation_versions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE decorator_details ENABLE ROW LEVEL SECURITY;
+ALTER TABLE decorator_detail_versions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE aliases ENABLE ROW LEVEL SECURITY;
+ALTER TABLE alias_versions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE package_dependencies ENABLE ROW LEVEL SECURITY;
+ALTER TABLE module_symbols ENABLE ROW LEVEL SECURITY;
+ALTER TABLE module_symbol_versions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE alias_hops ENABLE ROW LEVEL SECURITY;
+ALTER TABLE alias_hop_versions ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "public_read_versions" ON versions FOR SELECT TO anon, authenticated USING (true);
+CREATE POLICY "public_read_entities" ON entities FOR SELECT TO anon, authenticated USING (true);
+CREATE POLICY "public_read_entity_versions" ON entity_versions FOR SELECT TO anon, authenticated USING (true);
+CREATE POLICY "public_read_module_sources" ON module_sources FOR SELECT TO anon, authenticated USING (true);
+CREATE POLICY "public_read_module_source_versions" ON module_source_versions FOR SELECT TO anon, authenticated USING (true);
+CREATE POLICY "public_read_entity_definitions" ON entity_definitions FOR SELECT TO anon, authenticated USING (true);
+CREATE POLICY "public_read_entity_definition_versions" ON entity_definition_versions FOR SELECT TO anon, authenticated USING (true);
+CREATE POLICY "public_read_entity_definition_locations" ON entity_definition_locations FOR SELECT TO anon, authenticated USING (true);
+CREATE POLICY "public_read_relations" ON relations FOR SELECT TO anon, authenticated USING (true);
+CREATE POLICY "public_read_relation_versions" ON relation_versions FOR SELECT TO anon, authenticated USING (true);
+CREATE POLICY "public_read_decorator_details" ON decorator_details FOR SELECT TO anon, authenticated USING (true);
+CREATE POLICY "public_read_decorator_detail_versions" ON decorator_detail_versions FOR SELECT TO anon, authenticated USING (true);
+CREATE POLICY "public_read_aliases" ON aliases FOR SELECT TO anon, authenticated USING (true);
+CREATE POLICY "public_read_alias_versions" ON alias_versions FOR SELECT TO anon, authenticated USING (true);
+CREATE POLICY "public_read_package_dependencies" ON package_dependencies FOR SELECT TO anon, authenticated USING (true);
+CREATE POLICY "public_read_module_symbols" ON module_symbols FOR SELECT TO anon, authenticated USING (true);
+CREATE POLICY "public_read_module_symbol_versions" ON module_symbol_versions FOR SELECT TO anon, authenticated USING (true);
+CREATE POLICY "public_read_alias_hops" ON alias_hops FOR SELECT TO anon, authenticated USING (true);
+CREATE POLICY "public_read_alias_hop_versions" ON alias_hop_versions FOR SELECT TO anon, authenticated USING (true);

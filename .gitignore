@@ -22,3 +22,7 @@ UI/.env
 
 SPEC.md
 deputy_work/
+supabase/
+.vscode/
+.mypy_cache/
+.pytest_cache/

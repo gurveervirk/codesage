@@ -40,7 +40,7 @@ class StoreConfig:
             neo4j_url=os.getenv("NEO4J_URI", "bolt://localhost:7687"),
             neo4j_database=os.getenv("NEO4J_DATABASE", "neo4j"),
             embed_nodes=os.getenv("EMBED_NODES", "false").lower() == "true",
-            postgres_url=os.getenv("SUPABASE_DB_URL"),
+            postgres_url=os.getenv("SUPABASE_DB_URL") or os.getenv("POSTGRES_URL"),
         )
 
     def to_dict(self) -> Dict:

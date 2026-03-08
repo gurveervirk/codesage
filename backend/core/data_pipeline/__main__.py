@@ -41,7 +41,7 @@ def _build_config(postgres_url=None, batch_size=None):
         "neo4j_url": os.getenv("NEO4J_URI", "bolt://localhost:7687"),
         "neo4j_database": os.getenv("NEO4J_DATABASE", "neo4j"),
         "embed_nodes": os.getenv("EMBED_NODES", "false").lower() == "true",
-        "postgres_url": postgres_url or os.getenv("SUPABASE_DB_URL"),
+        "postgres_url": postgres_url or os.getenv("SUPABASE_DB_URL") or os.getenv("POSTGRES_URL"),
         "batch_size": batch_size,
     }
 
@@ -54,7 +54,7 @@ def _resolve_targets(target_arg: str):
 
 def cmd_dump(args) -> int:
     _load_env()
-    pg_url = args.postgres_url or os.getenv("SUPABASE_DB_URL")
+    pg_url = args.postgres_url or os.getenv("SUPABASE_DB_URL") or os.getenv("POSTGRES_URL")
     if not pg_url:
         logger.error("Postgres URL is required. Use --postgres-url or set SUPABASE_DB_URL.")
         return 1
