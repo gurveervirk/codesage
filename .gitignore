@@ -26,3 +26,5 @@ supabase/
 .vscode/
 .mypy_cache/
 .pytest_cache/
+# macOS
+.DS_Store
